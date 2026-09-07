@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-course-tutor"
+version = "1.0.0"
+description = "Hands-on Python course with a real nvim-style editor and an offline TTS coach. No AI, no network."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Arthur Perchatkin" }]
+keywords = ["python", "tutorial", "tui", "vim", "education", "terminal"]
+dependencies = [
+    "textual>=8.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+tutor = "tutor:main"
+
+[tool.setuptools]
+py-modules = ["tutor"]
