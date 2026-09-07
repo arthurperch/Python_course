@@ -42,4 +42,4 @@ echo
 echo "   Voice (optional but recommended):"
 echo "     espeak-ng  →  sudo apt install espeak-ng      (Debian/Ubuntu)"
 echo "                    sudo pacman -S espeak-ng       (Arch)"
-echo "     piper      →  pip install piper-tts + a voice (natural neural voice)"
+echo "     natural    →  curl -fsSL $BASE/voices.sh | bash   (neural voice, ~60 MB)"

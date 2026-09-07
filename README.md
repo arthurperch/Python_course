@@ -50,7 +50,7 @@ installed:
 | Voice | Install | Notes |
 |-------|---------|-------|
 | **espeak-ng** | `sudo apt install espeak-ng` (Debian/Ubuntu) · `sudo pacman -S espeak-ng` (Arch) | easiest, robotic, works everywhere |
-| **piper** | `pip install piper-tts` + a voice model | natural neural voice, nicer |
+| **piper** | `curl -fsSL https://raw.githubusercontent.com/arthurperch/Python_course/main/voices.sh \| bash` | natural neural voice, nicer (see below) |
 
 No voice? Everything still works, just silently. Toggle the voice with `F6`.
 
