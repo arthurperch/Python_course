@@ -2183,7 +2183,9 @@ def speak(text: str, rate: float = 1.0) -> None:
         amp = int(round(200 * voice_volume()))
         if amp <= 0:
             return   # muted — keep silent (no point spawning a silent voice)
-        subprocess.Popen(["espeak-ng", "-s", "150", "-a", str(amp), clean],
+        # rate > 1.0 = slower (mirrors piper's length_scale); espeak -s is words/min
+        speed = max(80, int(150 / rate))
+        subprocess.Popen(["espeak-ng", "-s", str(speed), "-a", str(amp), clean],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -4961,9 +4963,6 @@ SHELL_LESSONS = [
      "on_win": "One window, many panes, and no lost sessions. tmux is a real superpower."},
 ]
 
-# how many command lessons get the ghost-write hint before it fades away
-SHELL_GHOST_UNTIL = 5
-
 # the clickable bash manual — (command, what it does, a visual example)
 SHELL_MANUAL = [
     ("pwd", "print working directory — where am I?", "/home/you"),
@@ -5405,6 +5404,7 @@ class TutorApp(App):
     #shell-head { width: 1fr; height: auto; }
     #shell-help-icon { width: 5; height: 3; padding: 0 1; color: #d5d5d5; text-style: bold; }
     #shell-help-icon:hover { background: $surface; color: $text; }
+    #shell-ghost { width: 100%; height: 3; padding: 0 2; background: #0d1117; border: solid #30363d; }
     #shell-body { width: 100%; height: 1fr; }
     #shell-term { width: 1fr; height: 1fr; border: tall $primary; }
     #shell-output { height: 1fr; padding: 1 2; background: #0d1117; }
@@ -5583,6 +5583,13 @@ class TutorApp(App):
         self._shell_history: list[tuple] = []   # (kind, text) terminal scrollback
         self._shell_msg = ""           # transient feedback line (win / nudge)
         self._shell_msg_kind = ""      # "win" (green) or "hint" (amber)
+        self._shell_ghost = ""          # current lesson's command (the ghost hint)
+        self._shell_ghost_typed = 0     # chars typed out so far (typewriter)
+        self._shell_ghost_on = False    # blink highlight on/off
+        self._shell_ghost_timer = None  # typewriter timer
+        self._shell_ghost_blink_timer = None
+        self._shell_ghost_blink = 0     # blink pulses remaining
+        self._shell_attempts = 0        # wrong answers this lesson (varied hints)
         self._shell_confirm = False    # "save checkpoint? Y/N" popup is showing
         self._shell_flash = 0          # >0 → flash the just-made entry in the tree
         self._shell_flash_timer = None
@@ -5712,6 +5719,7 @@ class TutorApp(App):
             with Horizontal(id="shell-topbar"):
                 yield Static("", id="shell-head")
                 yield ShellHelpIcon(" ? ", id="shell-help-icon")
+            yield Static("", id="shell-ghost")
             with Horizontal(id="shell-body"):
                 with Vertical(id="shell-term"):
                     yield Static("", id="shell-output")
@@ -7789,6 +7797,7 @@ class TutorApp(App):
         self._shell_msg_kind = ""
         self._shell_confirm = False
         self._shell_flash = 0
+        self._shell_attempts = 0
         # rebuild the filesystem up to the resume point, so a mid-track
         # checkpoint starts with the folders/files the earlier lessons made
         fs = ShellFS()
@@ -7803,6 +7812,7 @@ class TutorApp(App):
         self.query_one("#shell", ShellTrainer).focus()
         self._shell_lesson_speak()
         self._shell_render()
+        self._shell_ghost_start()
 
     def _shell_lesson_speak(self):
         if not self.voice_on:
@@ -7896,10 +7906,12 @@ class TutorApp(App):
             self._shell_advance()
         else:
             play_ghost_error()
+            self._shell_attempts += 1
             self._shell_msg = lesson["cmd_hint"]
             self._shell_msg_kind = "hint"
             if self.voice_on:
-                speak(_pers("not quite — try " + lesson["cmd_hint"]))
+                speak(_pers(self._shell_wrong_hint(lesson)), rate=1.2)
+            self._shell_ghost_blink_again()
             self._shell_render()
 
     def _shell_advance(self):
@@ -7919,11 +7931,16 @@ class TutorApp(App):
             return
         self.p["build_step"] = self._shell_idx
         save_progress(self.p)
+        self._shell_attempts = 0
         self._shell_lesson_speak()
         self._shell_render()
+        self._shell_ghost_start()
 
     def _shell_graduate(self):
         self._shell_flash_stop()
+        self._shell_ghost_stop_timers()
+        self._shell_ghost = ""
+        self.query_one("#shell-ghost", Static).update(Text(""))
         self.p["build_step"] = len(SHELL_LESSONS)   # sentinel = done
         self.p.pop("build_checkpoint", None)
         self.p["xp"] = self.p.get("xp", 0) + 60
@@ -7945,6 +7962,7 @@ class TutorApp(App):
         self._shell_on = False
         self._shell_confirm = False
         self._shell_flash_stop()
+        self._shell_ghost_stop_timers()
         self.query_one("#shell-help", Static).remove_class("visible")
         t = getattr(self, "_shell_adv_timer", None)
         if t is not None:
@@ -7995,6 +8013,112 @@ class TutorApp(App):
             t.append("\n")
         return t
 
+    # ---- the animated ghost command hint ---------------------------------- #
+    # A prominent bar between the instructions and the terminal that types out
+    # the command you should write (char-by-char), blinks a few times to catch
+    # the eye, then settles. Every new lesson clears it and types the NEW
+    # command — the old one is never left showing.
+
+    def _shell_ghost_start(self):
+        text = ""
+        if self._shell_idx < len(SHELL_LESSONS):
+            lesson = SHELL_LESSONS[self._shell_idx]
+            if lesson.get("kind") != "info":
+                text = lesson["cmd_hint"]
+        self._shell_ghost = text
+        self._shell_ghost_typed = 0
+        self._shell_ghost_on = False
+        self._shell_ghost_stop_timers()
+        self.query_one("#shell-ghost", Static).update(self._shell_render_ghost())
+        if text:
+            self._shell_ghost_timer = self.set_interval(0.035, self._shell_ghost_tick)
+
+    def _shell_ghost_stop_timers(self):
+        t = getattr(self, "_shell_ghost_timer", None)
+        if t is not None:
+            t.stop(); self._shell_ghost_timer = None
+        b = getattr(self, "_shell_ghost_blink_timer", None)
+        if b is not None:
+            b.stop(); self._shell_ghost_blink_timer = None
+        self._shell_ghost_blink = 0
+
+    def _shell_ghost_tick(self):
+        if not self._shell_on:
+            return
+        try:
+            bar = self.query_one("#shell-ghost", Static)
+        except Exception:
+            return
+        if self._shell_ghost_typed < len(self._shell_ghost):
+            self._shell_ghost_typed += 1
+            bar.update(self._shell_render_ghost())
+            return
+        # fully typed — stop the typewriter and blink a few times
+        if self._shell_ghost_timer is not None:
+            self._shell_ghost_timer.stop(); self._shell_ghost_timer = None
+        self._shell_ghost_on = True
+        self._shell_ghost_blink = 5
+        if self._shell_ghost_blink_timer is None:
+            self._shell_ghost_blink_timer = self.set_interval(0.18, self._shell_ghost_blink_tick)
+
+    def _shell_ghost_blink_tick(self):
+        if not self._shell_on:
+            return
+        try:
+            bar = self.query_one("#shell-ghost", Static)
+        except Exception:
+            return
+        self._shell_ghost_on = not self._shell_ghost_on
+        self._shell_ghost_blink -= 1
+        bar.update(self._shell_render_ghost())
+        if self._shell_ghost_blink <= 0:
+            if self._shell_ghost_blink_timer is not None:
+                self._shell_ghost_blink_timer.stop(); self._shell_ghost_blink_timer = None
+            self._shell_ghost_on = False
+            bar.update(self._shell_render_ghost())
+
+    def _shell_ghost_blink_again(self):
+        """Re-flash the (already typed) ghost after a wrong answer — no re-typing."""
+        self._shell_ghost_typed = len(self._shell_ghost)
+        if self._shell_ghost_timer is not None:
+            self._shell_ghost_timer.stop(); self._shell_ghost_timer = None
+        self._shell_ghost_blink = 5
+        self._shell_ghost_on = True
+        if self._shell_ghost_blink_timer is None:
+            self._shell_ghost_blink_timer = self.set_interval(0.18, self._shell_ghost_blink_tick)
+        self.query_one("#shell-ghost", Static).update(self._shell_render_ghost())
+
+    def _shell_render_ghost(self):
+        if not self._shell_ghost:
+            if (self._shell_idx < len(SHELL_LESSONS)
+                    and SHELL_LESSONS[self._shell_idx].get("kind") == "info"):
+                t = Text()
+                t.append("   ⌁  ", style="bold cyan")
+                t.append("read along, then press Enter", style="dim")
+                return t
+            return Text("")
+        t = Text()
+        t.append("   ⌁  type:  ", style="bold cyan")
+        shown = self._shell_ghost[:self._shell_ghost_typed]
+        style = "bold #fbbf24" if self._shell_ghost_on else "bold #c9d1d9"
+        t.append(shown, style=style)
+        if self._shell_ghost_typed < len(self._shell_ghost):
+            t.append("▍", style="bold #22c55e")
+        return t
+
+    def _shell_wrong_hint(self, lesson):
+        """A different, increasingly-specific hint on each failed attempt, so a
+        stuck learner never hears the same sentence twice."""
+        attempts = self._shell_attempts
+        if attempts == 1:
+            return f"Not quite. Let's try again. {lesson.get('say', lesson['goal'])}"
+        if attempts == 2:
+            return f"Here's a clue. {lesson['goal']} {lesson['why']}"
+        first = lesson["cmd_hint"].split()[0]
+        spelled = " ".join(first.replace("-", " dash "))
+        return (f"Okay, the command starts with {spelled}. "
+                f"Type exactly what the ghost shows above, then press enter.")
+
     def _shell_render(self):
         self.query_one("#shell-head", Static).update(self._shell_render_head())
         self.query_one("#shell-output", Static).update(self._shell_render_term())
@@ -8021,16 +8145,6 @@ class TutorApp(App):
         t.append(lesson["goal"], style="#f0f0f5")
         t.append("\n")
         t.append(lesson["why"], style="#b0b0b8")
-        if lesson.get("kind") != "info":
-            if self._shell_idx < SHELL_GHOST_UNTIL:
-                # ghost-write hint: the exact command, faint — it fades away
-                # after the first few lessons so you type it from memory
-                t.append("\n\n")
-                t.append("⌁ ghost:  ", style="dim")
-                t.append(lesson["cmd_hint"], style="#5b6472")
-            else:
-                t.append("\n\n")
-                t.append("you know this one — type it from memory", style="dim")
         return t
 
     def _shell_render_term(self):
