@@ -4867,10 +4867,34 @@ class VolumeBar(Static):
         self.app._volume_changed(self)
 
 
+class VolumeIcon(Static):
+    """Always-visible clickable volume icon in the top bar. Shows the mute state
+    — (♪) when everything is audible, (✕) when either channel is muted — and
+    opens the fader bar when clicked (same as F4)."""
+
+    def _icon_markup(self) -> str:
+        if _VOICE_MUTED or _SFX_MUTED:
+            return "[bold red](✕)[/]"
+        return "[bold #7dd3fc](♪)[/]"
+
+    def repaint(self) -> None:
+        self.update(Text.from_markup(self._icon_markup()))
+
+    def on_mount(self) -> None:
+        self.repaint()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app.action_toggle_volume()
+
+
 class TutorApp(App):
     CSS = """
     Screen { background: #000000; }
-    #topbar { height: 3; padding: 1 2; background: $boost; }
+    #topbar-row { height: 3; background: $boost; }
+    #topbar { width: 1fr; padding: 1 2; }
+    #volume-icon { width: 5; padding: 1 1; }
+    #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
     #challenge-box { width: 30%; border: tall $accent; }
     #challenge { height: auto; min-height: 4; max-height: 12; padding: 1 2; overflow: auto; }
@@ -5122,7 +5146,9 @@ class TutorApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static("", id="topbar")
+        with Horizontal(id="topbar-row"):
+            yield Static("", id="topbar")
+            yield VolumeIcon(id="volume-icon")
         # menu view (shown on launch)
         yield Static("", id="menu-banner")
         yield Static("", id="menu-progress")
@@ -7191,7 +7217,15 @@ class TutorApp(App):
         self.p["sfx_muted"] = _SFX_MUTED
         save_progress(self.p)
         bar.repaint()
+        self._refresh_volume_icon()
         self._update_status()
+
+    def _refresh_volume_icon(self):
+        """Keep the top-bar volume icon in sync with the current mute state."""
+        try:
+            self.query_one("#volume-icon", VolumeIcon).repaint()
+        except Exception:
+            pass
 
     # ---- run / check / review -------------------------------------------- #
 
