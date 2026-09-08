@@ -2126,7 +2126,7 @@ def speak(text: str, rate: float = 1.0) -> None:
         # lesson captions, so there's only ONE model load per session.
         threading.Thread(target=_speak_synth, args=(clean, gen, rate), daemon=True).start()
     elif engine == "espeak":
-        amp = int(round(200 * master_volume()))
+        amp = int(round(200 * voice_volume()))
         if amp <= 0:
             return   # muted — keep silent (no point spawning a silent voice)
         subprocess.Popen(["espeak-ng", "-s", "150", "-a", str(amp), clean],
@@ -2260,7 +2260,7 @@ def play_raw(raw: bytes) -> None:
     already done."""
     global _PIPER_PROCS
     _kill_piper()  # stop any prior sentence's audio before this one starts
-    gain = master_volume()
+    gain = voice_volume()
     if gain <= 0.0:
         return   # muted — synthesize (for caption timing) but stay silent
     raw = _scale_raw(raw, gain)
@@ -2285,42 +2285,65 @@ def play_raw(raw: bytes) -> None:
         pass
 
 
-# ---- master volume + mute (the docked bottom volume bar) ------------------- #
-# One master fader scales EVERYTHING audible — TTS voice, keypress thocks,
-# win/fail music, chimes — and the mute icon silences it all at once.
-_MASTER_VOL = 1.0      # 0.0 .. 1.0 (the slider's remembered level)
-_MASTER_MUTED = False  # True while the mute icon is engaged
+# ---- volume faders + mute (the docked bottom volume bar) ------------------- #
+# Two independent faders: VOICE (TTS speech) and SFX (keyboard thocks, win/fail
+# music, chimes, the cat clip). Each has its own mute toggle.
+_VOICE_VOL = 1.0
+_VOICE_MUTED = False
+_SFX_VOL = 1.0
+_SFX_MUTED = False
 
 
-def master_volume() -> float:
-    """Effective playback gain: 0 when muted, otherwise the slider level."""
-    return 0.0 if _MASTER_MUTED else _MASTER_VOL
+def voice_volume() -> float:
+    """Effective TTS gain: 0 when muted, otherwise the voice fader level."""
+    return 0.0 if _VOICE_MUTED else _VOICE_VOL
 
 
-def set_master_volume(vol: float) -> None:
-    global _MASTER_VOL
-    _MASTER_VOL = max(0.0, min(1.0, vol))
+def sfx_volume() -> float:
+    """Effective SFX gain: 0 when muted, otherwise the sfx fader level."""
+    return 0.0 if _SFX_MUTED else _SFX_VOL
 
 
-def set_master_mute(muted: bool) -> None:
-    global _MASTER_MUTED
-    _MASTER_MUTED = muted
+def set_voice_volume(vol: float) -> None:
+    global _VOICE_VOL
+    _VOICE_VOL = max(0.0, min(1.0, vol))
 
 
-def toggle_master_mute() -> bool:
-    global _MASTER_MUTED
-    _MASTER_MUTED = not _MASTER_MUTED
-    return _MASTER_MUTED
+def set_sfx_volume(vol: float) -> None:
+    global _SFX_VOL
+    _SFX_VOL = max(0.0, min(1.0, vol))
+
+
+def set_voice_mute(muted: bool) -> None:
+    global _VOICE_MUTED
+    _VOICE_MUTED = muted
+
+
+def set_sfx_mute(muted: bool) -> None:
+    global _SFX_MUTED
+    _SFX_MUTED = muted
+
+
+def toggle_voice_mute() -> bool:
+    global _VOICE_MUTED
+    _VOICE_MUTED = not _VOICE_MUTED
+    return _VOICE_MUTED
+
+
+def toggle_sfx_mute() -> bool:
+    global _SFX_MUTED
+    _SFX_MUTED = not _SFX_MUTED
+    return _SFX_MUTED
 
 
 def _pa_vol(base: int) -> int:
-    """Scale a paplay 0..65536 volume by the master fader."""
-    return int(round(base * master_volume()))
+    """Scale a paplay 0..65536 volume by the SFX fader."""
+    return int(round(base * sfx_volume()))
 
 
 def _player_vol(frac: float) -> int:
-    """Scale a 0..1 fraction into a 0..100 ffplay/mpv volume."""
-    return int(round(frac * 100 * master_volume()))
+    """Scale a 0..1 fraction into a 0..100 ffplay/mpv volume (SFX fader)."""
+    return int(round(frac * 100 * sfx_volume()))
 
 
 def _scale_raw(raw: bytes, gain: float) -> bytes:
@@ -2554,8 +2577,8 @@ def play_file(path: Path, volume: float = 0.7) -> None:
     the celebration/fail sting never drowns out the coach's spoken feedback."""
     if path is None:
         return
-    if master_volume() <= 0.0:
-        return   # muted — no point spawning a silent player
+    if sfx_volume() <= 0.0:
+        return   # sfx muted — no point spawning a silent player
     p = str(path)
     vol100 = _player_vol(volume)                  # ffplay/mpv use 0..100
     vol16 = _pa_vol(int(round(volume * 65536)))   # paplay uses 0..65536
@@ -3595,15 +3618,17 @@ def load_progress() -> dict:
             p.setdefault("ghosted", [])
             p.setdefault("structure_taught", False)
             p.setdefault("topics_taught", [])
-            p.setdefault("volume", 1.0)
-            p.setdefault("muted", False)
+            # voice/sfx faders are NOT setdefault'd here — a legacy `volume`/`muted`
+            # value is honoured as the fallback in TutorApp.__init__ until the user
+            # moves a fader (which then writes the new per-channel keys).
             return p
         except Exception:
             pass
     return {"xp": 0, "done": 0, "streak": 0, "best_streak": 0,
             "topics": [], "stats": {}, "last": "", "ghosted": [],
             "structure_taught": False, "topics_taught": [],
-            "volume": 1.0, "muted": False}
+            "voice_volume": 1.0, "voice_muted": False,
+            "sfx_volume": 1.0, "sfx_muted": False}
 
 
 def challenge_stat(p: dict, title: str) -> dict:
@@ -4757,52 +4782,85 @@ class VimTrainer(Vertical):
 
 
 class VolumeBar(Static):
-    """Docked bottom volume fader: a mute toggle + a clickable level meter + %.
+    """Docked bottom volume faders: two rows — VOICE (TTS) and SFX (keyboard /
+    win-fail sounds) — each with its own mute toggle and clickable level meter.
 
-    Click the `(♪)`/`(✕)` icon to mute/unmute everything, click the meter to jump
-    straight to that level, or nudge with ←/→ (or h/l). The app auto-closes it
-    after a few idle seconds so it never lingers over the editor."""
+    Click an icon to mute that channel, click a meter to jump to a level, or use
+    the keyboard: ↑/↓ (k/j) switch the active row, ←/→ (h/l) nudge it, m/space
+    mutes it. The app auto-closes the bar after a few idle seconds."""
 
     can_focus = True
     METER_W = 22   # meter width in terminal cells
+    ICON_X = 2     # column where the (♪)/(✕) icon starts
+    METER_X = 6    # column where the meter starts
 
-    def _bar_markup(self) -> str:
-        vol = _MASTER_VOL
-        muted = _MASTER_MUTED
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._active = 0   # 0 = voice row, 1 = sfx row
+
+    def _row_markup(self, row: int, active: bool) -> str:
+        if row == 0:
+            vol, muted, label = _VOICE_VOL, _VOICE_MUTED, "VOICE"
+        else:
+            vol, muted, label = _SFX_VOL, _SFX_MUTED, "SFX"
         filled = int(round(vol * self.METER_W))
-        bar = ("█" * filled) + ("░" * (self.METER_W - filled))
+        meter = ("█" * filled) + ("░" * (self.METER_W - filled))
         if muted:
             icon = "[bold red](✕)[/]"
-            bar = f"[dim]{bar}[/]"
+            meter = f"[dim]{meter}[/]"
         else:
             icon = "[bold #7dd3fc](♪)[/]"
-        pct = int(round(vol * 100))
-        hint = "[dim]←/→ nudge · click bar to set · F4 close[/]"
-        return f"{icon} {bar} [bold]{pct:3d}%[/]  {hint}"
+        pct = f"{int(round(vol * 100)):3d}%"
+        marker = "[bold #7dd3fc]>[/]" if active else " "
+        return f"{marker} {icon} {meter} [bold]{pct}[/]  [dim]{label}[/]"
+
+    def _bar_markup(self) -> str:
+        voice = self._row_markup(0, self._active == 0)
+        sfx = self._row_markup(1, self._active == 1)
+        hint = "[dim]↑/↓ switch · ←/→ level · m mute · click to set · F4 close[/]"
+        return f"{voice}\n{sfx}\n{hint}"
 
     def repaint(self) -> None:
-        """Repaint the bar from the current master volume/mute globals."""
+        """Repaint both faders from the current voice/sfx globals."""
         self.update(Text.from_markup(self._bar_markup()))
+
+    def _row_vol(self, row: int) -> float:
+        return _VOICE_VOL if row == 0 else _SFX_VOL
+
+    def _set_row_vol(self, row: int, vol: float) -> None:
+        if row == 0:
+            set_voice_volume(vol); set_voice_mute(False)
+        else:
+            set_sfx_volume(vol); set_sfx_mute(False)
+
+    def _toggle_row_mute(self, row: int) -> None:
+        if row == 0:
+            toggle_voice_mute()
+        else:
+            toggle_sfx_mute()
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
-        x = event.x
-        if 0 <= x <= 2:                     # the mute/unmute icon
-            toggle_master_mute()
-        else:
-            i = x - 4                       # meter starts 4 cells in
-            if 0 <= i < self.METER_W:
-                set_master_volume((i + 0.5) / self.METER_W)
-                set_master_mute(False)      # raising the fader unmutes
+        x, y = event.x, event.y
+        row = 0 if y == 0 else 1
+        if self.ICON_X <= x <= self.ICON_X + 2:
+            self._toggle_row_mute(row)
+        elif self.METER_X <= x < self.METER_X + self.METER_W:
+            self._set_row_vol(row, (x - self.METER_X + 0.5) / self.METER_W)
         self.app._volume_changed(self)
 
     def on_key(self, event: events.Key) -> None:
-        if event.key in ("left", "h"):
-            set_master_volume(_MASTER_VOL - 0.05)
-        elif event.key in ("right", "l"):
-            set_master_volume(_MASTER_VOL + 0.05)
-        elif event.key in ("m", "space"):
-            toggle_master_mute()
+        k = event.key
+        if k in ("up", "k"):
+            self._active = 0
+        elif k in ("down", "j"):
+            self._active = 1
+        elif k in ("left", "h"):
+            self._set_row_vol(self._active, self._row_vol(self._active) - 0.05)
+        elif k in ("right", "l"):
+            self._set_row_vol(self._active, self._row_vol(self._active) + 0.05)
+        elif k in ("m", "space"):
+            self._toggle_row_mute(self._active)
         else:
             return
         event.stop()
@@ -4831,7 +4889,7 @@ class TutorApp(App):
     #task { height: 3; padding: 1 2; background: $accent; color: $text; }
     #cmd { dock: bottom; display: none; }
     #cmd.visible { display: block; }
-    #volume-bar { dock: bottom; height: 2; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
+    #volume-bar { dock: bottom; height: 4; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
     #volume-bar.visible { display: block; }
     #cmd.flash { border: tall yellow; background: #4d4000; }
     #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
@@ -4936,9 +4994,11 @@ class TutorApp(App):
         # every app restart (in-memory-only meant "how python works" each session)
         self._structure_taught = bool(self.p.get("structure_taught", False))
         self._topics_taught = set(self.p.get("topics_taught", []))
-        # master audio fader + mute (the docked bottom volume bar) — restored here
-        set_master_volume(float(self.p.get("volume", 1.0)))
-        set_master_mute(bool(self.p.get("muted", False)))
+        # voice + sfx faders (the docked bottom volume bar) — restored here
+        set_voice_volume(float(self.p.get("voice_volume", self.p.get("volume", 1.0))))
+        set_voice_mute(bool(self.p.get("voice_muted", self.p.get("muted", False))))
+        set_sfx_volume(float(self.p.get("sfx_volume", self.p.get("volume", 1.0))))
+        set_sfx_mute(bool(self.p.get("sfx_muted", self.p.get("muted", False))))
         self._vol_open = False         # volume bar starts closed
         self._vol_timer = None         # auto-close timer handle
         self._warmup_on = False        # post-ghost vim edit warm-up active
@@ -5374,7 +5434,9 @@ class TutorApp(App):
     def _render_menu_help(self):
         music = "[green]music ON[/]" if self.music_on else "[red]music MUTED[/]"
         voice = "[green]voice ON[/]" if (self.voice_on and self._tts) else "[red]voice OFF[/]"
-        vol = "[bold red](✕) muted[/]" if _MASTER_MUTED else f"[dim]vol[/] [bold]{int(round(_MASTER_VOL * 100))}%[/]"
+        v = "[red](✕)[/]" if _VOICE_MUTED else f"[bold]{int(round(_VOICE_VOL * 100))}%[/]"
+        s = "[red](✕)[/]" if _SFX_MUTED else f"[bold]{int(round(_SFX_VOL * 100))}%[/]"
+        vol = f"[dim]voice[/] {v} [dim]sfx[/] {s}"
         nav = ("[dim]j/k move · Enter open series · q quit[/]" if self.menu_level == "series"
                else "[dim]j/k move · Enter start · Esc back to series[/]")
         self.query_one("#menu-help", Static).update(
@@ -7006,7 +7068,11 @@ class TutorApp(App):
             label.update(f"[b]NORMAL[/b]  [dim]{fname}[/]")
             label.remove_class("insert"); label.add_class("normal")
         kc = lambda k: f"[on #3a3a3a]{k}[/]"
-        mute_badge = " [bold red](✕) muted[/]" if _MASTER_MUTED else ""
+        mute_badge = ""
+        if _VOICE_MUTED:
+            mute_badge += " [bold red](✕) voice[/]"
+        if _SFX_MUTED:
+            mute_badge += " [bold red](✕) sfx[/]"
         self.query_one("#status", Static).update(
             f"{kc('h')}{kc('j')}{kc('k')}{kc('l')} move · {kc('i')} type · "
             f"{kc(':!python3 %')} run+submit · {kc('Ctrl+n')}/{kc('Ctrl+b')} next/prev · "
@@ -7119,8 +7185,10 @@ class TutorApp(App):
     def _volume_changed(self, bar: VolumeBar):
         """VolumeBar calls this after a click/key; persist + repaint the fader."""
         self._poke_volume()
-        self.p["volume"] = _MASTER_VOL
-        self.p["muted"] = _MASTER_MUTED
+        self.p["voice_volume"] = _VOICE_VOL
+        self.p["voice_muted"] = _VOICE_MUTED
+        self.p["sfx_volume"] = _SFX_VOL
+        self.p["sfx_muted"] = _SFX_MUTED
         save_progress(self.p)
         bar.repaint()
         self._update_status()

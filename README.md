@@ -75,10 +75,11 @@ key sounds and win/fail stings. The installer also bundles the full media pack �
 32 mechanical-keypress "thock" samples, the win/fail sting library, and the
 tier-complete cat clip — into `~/.learning/`, so it's all there on day one.
 
-Press **`F4`** to open a volume bar at the bottom: click the `(♪)`/`(✕)` icon to
-mute everything (sounds + voice) at once, click the meter to jump to a level, or
-nudge with `←`/`→`. It auto-closes after a few seconds, and your level is
-remembered between sessions.
+Press **`F4`** to open the volume bar at the bottom — two faders, one for the
+**voice** and one for **sound effects** (keypresses, win/fail stings). Click an
+icon to mute that channel, click a meter to jump to a level, or use `↑`/`↓` to
+switch rows and `←`/`→` to nudge. It auto-closes after a few seconds, and both
+levels are remembered between sessions.
 
 ---
 
