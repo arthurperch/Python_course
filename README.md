@@ -8,6 +8,8 @@ local TTS voice coaching you through every step.
 - ⌨️ a real modal (vim-style) editor to type and edit your code
 - 🗣️ everything is read aloud by a **local** voice (Piper or espeak-ng)
 - 🧱 drills, worked examples, a VIM dojo, and an animated "watch it run" tracer
+- 🛠️ **BUILD STUFF** — a real bash terminal + live folder tree: make folders and
+  files, then run your own program (`pwd` → `mkdir` → `python3 hello.py`)
 - 💾 progress saved to `~/.learning/progress.json`
 
 ---

@@ -4651,6 +4651,305 @@ VIM_CHALLENGES = [
      "verify": lambda b: "   print(total)" in b.lines},
 ]
 
+
+# ============================================================================ #
+# BUILD STUFF — a real "from nothing" track: bash → files → run your own program
+# ============================================================================ #
+
+SHELL_STAGES = ["Meet the Terminal", "Files & Folders", "Write & Run",
+                "File Management", "Shells Explained"]
+
+# A tiny, deterministic fake filesystem so the learner can practice REAL bash
+# commands (pwd / ls / mkdir / cd / touch / cat / echo > / mv / cp / rm /
+# python3) WITHOUT touching the real disk. Every command is safe to run forever.
+class ShellFS:
+    """A sandboxed home directory the learner fills up over the course.
+
+    `dirs` is a set of absolute directory paths; `files` maps an absolute path
+    to its text content. `latest` remembers the last created/changed path so the
+    file tree can highlight "the thing you just made"."""
+    def __init__(self):
+        self.home = "/home/you"
+        self.cwd = self.home
+        self.dirs = {"/", "/home", "/home/you"}
+        self.files = {}
+        self.latest = None
+
+    # -- path helpers ------------------------------------------------------ #
+    def _resolve(self, path: str) -> str:
+        if path in ("", ".", "~"):
+            return self.home
+        if path == "..":
+            return "/" if self.cwd == "/" else (self.cwd.rsplit("/", 1)[0] or "/")
+        if path == "/":
+            return "/"
+        if path.startswith("/"):
+            return path.rstrip("/") or "/"
+        return (self.cwd.rstrip("/") + "/" + path).rstrip("/") or "/"
+
+    def _children(self, path: str) -> list:
+        base = path.rstrip("/") + "/"
+        names = set()
+        for d in self.dirs:
+            if d.startswith(base) and d != path:
+                rest = d[len(base):]
+                if "/" not in rest:
+                    names.add((rest, "dir"))
+        for f in self.files:
+            if f.startswith(base):
+                rest = f[len(base):]
+                if "/" not in rest:
+                    names.add((rest, "file"))
+        return sorted(names)
+
+    def tree(self):
+        """(indent, label, full_path, kind) from home down — for the live tree."""
+        out = [(0, self.home + "/", self.home, "dir")]
+        def walk(path, depth):
+            for name, kind in self._children(path):
+                full = path.rstrip("/") + "/" + name
+                out.append((depth + 1, name + ("/" if kind == "dir" else ""), full, kind))
+                if kind == "dir":
+                    walk(full, depth + 1)
+        walk(self.home, 0)
+        return out
+
+    # -- the command dispatcher -------------------------------------------- #
+    def run(self, cmdline: str):
+        """Run one line of bash. Returns (out_lines, err_lines)."""
+        err = []
+        cmdline = cmdline.strip()
+        if not cmdline:
+            return [], []
+        # echo, with optional `> file` redirect:  echo "hi" > hello.py
+        if cmdline.startswith("echo"):
+            rest = cmdline[4:].strip()
+            target = None
+            if " > " in rest:
+                left, target = rest.rsplit(" > ", 1)
+            elif rest.endswith(">") and not rest.endswith(">>"):
+                left = rest[:-1].rstrip()
+            else:
+                left = rest
+            text = left.strip()
+            if len(text) >= 2 and text[0] in ('"', "'") and text[-1] == text[0]:
+                text = text[1:-1]
+            if target is not None:
+                tp = self._resolve(target.strip())
+                if tp in self.dirs:
+                    return [], [f"bash: {target.strip()}: Is a directory"]
+                self.files[tp] = text + "\n"
+                self.latest = tp
+                return [], []          # silent success — the unix way
+            return [text], []
+        parts = cmdline.split()
+        cmd = parts[0]
+        args = parts[1:]
+        if cmd == "pwd":
+            return [self.cwd], []
+        if cmd == "ls":
+            long = any(a in ("-l", "-la", "-al", "-ahl") for a in args)
+            names = self._children(self.cwd)
+            if not names:
+                return [], []          # empty folder — silent, that's the lesson
+            if long:
+                out = []
+                for name, kind in names:
+                    if kind == "dir":
+                        out.append(f"drwxr-xr-x  2 you  you  4096  Sep  7 09:00  {name}/")
+                    else:
+                        size = len(self.files.get(self._resolve(name), ""))
+                        out.append(f"-rw-r--r--  1 you  you  {size:>5}  Sep  7 09:00  {name}")
+                return out, []
+            return [name + ("/" if kind == "dir" else "") for name, kind in names], []
+        if cmd == "mkdir":
+            if not args:
+                return [], ["mkdir: missing operand"]
+            out = []
+            for a in args:
+                p = self._resolve(a)
+                if p in self.dirs or p in self.files:
+                    out.append(f"mkdir: cannot create directory '{a}': File exists")
+                    continue
+                self.dirs.add(p)
+                self.latest = p
+            return out, []
+        if cmd == "cd":
+            if not args:
+                self.cwd = self.home
+                return [], []
+            p = self._resolve(args[0])
+            if p in self.dirs:
+                self.cwd = p
+                return [], []
+            if p in self.files:
+                return [], [f"bash: cd: {args[0]}: Not a directory"]
+            return [], [f"bash: cd: {args[0]}: No such file or directory"]
+        if cmd == "touch":
+            if not args:
+                return [], ["touch: missing file operand"]
+            for a in args:
+                p = self._resolve(a)
+                if p in self.dirs:
+                    return [], [f"touch: cannot touch '{a}': Is a directory"]
+                self.files.setdefault(p, "")
+                self.latest = p
+            return [], []
+        if cmd == "cat":
+            if not args:
+                return [], ["cat: missing operand"]
+            out = []
+            for a in args:
+                p = self._resolve(a)
+                if p in self.files:
+                    out.extend(self.files[p].rstrip("\n").split("\n"))
+                elif p in self.dirs:
+                    out.append(f"cat: {a}: Is a directory")
+                else:
+                    out.append(f"cat: {a}: No such file or directory")
+            return out, []
+        if cmd == "python3":
+            if not args:
+                return [], ["python3: no file given"]
+            p = self._resolve(args[0])
+            if p not in self.files:
+                return [], [f"python3: can't open file '{args[0]}': No such file or directory"]
+            stdout, stderr = run_lesson_code(self.files[p])
+            lines = stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else []
+            elines = stderr.rstrip("\n").split("\n") if stderr.strip() else []
+            return lines, elines
+        if cmd == "mv":
+            if len(args) != 2:
+                return [], ["mv: missing file operand"]
+            src, dst = self._resolve(args[0]), self._resolve(args[1])
+            if src not in self.files and src not in self.dirs:
+                return [], [f"mv: cannot stat '{args[0]}': No such file or directory"]
+            if src in self.files:
+                self.files[dst] = self.files.pop(src)
+            else:
+                base = src.rstrip("/") + "/"
+                self.dirs = {d for d in self.dirs if not (d == src or d.startswith(base))}
+                self.dirs.add(dst)
+                remap = {}
+                for f, c in self.files.items():
+                    if f.startswith(base):
+                        remap[dst + "/" + f[len(base):]] = c
+                    else:
+                        remap[f] = c
+                self.files = remap
+            self.latest = dst
+            return [], []
+        if cmd == "cp":
+            if len(args) != 2:
+                return [], ["cp: missing file operand"]
+            src, dst = self._resolve(args[0]), self._resolve(args[1])
+            if src not in self.files:
+                return [], [f"cp: cannot stat '{args[0]}': No such file or directory"]
+            self.files[dst] = self.files[src]
+            self.latest = dst
+            return [], []
+        if cmd == "rm":
+            recursive = any(a in ("-r", "-rf", "-fr") for a in args)
+            targets = [a for a in args if not a.startswith("-")]
+            if not targets:
+                return [], ["rm: missing operand"]
+            out = []
+            for a in targets:
+                p = self._resolve(a)
+                if p in self.dirs:
+                    if recursive:
+                        base = p.rstrip("/") + "/"
+                        self.dirs = {d for d in self.dirs if not (d == p or d.startswith(base))}
+                        self.files = {f: c for f, c in self.files.items() if not f.startswith(base)}
+                    else:
+                        out.append(f"rm: cannot remove '{a}': Is a directory")
+                elif p in self.files:
+                    del self.files[p]
+                else:
+                    out.append(f"rm: cannot remove '{a}': No such file or directory")
+            return out, []
+        if cmd in ("help", "--help", "man"):
+            return ["commands:  pwd  ls  ls -l  mkdir  cd  touch  cat  echo  python3  mv  cp  rm"], []
+        return [], [f"{cmd}: command not found"]
+
+
+# Each lesson = one real command the learner types (or an "info" read-along).
+#   expect   — exact command(s) that count as correct (whitespace-normalised)
+#   verify   — optional callable(cmd) -> bool (used when quotes make exact
+#              matching brittle, e.g. the echo-redirect lesson)
+#   cmd_hint — the command shown in "TYPE THIS" + offered as a hint on a miss
+#   goal     — what to do (on-screen, plain english)
+#   why      — the plain-english meaning (TTS reads this when the lesson starts)
+#   on_win   — TTS celebration that points out the thing the user just made
+SHELL_LESSONS = [
+    {"title": "where am I?", "stage": 0, "expect": ["pwd"], "cmd_hint": "pwd",
+     "goal": "Type  pwd  and press Enter to ask the terminal where you are.",
+     "why": "pwd means 'print working directory'. Every terminal always has one current folder, and this prints its full path.",
+     "on_win": "That's your home folder. Everything you make starts right here."},
+
+    {"title": "what's in here?", "stage": 0, "expect": ["ls"], "cmd_hint": "ls",
+     "goal": "Type  ls  and press Enter to list what's in this folder.",
+     "why": "ls means 'list'. Your home folder is empty right now, so it stays silent. That's normal — empty just means empty.",
+     "on_win": "Nothing showed up, because the folder is empty. Silent success is a real unix thing."},
+
+    {"title": "make a folder", "stage": 1, "expect": ["mkdir projects"], "cmd_hint": "mkdir projects",
+     "goal": "Make a folder called projects:   mkdir projects",
+     "why": "mkdir means 'make directory' — directory is just the full word for folder. Watch it appear in the file tree on the right.",
+     "on_win": "You just made a folder called projects. Look to the right — it's in the tree now."},
+
+    {"title": "step inside", "stage": 1, "expect": ["cd projects"], "cmd_hint": "cd projects",
+     "goal": "Move into it:   cd projects",
+     "why": "cd means 'change directory'. It moves you inside a folder. Your prompt will change to show you're now in projects.",
+     "on_win": "The prompt changed to tilde slash projects — you moved inside."},
+
+    {"title": "make a python file", "stage": 1, "expect": ["touch hello.py"], "cmd_hint": "touch hello.py",
+     "goal": "Create an empty file called hello.py:   touch hello.py",
+     "why": "touch creates an empty file. The dot-p-y ending tells the computer this is a Python program.",
+     "on_win": "You just made a file called hello.py. It's empty for now — a blank page, ready to write on."},
+
+    {"title": "look in detail", "stage": 1, "expect": ["ls -l"], "cmd_hint": "ls -l",
+     "goal": "List with details:   ls -l",
+     "why": "The dash-l flag means 'long'. It shows each file's size and when it was made. hello.py is zero bytes — nothing inside it yet.",
+     "on_win": "See the zero on the left of hello.py? That's its size — zero because it's still empty."},
+
+    {"title": "write a line into it", "stage": 2,
+     "verify": lambda c: c.startswith("echo") and "> hello.py" in c and "print" in c,
+     "cmd_hint": "echo \"print('hello from my first file!')\" > hello.py",
+     "goal": "Put a line of Python inside hello.py using  echo  and a redirect.",
+     "why": "echo prints text. The greater-than arrow redirects it INTO a file instead of the screen. That's the fast way to write files from the terminal.",
+     "on_win": "The arrow shoved that line straight into hello.py. The file is no longer empty."},
+
+    {"title": "read it back", "stage": 2, "expect": ["cat hello.py"], "cmd_hint": "cat hello.py",
+     "goal": "Show what's inside:   cat hello.py",
+     "why": "cat dumps a file's contents onto the screen. It's the fastest way to peek inside a file.",
+     "on_win": "There it is — the line you wrote. cat reads a file out loud to your screen."},
+
+    {"title": "run your first program", "stage": 2, "expect": ["python3 hello.py"], "cmd_hint": "python3 hello.py",
+     "goal": "Run it!   python3 hello.py",
+     "why": "python3 runs a Python file. This is the moment your file stops being text and becomes a real, working program.",
+     "on_win": "It ran! Your file printed hello from my first file. That's a real program."},
+
+    {"title": "rename it", "stage": 3, "expect": ["mv hello.py app.py"], "cmd_hint": "mv hello.py app.py",
+     "goal": "Rename hello.py to app.py:   mv hello.py app.py",
+     "why": "mv means 'move'. But moving a file to a new name is the same thing as renaming it — one command does both.",
+     "on_win": "hello.py is now app.py. Move and rename are the same idea in the terminal."},
+
+    {"title": "clean up", "stage": 3, "expect": ["rm app.py"], "cmd_hint": "rm app.py",
+     "goal": "Delete it:   rm app.py",
+     "why": "rm means 'remove'. It's permanent — there's no recycle bin in the terminal, so double-check before you press Enter.",
+     "on_win": "app.py is gone. rm is forever, so always look twice before you hit Enter."},
+
+    {"title": "bash vs zsh vs fish", "stage": 4, "kind": "info",
+     "goal": "A quick tour of the different shells — read along, then press Enter.",
+     "why": "bash, zsh and fish are all shells — the programs that read your commands. bash is the safe default everywhere. zsh is bash plus nicer autocomplete and themes. fish is the friendliest, with colors and suggestions out of the box. Here's the trick: ls, cd and mkdir work the SAME in every shell. You learn the commands once, and they work everywhere.",
+     "on_win": "Same commands, different bells and whistles. bash is the safe default."},
+
+    {"title": "level up: tmux", "stage": 4, "kind": "info",
+     "goal": "Meet tmux — read along, then press Enter.",
+     "why": "tmux splits one terminal into many panes side by side, so you can edit your code on the left and run your program on the right, all in one window. And if the window closes, your session survives. It's the tool professionals reach for every single day.",
+     "on_win": "One window, many panes, and no lost sessions. tmux is a real superpower."},
+]
+
 # Post-ghost vim edit warm-up: a short run of real edits the user must perform in
 # the ACTUAL editor (not the demo buffer) so the motions they just learned get
 # exercised right before the Python challenge. Each task starts from the same
@@ -4893,6 +5192,18 @@ class VimTrainer(Vertical):
         self.app._vim_on_key(event)
 
 
+class ShellTrainer(Vertical):
+    """Full-screen BUILD STUFF overlay: a fake bash terminal (left) and a live
+    folder tree (right). The learner types real commands and watches the
+    filesystem grow. The app owns all state; this widget holds focus and pipes
+    every keystroke to `app._shell_on_key` (free-text command editing)."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._shell_on_key(event)
+
+
 class VolumeBar(Static):
     """Docked bottom volume faders: two rows — VOICE (TTS) and SFX (keyboard /
     win-fail sounds) — each with its own mute toggle and clickable level meter.
@@ -5049,6 +5360,16 @@ class TutorApp(App):
     #vim-cmd { width: 100%; text-align: center; margin: 1 0; }
     #vim-kb { width: 100%; margin: 1 0; text-align: center; }
     #vim-foot { width: 100%; text-align: center; }
+    #shell { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #shell.visible { display: block; }
+    #shell-head { width: 100%; height: auto; }
+    #shell-body { width: 100%; height: 1fr; }
+    #shell-term { width: 1fr; height: 1fr; border: tall $primary; }
+    #shell-output { height: 1fr; padding: 1 2; background: #0d1117; }
+    #shell-fs { width: 30%; height: 1fr; border: tall $warning; }
+    #shell-fs-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
+    #shell-fs-tree { height: 1fr; padding: 1 2; }
+    #shell-foot { width: 100%; height: auto; margin-top: 1; }
     #cheat { width: 34%; border: tall $warning; padding: 1 2; display: none; }
     #cheat.visible { display: block; }
     #side-examples { width: 42%; border: tall $warning; padding: 0; }
@@ -5212,6 +5533,16 @@ class TutorApp(App):
         self._vim_done = False         # all challenges cleared
         self._vim_confirm = False      # "save checkpoint? Y/N" popup is showing
         self._vim_advance_timer = None # short hold showing the move before the next lesson
+        self._shell_on = False         # BUILD STUFF shell track overlay open
+        self._shell_idx = 0            # current SHELL_LESSONS index
+        self._shell_cmd = ""           # the command being typed (free text)
+        self._shell_history: list[tuple] = []   # (kind, text) terminal scrollback
+        self._shell_msg = ""           # transient feedback line (win / nudge)
+        self._shell_confirm = False    # "save checkpoint? Y/N" popup is showing
+        self._shell_flash = 0          # >0 → flash the just-made entry in the tree
+        self._shell_flash_timer = None
+        self._shell_adv_timer = None   # short hold after a win before the next lesson
+        self._shell_fs = ShellFS()
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -5332,6 +5663,15 @@ class TutorApp(App):
                 yield Static("", id="vim-cmd")
             yield Static("", id="vim-kb")
             yield Static("", id="vim-foot")
+        with ShellTrainer(id="shell"):
+            yield Static("", id="shell-head")
+            with Horizontal(id="shell-body"):
+                with Vertical(id="shell-term"):
+                    yield Static("", id="shell-output")
+                with Vertical(id="shell-fs"):
+                    yield Static("FILES", id="shell-fs-title")
+                    yield Static("", id="shell-fs-tree")
+            yield Static("", id="shell-foot")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -5467,11 +5807,38 @@ class TutorApp(App):
             return f"lesson {idx + 1}"
         return ""
 
+    def _shell_checkpoint_label(self):
+        """A one-line description of where the learner is in BUILD STUFF, or \"\"."""
+        cp = self.p.get("build_checkpoint")
+        if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
+            idx = cp["idx"]
+            if 0 <= idx < len(SHELL_LESSONS):
+                return f"lesson {idx + 1} — {SHELL_LESSONS[idx]['title']}"
+        step = self.p.get("build_step")
+        if isinstance(step, int) and step > 0 and step < len(SHELL_LESSONS):
+            return f"lesson {step + 1} — {SHELL_LESSONS[step]['title']}"
+        return ""
+
     def _render_series_list(self):
         t = Text()
         t.append("CHOOSE A SERIES", style="bold magenta")
         t.append("\n\n")
-        # VIM/NEOVIM course first (series_sel == -1)
+        # BUILD STUFF first — the "from nothing" path (series_sel == -2)
+        sel = self.series_sel == -2
+        t.append("▶ " if sel else "  ")
+        if isinstance(self.p.get("build_step"), int) and self.p["build_step"] >= len(SHELL_LESSONS):
+            t.append("✓ ", style="green")
+        t.append("BUILD STUFF", style="bold #7ee787" if sel else "#56d364")
+        t.append("   bash → files → run your own program", style="dim")
+        t.append("\n")
+        t.append("   ")
+        t.append("make folders and files in a real terminal, then run them", style="dim")
+        label = self._shell_checkpoint_label()
+        if label:
+            t.append("\n   ")
+            t.append(f"⏵ resume at {label}", style="bold yellow")
+        t.append("\n\n")
+        # VIM/NEOVIM course (series_sel == -1)
         sel = self.series_sel == -1
         t.append("▶ " if sel else "  ")
         t.append("VIM / NEOVIM COURSE", style="bold #d8b4fe" if sel else "#c9a7eb")
@@ -5530,8 +5897,8 @@ class TutorApp(App):
         self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
 
     def _preview_challenge(self):
-        if self.series_sel == -1:
-            return None   # VIM course — handled separately in _render_menu_preview
+        if self.series_sel in (-1, -2):
+            return None   # VIM / BUILD courses — handled separately in _render_menu_preview
         if self.menu_level == "series":
             g = GROUPS[self.series_sel]
             return g["challenges"][0] if g["challenges"] else None
@@ -5539,6 +5906,25 @@ class TutorApp(App):
         return g["challenges"][self.menu_sel] if 0 <= self.menu_sel < len(g["challenges"]) else None
 
     def _render_menu_preview(self):
+        if self.series_sel == -2:
+            self.query_one("#menu-preview-title", Static).update("PREVIEW — BUILD STUFF")
+            t = Text()
+            t.append("Go from nothing to a real running program.\n\n", style="#f0f0f5")
+            for line in ("a real terminal — you type the commands",
+                         "a live folder tree — watch your files appear",
+                         "make folders, make files, run your own program",
+                         "learn why bash is the one to know"):
+                t.append("• ", style="dim")
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            label = self._shell_checkpoint_label()
+            if label:
+                t.append("\n")
+                t.append(f"▶ saved checkpoint — resume at {label}", style="bold yellow")
+                t.append("\n")
+                t.append("press Enter to pick up where you left off", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
         if self.series_sel == -1:
             self.query_one("#menu-preview-title", Static).update("PREVIEW — VIM / NEOVIM COURSE")
             t = Text()
@@ -5705,7 +6091,7 @@ class TutorApp(App):
         if self.menu_level == "series":
             self.series_sel += 1
             if self.series_sel >= len(GROUPS):
-                self.series_sel = -1
+                self.series_sel = -2
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
             self.menu_sel = (self.menu_sel + 1) % n
@@ -5717,7 +6103,7 @@ class TutorApp(App):
             return
         if self.menu_level == "series":
             self.series_sel -= 1
-            if self.series_sel < -1:
+            if self.series_sel < -2:
                 self.series_sel = len(GROUPS) - 1
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
@@ -5754,6 +6140,8 @@ class TutorApp(App):
             return   # ghost overlay owns the keyboard; Esc there dismisses it
         if self._vim_on:
             return   # VIM course overlay owns the keyboard; Esc there exits it
+        if self._shell_on:
+            return   # BUILD STUFF shell overlay owns the keyboard; Esc there exits it
         if self._lesson_on:
             self._finish_lesson()
             return
@@ -5801,6 +6189,8 @@ class TutorApp(App):
             return   # ghost overlay owns the keyboard until dismissed
         if self._vim_on:
             return   # VIM course overlay owns the keyboard
+        if self._shell_on:
+            return   # BUILD STUFF shell overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -5808,6 +6198,9 @@ class TutorApp(App):
             return
         if self.mode == "menu":
             if self.menu_level == "series":
+                if self.series_sel == -2:
+                    self._shell_begin()
+                    return
                 if self.series_sel == -1:
                     self._vim_begin()
                     return
@@ -7296,6 +7689,322 @@ class TutorApp(App):
             t.append("press [Esc] — it's the key this time, not a quit", style="bold yellow")
         else:
             t.append("type the glowing key · the ghost shows where it lands · Esc exits", style="dim")
+        return t
+
+    # ---- BUILD STUFF shell track ------------------------------------------- #
+
+    def _shell_lesson(self):
+        return SHELL_LESSONS[self._shell_idx]
+
+    def _shell_prompt(self):
+        cwd = self._shell_fs.cwd
+        home = self._shell_fs.home
+        if cwd == home:
+            disp = "~"
+        elif cwd.startswith(home + "/"):
+            disp = "~" + cwd[len(home):]
+        else:
+            disp = cwd
+        return f"you@tutor:{disp}$"
+
+    def _shell_correct(self, lesson, cmd):
+        if lesson.get("verify"):
+            try:
+                return bool(lesson["verify"](cmd))
+            except Exception:
+                return False
+        ncmd = " ".join(cmd.lower().split())
+        for e in lesson.get("expect", []):
+            if " ".join(e.lower().split()) == ncmd:
+                return True
+        return False
+
+    def _shell_begin(self):
+        """Open the BUILD STUFF overlay, resuming at a saved checkpoint / step."""
+        cp = self.p.get("build_checkpoint")
+        resume = None
+        if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
+            idx = cp["idx"]
+            if 0 <= idx < len(SHELL_LESSONS):
+                resume = idx
+        if resume is None:
+            step = self.p.get("build_step")
+            if isinstance(step, int) and 0 < step < len(SHELL_LESSONS):
+                resume = step
+            else:
+                resume = 0
+        self._shell_on = True
+        self._shell_idx = resume
+        self._shell_cmd = ""
+        self._shell_history = []
+        self._shell_msg = ""
+        self._shell_confirm = False
+        self._shell_flash = 0
+        self._shell_fs = ShellFS()
+        self.query_one("#shell", ShellTrainer).add_class("visible")
+        self.query_one("#shell", ShellTrainer).focus()
+        self._shell_lesson_speak()
+        self._shell_render()
+
+    def _shell_lesson_speak(self):
+        if not self.voice_on:
+            return
+        if self._shell_idx >= len(SHELL_LESSONS):
+            return
+        lesson = self._shell_lesson()
+        if lesson.get("kind") == "info":
+            speak(_pers(lesson["why"]))
+        else:
+            speak(_pers(lesson["goal"] + " " + lesson["why"]))
+
+    def _shell_on_key(self, event):
+        if not self._shell_on:
+            return
+        event.stop(); event.prevent_default()
+        key = event.key
+        if key == "escape":
+            if self._shell_confirm:
+                self._shell_confirm = False
+                self._shell_render()
+                return
+            self._shell_confirm = True
+            self._shell_render()
+            return
+        if self._shell_confirm:
+            ch = (event.character or "").lower()
+            if ch == "y":
+                self._shell_save_checkpoint()
+                self._shell_dismiss()
+            elif ch == "n":
+                self._shell_dismiss()
+            return
+        if self._shell_idx >= len(SHELL_LESSONS):
+            return   # track complete — only Esc does anything
+        if key == "enter":
+            self._shell_submit()
+            return
+        if key == "backspace":
+            if self._shell_cmd:
+                self._shell_cmd = self._shell_cmd[:-1]
+            self._shell_render()
+            return
+        if key == "ctrl+u":
+            self._shell_cmd = ""
+            self._shell_render()
+            return
+        if key == "ctrl+l":
+            self._shell_history = []
+            self._shell_render()
+            return
+        if key == "ctrl+c":
+            return
+        if key in _VIM_MODIFIERS:
+            return
+        ch = event.character
+        if ch is not None and len(ch) == 1 and ch.isprintable():
+            self._shell_cmd += ch
+            self._shell_render()
+
+    def _shell_submit(self):
+        typed = self._shell_cmd
+        cmd = typed.strip()
+        prompt = self._shell_prompt()
+        self._shell_history.append(("cmd", (prompt, typed)))
+        self._shell_cmd = ""
+        lesson = self._shell_lesson()
+        if lesson.get("kind") == "info":
+            self._shell_advance()
+            return
+        if not cmd:
+            self._shell_render()
+            return
+        out, err = self._shell_fs.run(cmd)
+        for line in out:
+            self._shell_history.append(("out", line))
+        for line in err:
+            self._shell_history.append(("err", line))
+        if self._shell_correct(lesson, cmd):
+            play_console_result(True)
+            self._shell_history.append(("win", lesson["on_win"]))
+            self._shell_flash_start()
+            if self.voice_on:
+                speak(_pers(lesson["on_win"]))
+            self._shell_advance()
+        else:
+            play_ghost_error()
+            self._shell_history.append(("hint", "hint: type →  " + lesson["cmd_hint"]))
+            if self.voice_on:
+                speak(_pers("not quite — try " + lesson["cmd_hint"]))
+            self._shell_render()
+
+    def _shell_advance(self):
+        self._shell_render()
+        t = getattr(self, "_shell_adv_timer", None)
+        if t is not None:
+            t.stop()
+        self._shell_adv_timer = self.set_timer(1.15, self._shell_next)
+
+    def _shell_next(self):
+        self._shell_adv_timer = None
+        self._shell_idx += 1
+        if self._shell_idx >= len(SHELL_LESSONS):
+            self._shell_graduate()
+            return
+        self.p["build_step"] = self._shell_idx
+        save_progress(self.p)
+        self._shell_lesson_speak()
+        self._shell_render()
+
+    def _shell_graduate(self):
+        self._shell_flash_stop()
+        self.p["build_step"] = len(SHELL_LESSONS)   # sentinel = done
+        self.p.pop("build_checkpoint", None)
+        self.p["xp"] = self.p.get("xp", 0) + 60
+        self.p.setdefault("stats", {})
+        save_progress(self.p)
+        self._shell_msg = "BUILD STUFF COMPLETE — you can make files and run them!"
+        self._celebrate()
+        if self.voice_on:
+            speak("Track complete! You can now make folders, write files, and run your own programs in the terminal.")
+        self._shell_render()
+
+    def _shell_save_checkpoint(self):
+        self.p["build_checkpoint"] = {"idx": self._shell_idx}
+        save_progress(self.p)
+        if self.voice_on:
+            speak("Checkpoint saved. You can pick up right here later.")
+
+    def _shell_dismiss(self):
+        self._shell_on = False
+        self._shell_confirm = False
+        self._shell_flash_stop()
+        t = getattr(self, "_shell_adv_timer", None)
+        if t is not None:
+            t.stop(); self._shell_adv_timer = None
+        self.query_one("#shell", ShellTrainer).remove_class("visible")
+        self._show_menu()
+
+    def _shell_flash_start(self):
+        self._shell_flash = 6
+        if self._shell_flash_timer is None:
+            self._shell_flash_timer = self.set_interval(0.15, self._shell_flash_tick)
+
+    def _shell_flash_tick(self):
+        self._shell_flash -= 1
+        if self._shell_flash <= 0:
+            self._shell_flash = 0
+            if self._shell_flash_timer is not None:
+                self._shell_flash_timer.stop(); self._shell_flash_timer = None
+        self.query_one("#shell-fs-tree", Static).update(self._shell_render_fs())
+
+    def _shell_flash_stop(self):
+        self._shell_flash = 0
+        if self._shell_flash_timer is not None:
+            self._shell_flash_timer.stop(); self._shell_flash_timer = None
+
+    def _shell_render(self):
+        self.query_one("#shell-head", Static).update(self._shell_render_head())
+        self.query_one("#shell-output", Static).update(self._shell_render_term())
+        self.query_one("#shell-fs-tree", Static).update(self._shell_render_fs())
+        self.query_one("#shell-foot", Static).update(self._shell_render_foot())
+
+    def _shell_render_head(self):
+        t = Text()
+        if self._shell_idx >= len(SHELL_LESSONS):
+            t.append("TRACK COMPLETE", style="bold green")
+            t.append("\n\n")
+            t.append(self._shell_msg or "you can make files and run them", style="#d5d5d5")
+            t.append("\n\n")
+            t.append("Esc — back to the menu", style="dim")
+            return t
+        lesson = self._shell_lesson()
+        t.append("BUILD STUFF", style="bold #7ee787")
+        t.append(f"  {self._shell_idx + 1}/{len(SHELL_LESSONS)}", style="dim")
+        t.append("   ")
+        t.append(SHELL_STAGES[lesson.get("stage", 0)].upper(), style="bold cyan")
+        t.append("\n")
+        t.append(lesson["title"], style="bold yellow")
+        t.append("\n")
+        t.append(lesson["goal"], style="#f0f0f5")
+        t.append("\n")
+        t.append(lesson["why"], style="#b0b0b8")
+        if lesson.get("kind") != "info":
+            t.append("\n\n")
+            t.append("TYPE THIS:  ", style="dim")
+            t.append(lesson["cmd_hint"], style="bold #fbbf24")
+        return t
+
+    def _shell_render_term(self):
+        t = Text()
+        w = max(20, self.size.width - 34)
+        # info lesson — the terminal shows the read-along, then a waiting prompt
+        if self._shell_idx < len(SHELL_LESSONS) and self._shell_lesson().get("kind") == "info":
+            for line in _wrap_words(self._shell_lesson()["why"], w):
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\n")
+            t.append(self._shell_prompt() + " ", style="bold #86efac")
+            t.append(self._shell_cmd or " ", style="#f0f0f5")
+            t.append("▍", style="bold #22c55e")
+            return _box_lines(_lines_of(t))
+        for kind, text in self._shell_history[-16:]:
+            if kind == "cmd":
+                p, c = text
+                t.append(p, style="bold #86efac")
+                t.append(c, style="#f0f0f5")
+            elif kind == "out":
+                t.append(text, style="#e6e6e6")
+            elif kind == "err":
+                t.append(text, style="bold #f87171")
+            elif kind == "win":
+                t.append("✓ ", style="bold green")
+                t.append(text, style="bold #22c55e")
+            elif kind == "hint":
+                t.append(text, style="#f0c674")
+            t.append("\n")
+        t.append(self._shell_prompt() + " ", style="bold #86efac")
+        t.append(self._shell_cmd, style="#f0f0f5")
+        t.append("▍", style="bold #22c55e")
+        return _box_lines(_lines_of(t))
+
+    def _shell_render_fs(self):
+        t = Text()
+        hl = self._shell_fs.latest
+        flash = self._shell_flash
+        for indent, label, full, kind in self._shell_fs.tree():
+            t.append("  " * indent)
+            is_hl = full == hl and hl is not None
+            if is_hl:
+                style = "bold #fbbf24" if (flash and flash % 2 == 0) else "bold #22c55e"
+                t.append("▸ ", style="bold #22c55e")
+                t.append(label, style=style)
+            elif kind == "dir":
+                t.append(label, style="#9ecbff")
+            else:
+                t.append(label, style="#d5d5d5")
+            t.append("\n")
+        return t
+
+    def _shell_render_foot(self):
+        t = Text()
+        if self._shell_confirm:
+            t.append("Save a checkpoint so you can resume here later?", style="bold yellow")
+            t.append("\n")
+            t.append("[y] save & leave", style="bold green")
+            t.append("   ")
+            t.append("[n] leave without saving", style="#f0f0f5")
+            t.append("   ")
+            t.append("[Esc] keep going", style="dim")
+            return t
+        if self._shell_idx >= len(SHELL_LESSONS):
+            t.append(self._shell_msg, style="bold green")
+            t.append(" · Esc exits", style="dim")
+            return t
+        lesson = self._shell_lesson()
+        if lesson.get("kind") == "info":
+            t.append("press Enter when you've read along · Esc exits", style="dim")
+            return t
+        t.append("type the command, Enter to run · Esc exits · Ctrl+U clears the line", style="dim")
         return t
 
     def action_demo(self):
