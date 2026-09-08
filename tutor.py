@@ -4658,27 +4658,34 @@ VIM_CHALLENGES = [
 # BUILD STUFF — a real "from nothing" track: bash → files → run your own program
 # ============================================================================ #
 
-SHELL_STAGES = ["Meet the Terminal", "Files & Folders", "Write & Run",
-                "File Management", "Shells Explained"]
+SHELL_STAGES = ["Meet the Terminal", "Folders & Paths", "Make & Inspect Files",
+                "Write & Read", "Pipes & Search", "Copy, Move, Delete",
+                "Run & Build", "Shells & Tools"]
 
 # A tiny, deterministic fake filesystem so the learner can practice REAL bash
-# commands (pwd / ls / mkdir / cd / touch / cat / echo > / mv / cp / rm /
-# python3) WITHOUT touching the real disk. Every command is safe to run forever.
+# (pwd / ls / mkdir / cd / touch / cat / echo / grep / pipes / chmod / …)
+# WITHOUT touching the real disk. Every command is safe to run forever.
 class ShellFS:
     """A sandboxed home directory the learner fills up over the course.
 
     `dirs` is a set of absolute directory paths; `files` maps an absolute path
-    to its text content. `latest` remembers the last created/changed path so the
-    file tree can highlight "the thing you just made"."""
+    to its text content; `executable` marks files that `chmod +x` made runnable.
+    `latest` remembers the last changed path so the file tree can highlight it.
+    `history` records every command line, so `history` can list them back."""
+
     def __init__(self):
         self.home = "/home/you"
         self.cwd = self.home
         self.dirs = {"/", "/home", "/home/you"}
         self.files = {}
+        self.executable = set()
         self.latest = None
+        self.history: list[str] = []
 
     # -- path helpers ------------------------------------------------------ #
     def _resolve(self, path: str) -> str:
+        while path.startswith("./"):
+            path = path[2:]
         if path in ("", ".", "~"):
             return self.home
         if path == "..":
@@ -4716,179 +4723,399 @@ class ShellFS:
         walk(self.home, 0)
         return out
 
-    # -- the command dispatcher -------------------------------------------- #
-    def run(self, cmdline: str):
+    def _expand(self, args):
+        """Expand `*` globs against the cwd's names (no match → keep literal)."""
+        out = []
+        for a in args:
+            if "*" in a:
+                rx = "^" + re.escape(a).replace(r"\*", ".*") + "$"
+                m = [n for n, _ in self._children(self.cwd) if re.match(rx, n)]
+                out.extend(m if m else [a])
+            else:
+                out.append(a)
+        return out
+
+    def _read_lines(self, files, stdin_lines):
+        """Read lines from files (glob-expanded) or stdin if no files given.
+        Returns None on a missing/unreadable file (caller turns it into an error)."""
+        if not files:
+            return list(stdin_lines or [])
+        lines = []
+        for a in self._expand(files):
+            p = self._resolve(a)
+            if p in self.files:
+                lines.extend(self.files[p].rstrip("\n").split("\n"))
+            else:
+                return None
+        return lines
+
+    # -- the public entry point (handles pipes) ---------------------------- #
+    def run(self, cmdline: str, stdin_lines=None):
         """Run one line of bash. Returns (out_lines, err_lines)."""
-        err = []
         cmdline = cmdline.strip()
         if not cmdline:
             return [], []
-        # echo, with optional `> file` redirect:  echo "hi" > hello.py
-        if cmdline.startswith("echo"):
-            rest = cmdline[4:].strip()
-            target = None
-            if " > " in rest:
-                left, target = rest.rsplit(" > ", 1)
-            elif rest.endswith(">") and not rest.endswith(">>"):
-                left = rest[:-1].rstrip()
+        self.history.append(cmdline)
+        if "|" in cmdline:
+            data = stdin_lines
+            for stage in [s.strip() for s in cmdline.split("|")]:
+                out, err = self._run_one(stage, data)
+                if err:
+                    return out, err
+                data = out
+            return data, []
+        return self._run_one(cmdline, stdin_lines)
+
+    def _run_one(self, cmdline, stdin_lines=None):
+        """One command (no pipes), with `>` / `>>` redirect stripped first."""
+        cmdline = cmdline.strip()
+        if not cmdline:
+            return [], []
+        target = None
+        append = False
+        if " >> " in cmdline:
+            cmdline, target = cmdline.rsplit(" >> ", 1)
+            append = True
+        elif " > " in cmdline:
+            cmdline, target = cmdline.rsplit(" > ", 1)
+        out, err = self._dispatch(cmdline, stdin_lines)
+        if target is not None and not err:
+            tp = self._resolve(target.strip())
+            if tp in self.dirs:
+                return [], [f"bash: {target.strip()}: Is a directory"]
+            body = "\n".join(out) + ("\n" if out else "")
+            if append:
+                self.files[tp] = self.files.get(tp, "") + body
             else:
-                left = rest
-            text = left.strip()
-            if len(text) >= 2 and text[0] in ('"', "'") and text[-1] == text[0]:
-                text = text[1:-1]
-            if target is not None:
-                tp = self._resolve(target.strip())
-                if tp in self.dirs:
-                    return [], [f"bash: {target.strip()}: Is a directory"]
-                self.files[tp] = text + "\n"
-                self.latest = tp
-                return [], []          # silent success — the unix way
-            return [text], []
+                self.files[tp] = body
+            self.latest = tp
+            return [], []
+        return out, err
+
+    def _dispatch(self, cmdline, stdin_lines=None):
         parts = cmdline.split()
+        if not parts:
+            return [], []
         cmd = parts[0]
         args = parts[1:]
+        if cmd == "echo":
+            text = cmdline[4:].strip()
+            if len(text) >= 2 and text[0] in ('"', "'") and text[-1] == text[0]:
+                text = text[1:-1]
+            return [text], []
         if cmd == "pwd":
             return [self.cwd], []
+        if cmd == "whoami":
+            return ["you"], []
+        if cmd == "clear":
+            return ["__CLEAR__"], []
+        if cmd == "history":
+            return [f"{i+1:>3}  {c}" for i, c in enumerate(self.history[-15:])], []
         if cmd == "ls":
-            long = any(a in ("-l", "-la", "-al", "-ahl") for a in args)
-            names = self._children(self.cwd)
-            if not names:
-                return [], []          # empty folder — silent, that's the lesson
-            if long:
-                out = []
-                for name, kind in names:
-                    if kind == "dir":
-                        out.append(f"drwxr-xr-x  2 you  you  4096  Sep  7 09:00  {name}/")
-                    else:
-                        size = len(self.files.get(self._resolve(name), ""))
-                        out.append(f"-rw-r--r--  1 you  you  {size:>5}  Sep  7 09:00  {name}")
-                return out, []
-            return [name + ("/" if kind == "dir" else "") for name, kind in names], []
+            return self._ls(args), []
         if cmd == "mkdir":
-            if not args:
-                return [], ["mkdir: missing operand"]
-            out = []
-            for a in args:
-                p = self._resolve(a)
-                if p in self.dirs or p in self.files:
-                    out.append(f"mkdir: cannot create directory '{a}': File exists")
-                    continue
-                self.dirs.add(p)
-                self.latest = p
-            return out, []
+            return self._mkdir(args)
         if cmd == "cd":
-            if not args:
-                self.cwd = self.home
-                return [], []
-            p = self._resolve(args[0])
-            if p in self.dirs:
-                self.cwd = p
-                return [], []
-            if p in self.files:
-                return [], [f"bash: cd: {args[0]}: Not a directory"]
-            return [], [f"bash: cd: {args[0]}: No such file or directory"]
+            return self._cd(args)
         if cmd == "touch":
-            if not args:
-                return [], ["touch: missing file operand"]
-            for a in args:
-                p = self._resolve(a)
-                if p in self.dirs:
-                    return [], [f"touch: cannot touch '{a}': Is a directory"]
-                self.files.setdefault(p, "")
-                self.latest = p
-            return [], []
+            return self._touch(args)
         if cmd == "cat":
-            if not args:
-                return [], ["cat: missing operand"]
-            out = []
-            for a in args:
-                p = self._resolve(a)
-                if p in self.files:
-                    out.extend(self.files[p].rstrip("\n").split("\n"))
-                elif p in self.dirs:
-                    out.append(f"cat: {a}: Is a directory")
-                else:
-                    out.append(f"cat: {a}: No such file or directory")
-            return out, []
+            return self._cat(args, stdin_lines)
+        if cmd in ("head", "tail"):
+            return self._head_tail(cmd, args, stdin_lines)
+        if cmd == "wc":
+            return self._wc(args, stdin_lines)
+        if cmd == "grep":
+            return self._grep(args, stdin_lines)
         if cmd == "python3":
-            if not args:
-                return [], ["python3: no file given"]
-            p = self._resolve(args[0])
-            if p not in self.files:
-                return [], [f"python3: can't open file '{args[0]}': No such file or directory"]
-            stdout, stderr = run_lesson_code(self.files[p])
-            lines = stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else []
-            elines = stderr.rstrip("\n").split("\n") if stderr.strip() else []
-            return lines, elines
+            return self._python(args)
         if cmd == "mv":
-            if len(args) != 2:
-                return [], ["mv: missing file operand"]
-            src, dst = self._resolve(args[0]), self._resolve(args[1])
-            if src not in self.files and src not in self.dirs:
-                return [], [f"mv: cannot stat '{args[0]}': No such file or directory"]
-            if src in self.files:
-                self.files[dst] = self.files.pop(src)
-            else:
-                base = src.rstrip("/") + "/"
-                self.dirs = {d for d in self.dirs if not (d == src or d.startswith(base))}
-                self.dirs.add(dst)
-                remap = {}
-                for f, c in self.files.items():
-                    if f.startswith(base):
-                        remap[dst + "/" + f[len(base):]] = c
-                    else:
-                        remap[f] = c
-                self.files = remap
-            self.latest = dst
-            return [], []
+            return self._mv(args)
         if cmd == "cp":
-            if len(args) != 2:
-                return [], ["cp: missing file operand"]
-            src, dst = self._resolve(args[0]), self._resolve(args[1])
-            if src not in self.files:
-                return [], [f"cp: cannot stat '{args[0]}': No such file or directory"]
-            self.files[dst] = self.files[src]
-            self.latest = dst
-            return [], []
+            return self._cp(args)
         if cmd == "rm":
-            recursive = any(a in ("-r", "-rf", "-fr") for a in args)
-            targets = [a for a in args if not a.startswith("-")]
-            if not targets:
-                return [], ["rm: missing operand"]
-            out = []
-            for a in targets:
-                p = self._resolve(a)
-                if p in self.dirs:
-                    if recursive:
-                        base = p.rstrip("/") + "/"
-                        self.dirs = {d for d in self.dirs if not (d == p or d.startswith(base))}
-                        self.files = {f: c for f, c in self.files.items() if not f.startswith(base)}
-                    else:
-                        out.append(f"rm: cannot remove '{a}': Is a directory")
-                elif p in self.files:
-                    del self.files[p]
-                else:
-                    out.append(f"rm: cannot remove '{a}': No such file or directory")
-            return out, []
-        if cmd in ("help", "--help", "man"):
-            return ["commands:  pwd  ls  ls -l  mkdir  cd  touch  cat  echo  python3  mv  cp  rm"], []
+            return self._rm(args)
+        if cmd == "chmod":
+            return self._chmod(args)
+        if cmd in ("man", "help", "--help"):
+            return ["commands:  pwd  ls  mkdir  cd  touch  cat  echo  head  tail  wc  grep  "
+                    "python3  mv  cp  rm  chmod  whoami  clear  history"], []
+        if cmd.startswith("./") or cmd.startswith("/"):
+            return self._run_executable(cmd)
         return [], [f"{cmd}: command not found"]
 
+    # -- individual commands ------------------------------------------------ #
+    def _human(self, n):
+        if n >= 1024:
+            return f"{round(n / 1024, 1)}K"
+        return f"{n}B"
 
-# Each lesson = one real command the learner types (or an "info" read-along).
-#   expect   — exact command(s) that count as correct (whitespace-normalised)
-#   verify   — optional callable(cmd) -> bool (used when quotes make exact
-#              matching brittle, e.g. the echo-redirect lesson)
-#   cmd_hint — the command shown in "TYPE THIS" + offered as a hint on a miss
-#   goal     — what to do (on-screen, plain english)
-#   why      — the plain-english meaning (TTS reads this when the lesson starts)
-#   on_win   — TTS celebration that points out the thing the user just made
+    def _ls(self, args):
+        flags = [a for a in args if a.startswith("-") and len(a) > 1]
+        pos = [a for a in args if not (a.startswith("-") and len(a) > 1)]
+        show_hidden = any("a" in f for f in flags)
+        long = any("l" in f for f in flags)
+        human = any("h" in f for f in flags)
+        if pos:
+            names = set()
+            for p in pos:
+                if "*" in p:
+                    rx = "^" + re.escape(p).replace(r"\*", ".*") + "$"
+                    names.update((n, k) for n, k in self._children(self.cwd) if re.match(rx, n))
+                else:
+                    full = self._resolve(p)
+                    if full in self.dirs:
+                        names.add((p.rstrip("/") + "/", "dir"))
+                    elif full in self.files:
+                        names.add((p, "file"))
+            names = sorted(names)
+        else:
+            names = self._children(self.cwd)
+        if not show_hidden:
+            names = [(n, k) for n, k in names if not n.startswith(".")]
+        if not names:
+            return []
+        if long:
+            out = []
+            for name, kind in names:
+                if kind == "dir":
+                    out.append(f"drwxr-xr-x  2 you  you  4096  Sep  7 09:00  {name}/")
+                else:
+                    size = len(self.files.get(self._resolve(name), ""))
+                    mode = "-rwxr-xr-x" if self._resolve(name) in self.executable else "-rw-r--r--"
+                    s = self._human(size) if human else f"{size:>5}"
+                    out.append(f"{mode}  1 you  you  {s}  Sep  7 09:00  {name}")
+            return out
+        return [name + ("/" if kind == "dir" else "") for name, kind in names]
+
+    def _mkdir(self, args):
+        parents = "-p" in args
+        targets = [a for a in args if not a.startswith("-")]
+        if not targets:
+            return [], ["mkdir: missing operand"]
+        out = []
+        for a in targets:
+            p = self._resolve(a)
+            if (p in self.dirs or p in self.files) and not parents:
+                out.append(f"mkdir: cannot create directory '{a}': File exists")
+                continue
+            if parents:
+                cur = "/"
+                for seg in p.strip("/").split("/"):
+                    cur = (cur.rstrip("/") + "/" + seg).rstrip("/") or "/"
+                    self.dirs.add(cur)
+            else:
+                self.dirs.add(p)
+            self.latest = p
+        return out, []
+
+    def _cd(self, args):
+        if not args:
+            self.cwd = self.home
+            return [], []
+        p = self._resolve(args[0])
+        if p in self.dirs:
+            self.cwd = p
+            return [], []
+        if p in self.files:
+            return [], [f"bash: cd: {args[0]}: Not a directory"]
+        return [], [f"bash: cd: {args[0]}: No such file or directory"]
+
+    def _touch(self, args):
+        expanded = self._expand(args)
+        if not expanded:
+            return [], ["touch: missing file operand"]
+        for a in expanded:
+            p = self._resolve(a)
+            if p in self.dirs:
+                return [], [f"touch: cannot touch '{a}': Is a directory"]
+            self.files.setdefault(p, "")
+            self.latest = p
+        return [], []
+
+    def _cat(self, args, stdin_lines):
+        if not args:
+            return list(stdin_lines or []), []
+        out = []
+        for a in self._expand(args):
+            p = self._resolve(a)
+            if p in self.files:
+                out.extend(self.files[p].rstrip("\n").split("\n"))
+            elif p in self.dirs:
+                out.append(f"cat: {a}: Is a directory")
+            else:
+                out.append(f"cat: {a}: No such file or directory")
+        return out, []
+
+    def _head_tail(self, cmd, args, stdin_lines):
+        n = 10
+        files = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-n" and i + 1 < len(args):
+                n = int(args[i + 1]); i += 2
+            elif a.startswith("-n"):
+                n = int(a[2:]); i += 1
+            elif re.fullmatch(r"-\d+", a):
+                n = int(a[1:]); i += 1
+            elif a.startswith("-"):
+                i += 1
+            else:
+                files.append(a); i += 1
+        lines = self._read_lines(files, stdin_lines)
+        if lines is None:
+            return [], [f"{cmd}: No such file or directory"]
+        return (lines[:n] if cmd == "head" else lines[-n:]), []
+
+    def _wc(self, args, stdin_lines):
+        count_lines = "-l" in args
+        files = [a for a in args if not a.startswith("-")]
+        lines = self._read_lines(files, stdin_lines)
+        if lines is None:
+            return [], ["wc: No such file or directory"]
+        if count_lines:
+            return [str(len(lines))], []
+        words = sum(len(l.split()) for l in lines)
+        chars = sum(len(l) for l in lines)
+        name = (" " + files[0]) if files else ""
+        return [f"  {len(lines)}  {words}  {chars}{name}"], []
+
+    def _grep(self, args, stdin_lines):
+        flags = [a for a in args if a.startswith("-") and len(a) > 1]
+        pos = [a for a in args if not (a.startswith("-") and len(a) > 1)]
+        if not pos:
+            return [], ["grep: missing pattern"]
+        pattern = pos[0]
+        files = pos[1:]
+        lines = self._read_lines(files, stdin_lines)
+        if lines is None:
+            return [], ["grep: No such file or directory"]
+        rx = re.compile(re.escape(pattern), re.IGNORECASE if "-i" in flags else 0)
+        show_num = "-n" in flags
+        out = []
+        for idx, line in enumerate(lines, 1):
+            if rx.search(line):
+                out.append(f"{idx}:{line}" if show_num else line)
+        return out, []
+
+    def _python(self, args):
+        if not args:
+            return [], ["python3: no file given"]
+        p = self._resolve(args[0])
+        if p not in self.files:
+            return [], [f"python3: can't open file '{args[0]}': No such file or directory"]
+        stdout, stderr = run_lesson_code(self.files[p])
+        lines = stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else []
+        elines = stderr.rstrip("\n").split("\n") if stderr.strip() else []
+        return lines, elines
+
+    def _run_executable(self, cmd):
+        p = self._resolve(cmd)
+        if p not in self.files:
+            return [], [f"bash: {cmd}: No such file or directory"]
+        if p not in self.executable:
+            return [], [f"bash: {cmd}: Permission denied"]
+        stdout, stderr = run_lesson_code(self.files[p])
+        lines = stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else []
+        elines = stderr.rstrip("\n").split("\n") if stderr.strip() else []
+        return lines, elines
+
+    def _mv(self, args):
+        if len(args) != 2:
+            return [], ["mv: missing file operand"]
+        src, dst = self._resolve(args[0]), self._resolve(args[1])
+        if src not in self.files and src not in self.dirs:
+            return [], [f"mv: cannot stat '{args[0]}': No such file or directory"]
+        if src in self.files:
+            self.files[dst] = self.files.pop(src)
+            if src in self.executable:
+                self.executable.discard(src)
+        else:
+            base = src.rstrip("/") + "/"
+            self.dirs = {d for d in self.dirs if not (d == src or d.startswith(base))}
+            self.dirs.add(dst)
+            remap = {}
+            for f, c in self.files.items():
+                if f.startswith(base):
+                    remap[dst + "/" + f[len(base):]] = c
+                else:
+                    remap[f] = c
+            self.files = remap
+        self.latest = dst
+        return [], []
+
+    def _cp(self, args):
+        if len(args) != 2:
+            return [], ["cp: missing file operand"]
+        src, dst = self._resolve(args[0]), self._resolve(args[1])
+        if src not in self.files:
+            return [], [f"cp: cannot stat '{args[0]}': No such file or directory"]
+        self.files[dst] = self.files[src]
+        self.latest = dst
+        return [], []
+
+    def _rm(self, args):
+        recursive = any(a in ("-r", "-rf", "-fr") for a in args)
+        targets = [a for a in args if not a.startswith("-")]
+        if not targets:
+            return [], ["rm: missing operand"]
+        out = []
+        for a in targets:
+            p = self._resolve(a)
+            if p in self.dirs:
+                if recursive:
+                    base = p.rstrip("/") + "/"
+                    self.dirs = {d for d in self.dirs if not (d == p or d.startswith(base))}
+                    self.files = {f: c for f, c in self.files.items() if not f.startswith(base)}
+                    self.executable = {f for f in self.executable if not f.startswith(base)}
+                else:
+                    out.append(f"rm: cannot remove '{a}': Is a directory")
+            elif p in self.files:
+                del self.files[p]
+                self.executable.discard(p)
+            else:
+                out.append(f"rm: cannot remove '{a}': No such file or directory")
+        return out, []
+
+    def _chmod(self, args):
+        if not args:
+            return [], ["chmod: missing operand"]
+        mode = args[0]
+        targets = self._expand(args[1:])
+        if "+x" in mode or "u+x" in mode or "a+x" in mode:
+            for t in targets:
+                p = self._resolve(t)
+                if p in self.files:
+                    self.executable.add(p)
+                    self.latest = p
+            return [], []
+        return [], [f"chmod: invalid mode: '{mode}'"]
+
+
+# Each lesson = one real command the learner types (or "info" read-along, or a
+# "challenge" with no ghost hint).
+#   expect    — exact command(s) that count as correct (whitespace-normalised)
+#   verify    — optional callable(cmd) -> bool (when quotes make exact match brittle)
+#   verify_fs — optional callable(fs) -> bool (challenges: check the filesystem)
+#   cmd_hint  — the exact command (the ghost + the "here's the answer" hint)
+#   goal      — what to do (on-screen, plain english)
+#   say       — the spoken instruction (plain english, NEVER spells the command)
+#   why       — the plain-english meaning (TTS reads this too)
+#   on_win    — TTS celebration that points out the thing the user just made
 SHELL_LESSONS = [
+    # ---- stage 0: Meet the Terminal -------------------------------------- #
     {"title": "where am I?", "stage": 0, "expect": ["pwd"], "cmd_hint": "pwd",
      "goal": "Ask the terminal where you are.",
      "say": "Write the print working directory command. The question mark icon up top opens a bash manual whenever you need it.",
      "why": "pwd means 'print working directory'. Every terminal always has one current folder, and this prints its full path.",
      "on_win": "That's your home folder. Everything you make starts right here."},
+
+    {"title": "who's typing?", "stage": 0, "expect": ["whoami"], "cmd_hint": "whoami",
+     "goal": "Ask the terminal who is logged in.",
+     "say": "Write the command that tells you who is logged in.",
+     "why": "The who-am-I command tells you what user you're running as. Right now, that's you.",
+     "on_win": "It says 'you'. On your real machine it would say your real username."},
 
     {"title": "what's in here?", "stage": 0, "expect": ["ls"], "cmd_hint": "ls",
      "goal": "See what's in this folder.",
@@ -4896,11 +5123,24 @@ SHELL_LESSONS = [
      "why": "ls means 'list'. Your home folder is empty right now, so it stays silent. That's normal — empty just means empty.",
      "on_win": "Nothing showed up, because the folder is empty. Silent success is a real unix thing."},
 
+    {"title": "say hi back", "stage": 0, "expect": ["echo \"hello tutor\"", "echo hello tutor"], "cmd_hint": "echo \"hello tutor\"",
+     "goal": "Make the terminal say 'hello tutor' back to you.",
+     "say": "Write the command that makes the terminal repeat a message back.",
+     "why": "echo is the terminal's way of talking back — whatever you give it, it prints right back on the next line.",
+     "on_win": "The terminal talked back! echo prints whatever you hand it."},
+
+    {"title": "wipe the screen", "stage": 0, "expect": ["clear"], "cmd_hint": "clear",
+     "goal": "Clear the clutter off the screen.",
+     "say": "Write the command that wipes the screen clean.",
+     "why": "When the screen fills up, this command clears it and drops your prompt back to the top. It's the 'tidy up' key.",
+     "on_win": "Sparkly clean. Now you have a fresh, empty terminal."},
+
+    # ---- stage 1: Folders & Paths ---------------------------------------- #
     {"title": "make a folder", "stage": 1, "expect": ["mkdir projects"], "cmd_hint": "mkdir projects",
      "goal": "Make a folder called projects.",
      "say": "Write the make directory command, to make a folder called projects.",
      "why": "mkdir means 'make directory' — directory is just the full word for folder. Watch it appear in the file tree on the right.",
-     "on_win": "You just made a folder called projects. Look to the right — it's in the tree now."},
+     "on_win": "You just made a folder called projects. Look right — it's in the tree now."},
 
     {"title": "step inside", "stage": 1, "expect": ["cd projects"], "cmd_hint": "cd projects",
      "goal": "Step inside the projects folder.",
@@ -4908,75 +5148,234 @@ SHELL_LESSONS = [
      "why": "cd means 'change directory'. It moves you inside a folder. Your prompt will change to show you're now in projects.",
      "on_win": "The prompt changed to tilde slash projects — you moved inside."},
 
-    {"title": "make a python file", "stage": 1, "expect": ["touch hello.py"], "cmd_hint": "touch hello.py",
-     "goal": "Create an empty file called hello.py.",
-     "say": "Write the command that makes an empty file, called hello.py.",
-     "why": "touch creates an empty file. The dot-p-y ending tells the computer this is a Python program.",
-     "on_win": "You just made a file called hello.py. It's empty for now — a blank page, ready to write on."},
+    {"title": "folders inside folders", "stage": 1, "expect": ["mkdir -p app/src"], "cmd_hint": "mkdir -p app/src",
+     "goal": "Make app/src — two nested folders, in one shot.",
+     "say": "Write the make directory command with the parents flag, to build nested folders in one go.",
+     "why": "The dash-p flag means 'parents' — it makes every folder in the path at once. Without it, you'd have to make app, then src, one at a time.",
+     "on_win": "Boom — app and src both appeared at once. That's the parents flag earning its keep."},
 
-    {"title": "look in detail", "stage": 1, "expect": ["ls -l"], "cmd_hint": "ls -l",
+    {"title": "see what you built", "stage": 1, "expect": ["ls"], "cmd_hint": "ls",
+     "goal": "List what's in projects now.",
+     "say": "Write the list command to see what you just made.",
+     "why": "ls again — but now it has something to show: the app folder you made. Folders show up with a slash on the end.",
+     "on_win": "There's app/ with its slash. That trailing slash is how you spot a folder at a glance."},
+
+    {"title": "go deeper", "stage": 1, "expect": ["cd app"], "cmd_hint": "cd app",
+     "goal": "Step inside the app folder.",
+     "say": "Write the change directory command, to step into app.",
+     "why": "cd again — you can keep going down, one folder at a time, as deep as you like.",
+     "on_win": "You're inside app now. The prompt shows how deep you've gone."},
+
+    {"title": "back up a level", "stage": 1, "expect": ["cd .."], "cmd_hint": "cd ..",
+     "goal": "Go back up to the projects folder.",
+     "say": "Write the change directory command with two dots, to go back up one level.",
+     "why": "Two dots always mean 'the parent folder'. It's how you climb back out of whatever folder you dove into.",
+     "on_win": "The prompt shortened — you climbed back up one level."},
+
+    # ---- stage 2: Make & Inspect Files ------------------------------------ #
+    {"title": "make a python file", "stage": 2, "expect": ["touch hello.py"], "cmd_hint": "touch hello.py",
+     "goal": "Create an empty file called hello.py.",
+     "say": "Write the command that makes an empty file, called hello dot p y.",
+     "why": "touch creates an empty file. The dot-p-y ending tells the computer this is a Python program.",
+     "on_win": "You just made a file called hello.py. It's empty for now — a blank page."},
+
+    {"title": "see your files", "stage": 2, "expect": ["ls"], "cmd_hint": "ls",
+     "goal": "List everything in projects — files and folders together.",
+     "say": "Write the list command to see your new file.",
+     "why": "Now ls shows both: hello.py (no slash, it's a file) and app/ (slash, it's a folder). Files and folders, side by side.",
+     "on_win": "hello.py is in there. No slash on it — because it's a file, not a folder."},
+
+    {"title": "the long view", "stage": 2, "expect": ["ls -l"], "cmd_hint": "ls -l",
      "goal": "Look at hello.py with all its details.",
      "say": "Write the list command with the long flag, for the detailed view.",
-     "why": "The dash-l flag means 'long'. It shows each file's size and when it was made. hello.py is zero bytes — nothing inside it yet.",
+     "why": "The dash-l flag means 'long'. It shows each file's size, owner, and when it was made. hello.py is zero bytes — nothing inside yet.",
      "on_win": "See the zero on the left of hello.py? That's its size — zero because it's still empty."},
 
-    {"title": "write a line into it", "stage": 2,
+    {"title": "make a hidden file", "stage": 2, "expect": ["touch .secret"], "cmd_hint": "touch .secret",
+     "goal": "Make a file called .secret — but start the name with a dot.",
+     "say": "Write the make-a-file command, but start the name with a dot to make it hidden.",
+     "why": "Any file whose name starts with a dot is hidden. Config files do this all the time — they're there, just tucked away.",
+     "on_win": "You made .secret. Now here's the magic part — watch it disappear."},
+
+    {"title": "reveal hidden files", "stage": 2, "expect": ["ls -a"], "cmd_hint": "ls -a",
+     "goal": "Show EVERYTHING, including the hidden files.",
+     "say": "Write the list command with the all flag, to reveal the hidden files.",
+     "why": "The dash-a flag means 'all' — it shows hidden dot-files that plain ls keeps secret. .secret is in there now, front and center.",
+     "on_win": "There's .secret — it was hiding in plain sight. dash-a reveals everything."},
+
+    {"title": "human sizes", "stage": 2, "expect": ["ls -lh"], "cmd_hint": "ls -lh",
+     "goal": "List with long + human-readable sizes.",
+     "say": "Write the list command with the long and human flags, for friendly sizes.",
+     "why": "The dash-h flag means 'human'. Instead of a raw number of bytes, it shows 0B, 4K, 2M — sizes you can actually read.",
+     "on_win": "Now the sizes read like a human wrote them. Flags stack — l and h together."},
+
+    # ---- stage 3: Write & Read ------------------------------------------- #
+    {"title": "put a line in", "stage": 3,
      "verify": lambda c: c.startswith("echo") and "> hello.py" in c and "print" in c,
      "cmd_hint": "echo \"print('hello from my first file!')\" > hello.py",
      "goal": "Put a line of Python inside hello.py.",
      "say": "Write the command that writes a line into hello.py, using a redirect arrow.",
-     "why": "echo prints text. The greater-than arrow redirects it INTO a file instead of the screen. That's the fast way to write files from the terminal.",
+     "why": "echo prints text. The greater-than arrow redirects it INTO a file instead of the screen. That's the fast way to write files.",
      "on_win": "The arrow shoved that line straight into hello.py. The file is no longer empty."},
 
-    {"title": "read it back", "stage": 2, "expect": ["cat hello.py"], "cmd_hint": "cat hello.py",
+    {"title": "read it back", "stage": 3, "expect": ["cat hello.py"], "cmd_hint": "cat hello.py",
      "goal": "Show what's inside hello.py.",
      "say": "Write the command that reads a file back, to show hello.py.",
      "why": "cat dumps a file's contents onto the screen. It's the fastest way to peek inside a file.",
      "on_win": "There it is — the line you wrote. cat reads a file out loud to your screen."},
 
-    {"title": "run your first program", "stage": 2, "expect": ["python3 hello.py"], "cmd_hint": "python3 hello.py",
+    {"title": "just the first line", "stage": 3, "expect": ["head -1 hello.py", "head -n 1 hello.py"], "cmd_hint": "head -1 hello.py",
+     "goal": "Show only the first line of hello.py.",
+     "say": "Write the command that shows the top of a file, with a one to get just the first line.",
+     "why": "head shows the beginning of a file. The number tells it how many lines — so dash-one means 'just the first line'.",
+     "on_win": "Just the first line. head is how you peek at a big file without reading all of it."},
+
+    {"title": "count the lines", "stage": 3, "expect": ["wc -l hello.py"], "cmd_hint": "wc -l hello.py",
+     "goal": "Count how many lines hello.py has.",
+     "say": "Write the counting command with the lines flag, to count the lines in hello.py.",
+     "why": "wc stands for 'word count', but with the dash-l flag it counts LINES instead. It's the fastest way to ask 'how big is this file?'",
+     "on_win": "It counted one line. wc is a tiny calculator for your files."},
+
+    {"title": "make a copy", "stage": 3, "expect": ["cp hello.py backup.py"], "cmd_hint": "cp hello.py backup.py",
+     "goal": "Copy hello.py into a new file called backup.py.",
+     "say": "Write the copy command, to duplicate hello.py into backup dot p y.",
+     "why": "cp means 'copy'. You give it a source and a destination, and it duplicates the file. Backups are how pros sleep at night.",
+     "on_win": "backup.py appeared. Two copies now — the original and its backup."},
+
+    # ---- stage 4: Pipes & Search ----------------------------------------- #
+    {"title": "count with a pipe", "stage": 4, "expect": ["ls | wc -l"], "cmd_hint": "ls | wc -l",
+     "goal": "Count how many things are in this folder — using a pipe.",
+     "say": "Write the list command, piped into the counting command, to count your files.",
+     "why": "The pipe | takes the output of one command and feeds it into the next. ls lists things, and wc -l counts the lines. Chained together, they count your files.",
+     "on_win": "That number is how many files and folders you have. The pipe is the biggest power move in bash."},
+
+    {"title": "find a word", "stage": 4, "expect": ["grep print hello.py"], "cmd_hint": "grep print hello.py",
+     "goal": "Search hello.py for the word 'print'.",
+     "say": "Write the search command, to find the word print inside hello.py.",
+     "why": "grep searches text and prints only the lines that match. Give it a word and a file, and it finds every line containing that word.",
+     "on_win": "There's the matching line. grep is how you hunt through files instantly."},
+
+    {"title": "pipe into search", "stage": 4, "expect": ["cat hello.py | grep print"], "cmd_hint": "cat hello.py | grep print",
+     "goal": "Read hello.py and pipe it straight into a search for 'print'.",
+     "say": "Pipe the file into the search command — read it, then the pipe, then search for print.",
+     "why": "cat reads the file, then the pipe feeds that text into grep. Two commands, one pipeline — read and search in a single breath.",
+     "on_win": "You just chained read and search together. That's the pipe doing real work."},
+
+    {"title": "search, ignore case", "stage": 4, "expect": ["grep -i HELLO hello.py", "grep -i hello hello.py"], "cmd_hint": "grep -i HELLO hello.py",
+     "goal": "Find 'HELLO' in hello.py — even though it's lowercase in the file.",
+     "say": "Write the search command with the ignore-case flag, to find hello no matter the case.",
+     "why": "The dash-i flag means 'ignore case'. Without it, HELLO and hello are different; with it, grep matches both.",
+     "on_win": "dash-i ignored the case and found it. Search just got a lot more forgiving."},
+
+    # ---- stage 5: Copy, Move, Delete -------------------------------------- #
+    {"title": "rename the copy", "stage": 5, "expect": ["mv backup.py old.py"], "cmd_hint": "mv backup.py old.py",
+     "goal": "Rename backup.py to old.py.",
+     "say": "Write the move command, to rename backup dot p y to old dot p y.",
+     "why": "mv means 'move' — but moving a file to a new name is the same thing as renaming it. One command does both.",
+     "on_win": "backup.py is now old.py. Move and rename are the same idea in the terminal."},
+
+    {"title": "delete it", "stage": 5, "expect": ["rm old.py"], "cmd_hint": "rm old.py",
+     "goal": "Delete old.py.",
+     "say": "Write the remove command, to delete old dot p y.",
+     "why": "rm means 'remove'. It's permanent — no recycle bin in the terminal, so double-check before you hit Enter.",
+     "on_win": "old.py is gone. rm is forever, so always look twice before you press Enter."},
+
+    {"title": "delete a whole folder", "stage": 5, "expect": ["rm -r app"], "cmd_hint": "rm -r app",
+     "goal": "Delete the app folder — and everything inside it.",
+     "say": "Write the remove command with the recursive flag, to delete the whole app folder.",
+     "why": "rm can't remove a folder by itself — you need dash-r for 'recursive', which deletes the folder AND everything inside. This is the dangerous one.",
+     "on_win": "app is gone, src and all. Recursive remove is powerful — treat it with respect."},
+
+    # ---- stage 6: Run & Build -------------------------------------------- #
+    {"title": "run your program", "stage": 6, "expect": ["python3 hello.py"], "cmd_hint": "python3 hello.py",
      "goal": "Run hello.py — make it actually do its thing.",
      "say": "Write the command that runs your python file, hello.py.",
      "why": "python3 runs a Python file. This is the moment your file stops being text and becomes a real, working program.",
      "on_win": "It ran! Your file printed hello from my first file. That's a real program."},
 
-    {"title": "rename it", "stage": 3, "expect": ["mv hello.py app.py"], "cmd_hint": "mv hello.py app.py",
-     "goal": "Rename hello.py to app.py.",
-     "say": "Write the move command, to rename hello.py to app.py.",
-     "why": "mv means 'move'. But moving a file to a new name is the same thing as renaming it — one command does both.",
-     "on_win": "hello.py is now app.py. Move and rename are the same idea in the terminal."},
+    {"title": "add a second line", "stage": 6,
+     "verify": lambda c: c.startswith("echo") and ">> hello.py" in c and "print" in c,
+     "cmd_hint": "echo \"print('welcome to build stuff')\" >> hello.py",
+     "goal": "Add a second line to hello.py — without erasing the first one.",
+     "say": "Write another line into hello.py, using two arrows to append instead of overwriting.",
+     "why": "One arrow > overwrites the file. Two arrows >> APPEND — it adds to the end without deleting what's there. That's the key difference.",
+     "on_win": "Two arrows appended the new line. hello.py now has two lines, both safe."},
 
-    {"title": "clean up", "stage": 3, "expect": ["rm app.py"], "cmd_hint": "rm app.py",
-     "goal": "Delete app.py.",
-     "say": "Write the remove command, to delete app.py.",
-     "why": "rm means 'remove'. It's permanent — there's no recycle bin in the terminal, so double-check before you press Enter.",
-     "on_win": "app.py is gone. rm is forever, so always look twice before you hit Enter."},
+    {"title": "make it executable", "stage": 6, "expect": ["chmod +x hello.py"], "cmd_hint": "chmod +x hello.py",
+     "goal": "Mark hello.py as executable.",
+     "say": "Write the change-permissions command with plus x, to make hello.py runnable.",
+     "why": "chmod changes a file's permissions. The plus-x flag adds the 'execute' permission — turning a text file into something you can run directly.",
+     "on_win": "hello.py is now executable. Check ls -l and you'll see an x in its permissions."},
 
-    {"title": "bash vs zsh vs fish", "stage": 4, "kind": "info",
+    {"title": "run it directly", "stage": 6, "expect": ["./hello.py"], "cmd_hint": "./hello.py",
+     "goal": "Run hello.py directly, no python3 needed.",
+     "say": "Run your program directly by typing dot slash, then hello dot p y.",
+     "why": "The dot-slash means 'run the file right here'. It only works because you made it executable — the chmod you just did.",
+     "on_win": "It ran on its own! You built a file, made it executable, and executed it. That's the whole loop."},
+
+    # ---- stage 7: Shells & Tools ----------------------------------------- #
+    {"title": "bash vs zsh vs fish", "stage": 7, "kind": "info",
      "goal": "A quick tour of the different shells — read along, then press Enter.",
      "why": "bash, zsh and fish are all shells — the programs that read your commands. bash is the safe default everywhere. zsh is bash plus nicer autocomplete and themes. fish is the friendliest, with colors and suggestions out of the box. Here's the trick: ls, cd and mkdir work the SAME in every shell. You learn the commands once, and they work everywhere.",
      "on_win": "Same commands, different bells and whistles. bash is the safe default."},
 
-    {"title": "level up: tmux", "stage": 4, "kind": "info",
+    {"title": "level up: tmux", "stage": 7, "kind": "info",
      "goal": "Meet tmux — read along, then press Enter.",
      "why": "tmux splits one terminal into many panes side by side, so you can edit your code on the left and run your program on the right, all in one window. And if the window closes, your session survives. It's the tool professionals reach for every single day.",
      "on_win": "One window, many panes, and no lost sessions. tmux is a real superpower."},
+
+    # ---- the finale: three challenges, no ghost --------------------------- #
+    {"title": "leave a note", "stage": 7, "kind": "challenge",
+     "goal": "Make a file called note.txt with the word 'done' inside it.",
+     "say": "Challenge one. Make a file called note dot t x t, with the word done inside.",
+     "why": "No ghost this time — you have every tool you need.",
+     "verify_fs": lambda fs: any("note.txt" in f and "done" in c for f, c in fs.files.items()),
+     "on_win": "Note stashed. You're thinking in bash now."},
+
+    {"title": "build a trophy", "stage": 7, "kind": "challenge",
+     "goal": "Make a folder called trophy.",
+     "say": "Challenge two. Make a folder called trophy.",
+     "why": "Use what you learned. Just one command.",
+     "verify_fs": lambda fs: "/home/you/projects/trophy" in fs.dirs,
+     "on_win": "Trophy built! You earned it."},
+
+    {"title": "the final count", "stage": 7, "kind": "challenge",
+     "goal": "Use a pipe to count how many things are in this folder.",
+     "say": "Final challenge. Use a pipe and the counting command to count your files.",
+     "why": "The pipe is your superpower now — chain two commands to get the answer.",
+     "verify": lambda c: "|" in c and "wc" in c,
+     "on_win": "The pipe is your superpower now. Track complete!"},
 ]
 
 # the clickable bash manual — (command, what it does, a visual example)
 SHELL_MANUAL = [
     ("pwd", "print working directory — where am I?", "/home/you"),
+    ("whoami", "who is logged in?", "you"),
     ("ls", "list — what's in this folder", "hello.py   projects/"),
+    ("ls -a", "list all — show hidden dot-files too", ".secret   hello.py"),
     ("ls -l", "list long — sizes + dates", "-rw-r--r--  1 you  you  0  hello.py"),
+    ("ls -lh", "list long + human sizes", "-rw-r--r--  1 you  you  0B  hello.py"),
     ("mkdir name", "make a folder", "mkdir projects"),
+    ("mkdir -p a/b", "make nested folders in one shot", "mkdir -p app/src"),
     ("cd name", "step into a folder", "cd projects"),
+    ("cd ..", "go back up one level", "cd .."),
     ("touch name", "make an empty file", "touch hello.py"),
     ('echo "x" > f', "write text into a file", 'echo "hi" > hello.py'),
+    ('echo "x" >> f', "append to a file (don't erase)", 'echo "hi" >> hello.py'),
     ("cat name", "read a file", "cat hello.py"),
-    ("python3 f", "run a python file", "python3 hello.py"),
+    ("head -N name", "show the first N lines", "head -1 hello.py"),
+    ("wc -l name", "count the lines", "wc -l hello.py"),
+    ("cp a b", "copy a file", "cp hello.py backup.py"),
+    ("grep word f", "search a file for a word", "grep print hello.py"),
+    ("cmd | cmd2", "pipe output into the next command", "ls | wc -l"),
     ("mv a b", "move / rename", "mv hello.py app.py"),
-    ("cp a b", "copy a file", "cp app.py backup.py"),
-    ("rm name", "remove — permanent!", "rm app.py"),
+    ("rm name", "remove a file (permanent!)", "rm old.py"),
+    ("rm -r dir", "remove a folder + everything in it", "rm -r app"),
+    ("python3 f", "run a python file", "python3 hello.py"),
+    ("chmod +x f", "make a file executable", "chmod +x hello.py"),
+    ("./f", "run the file directly", "./hello.py"),
+    ("clear", "wipe the screen", "clear"),
+    ("history", "your recent commands", "history"),
 ]
 
 # Post-ghost vim edit warm-up: a short run of real edits the user must perform in
@@ -7764,6 +8163,11 @@ class TutorApp(App):
         return f"you@tutor:{disp}$"
 
     def _shell_correct(self, lesson, cmd):
+        if lesson.get("verify_fs"):
+            try:
+                return bool(lesson["verify_fs"](self._shell_fs))
+            except Exception:
+                return False
         if lesson.get("verify"):
             try:
                 return bool(lesson["verify"](cmd))
@@ -7803,7 +8207,7 @@ class TutorApp(App):
         fs = ShellFS()
         for i in range(resume):
             lesson = SHELL_LESSONS[i]
-            if lesson.get("kind") != "info":
+            if lesson.get("kind") not in ("info", "challenge"):
                 fs.run(lesson["cmd_hint"])
         fs.latest = None   # don't re-flash a stale entry on resume
         self._shell_fs = fs
@@ -7892,6 +8296,9 @@ class TutorApp(App):
             self._shell_render()
             return
         out, err = self._shell_fs.run(cmd)
+        if out and out[0] == "__CLEAR__":
+            self._shell_history = []
+            out = []
         for line in out:
             self._shell_history.append(("out", line))
         for line in err:
@@ -8023,7 +8430,7 @@ class TutorApp(App):
         text = ""
         if self._shell_idx < len(SHELL_LESSONS):
             lesson = SHELL_LESSONS[self._shell_idx]
-            if lesson.get("kind") != "info":
+            if lesson.get("kind") not in ("info", "challenge"):
                 text = lesson["cmd_hint"]
         self._shell_ghost = text
         self._shell_ghost_typed = 0
@@ -8096,6 +8503,12 @@ class TutorApp(App):
                 t.append("   ⌁  ", style="bold cyan")
                 t.append("read along, then press Enter", style="dim")
                 return t
+            if (self._shell_idx < len(SHELL_LESSONS)
+                    and SHELL_LESSONS[self._shell_idx].get("kind") == "challenge"):
+                t = Text()
+                t.append("   ⌁  ", style="bold #fbbf24")
+                t.append("challenge — no ghost this time. you've got this.", style="bold #f0c674")
+                return t
             return Text("")
         t = Text()
         t.append("   ⌁  type:  ", style="bold cyan")
@@ -8110,6 +8523,10 @@ class TutorApp(App):
         """A different, increasingly-specific hint on each failed attempt, so a
         stuck learner never hears the same sentence twice."""
         attempts = self._shell_attempts
+        if lesson.get("kind") == "challenge":
+            if attempts == 1:
+                return f"Not quite. {lesson['goal']}"
+            return f"Think about every command you've learned. {lesson['goal']}"
         if attempts == 1:
             return f"Not quite. Let's try again. {lesson.get('say', lesson['goal'])}"
         if attempts == 2:
