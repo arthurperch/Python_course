@@ -42,6 +42,7 @@ import threading
 import wave
 from pathlib import Path
 
+from rich.console import Console
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -2806,14 +2807,27 @@ def _reveal_output_lines(text: str, upto: int) -> list[Text]:
     return out
 
 
+_CONSOLE = Console()
+
+
 def _box_lines(lines: list[Text], title: str = "", center: bool = False,
-               min_width: int = 0) -> Text:
+               min_width: int = 0, max_width: int = 0) -> Text:
     """Wrap styled lines in a rounded single-line box. Returns a multiline Text.
     `center=True` centers each line inside the box (for prose); code stays
     left-aligned by default. `min_width` forces the box to at least this inner
-    width (used to make the VIM editor fill the screen)."""
+    width (used to make the VIM editor fill the screen). `max_width` hard-wraps
+    any line longer than this many columns (styles preserved) so the box never
+    overflows its panel — the 'unbreakable box'."""
     if not lines:
         lines = [Text("")]
+    if max_width > 0:
+        wrapped = []
+        for ln in lines:
+            if ln.cell_len > max_width:
+                wrapped.extend(list(ln.wrap(_CONSOLE, max_width)))
+            else:
+                wrapped.append(ln)
+        lines = wrapped
     inner = max([ln.cell_len for ln in lines] + ([len(title)] if title else []))
     inner = max(inner, min_width)
     t = Text()
@@ -8371,6 +8385,8 @@ class TutorApp(App):
         self._render_progress()
         if self.menu_level == "series":
             self._render_series_list()
+        elif self.menu_level == "dev_modules":
+            self._render_dev_module_list()
         else:
             self._render_challenge_list()
         self._render_menu_preview()
@@ -8448,6 +8464,76 @@ class TutorApp(App):
         if isinstance(step, int) and 0 < step < len(DEV_LESSONS):
             return f"{DEV_LESSONS[step]['module']} — {DEV_LESSONS[step]['title']}"
         return ""
+
+    def _dev_resume_first(self):
+        """The lesson index to resume from, or None if the course is untouched."""
+        cp = self.p.get("dev_checkpoint")
+        if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
+            if 0 <= cp["idx"] < len(DEV_LESSONS):
+                return cp["idx"]
+        step = self.p.get("dev_step")
+        if isinstance(step, int) and 0 < step < len(DEV_LESSONS):
+            return step
+        return None
+
+    def _dev_module_done(self, m):
+        """How many of a module's lessons are done (for the picker)."""
+        step = self.p.get("dev_step", 0)
+        if not isinstance(step, int):
+            return 0
+        done = min(step, m["first"] + m["count"]) - m["first"]
+        return max(0, min(done, m["count"]))
+
+    def _dev_module_items(self):
+        """The picker list: an optional resume entry, then every module."""
+        items = []
+        resume = self._dev_resume_first()
+        if resume is not None:
+            items.append({"name": "Resume where you left off", "first": resume,
+                          "resume": True, "count": 0, "done": 0})
+        for m in DEV_MODULES:
+            items.append({"name": m["name"], "first": m["first"], "resume": False,
+                          "count": m["count"], "done": self._dev_module_done(m)})
+        return items
+
+    def _dev_enter_module(self):
+        items = self._dev_module_items()
+        if 0 <= self.menu_sel < len(items):
+            play_menu_blip(3)
+            self._dev_begin(items[self.menu_sel]["first"])
+
+    def _render_dev_module_list(self):
+        t = Text()
+        t.append("── CLOUD & DEVOPS ", style="bold #7dd3fc")
+        t.append(f"({len(DEV_MODULES)} modules · {len(DEV_LESSONS)} lessons)", style="dim")
+        t.append("\n\n")
+        items = self._dev_module_items()
+        sel_line = 0
+        line_no = 0
+        for i, it in enumerate(items):
+            sel = i == self.menu_sel
+            line = Text()
+            line.append("▶ " if sel else "  ")
+            if it.get("resume"):
+                line.append("⏵ ", style="bold yellow")
+                line.append(it["name"], style="bold yellow" if sel else "#fbbf24")
+            else:
+                if it["done"] >= it["count"] and it["count"] > 0:
+                    line.append("✓ ", style="green")
+                else:
+                    line.append("· ", style="dim")
+                line.append(it["name"], style="bold" if sel else "#d5d5d5")
+                line.append(f"   {it['done']}/{it['count']}", style="dim")
+            if sel:
+                line.stylize("reverse")
+                sel_line = line_no
+            t.append_text(line)
+            t.append("\n")
+            line_no += 1
+        t.append("\nEnter — start · Esc — back to series · j/k — move", style="dim")
+        self.query_one("#menu-list-inner", Static).update(t)
+        scroll = self.query_one("#menu-list", VerticalScroll)
+        self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
 
     def _render_series_list(self):
         t = Text()
@@ -8552,11 +8638,30 @@ class TutorApp(App):
 
     def _render_menu_preview(self):
         if self.series_sel == -3:
+            if self.menu_level == "dev_modules":
+                self.query_one("#menu-preview-title", Static).update("MODULE")
+                items = self._dev_module_items()
+                t = Text()
+                if 0 <= self.menu_sel < len(items):
+                    it = items[self.menu_sel]
+                    if it.get("resume"):
+                        t.append("Pick up right where you left off.\n\n", style="#f0f0f5")
+                        t.append("press Enter to resume", style="dim")
+                    else:
+                        t.append(it["name"], style="bold #7dd3fc")
+                        t.append("\n\n")
+                        t.append(f"{it['count']} lessons · ", style="#d5d5d5")
+                        t.append(f"{it['done']}/{it['count']} done",
+                                 style="green" if it["done"] >= it["count"] else "#d5d5d5")
+                        t.append("\n\n")
+                        t.append("press Enter to jump here and work through it again", style="dim")
+                self.query_one("#menu-preview-inner", Static).update(t)
+                return
             self.query_one("#menu-preview-title", Static).update("PREVIEW — CLOUD & DEVOPS")
             t = Text()
-            t.append("Go from knowing bash + Python to shipping a real stack.\\n\\n", style="#f0f0f5")
+            t.append("Go from knowing bash + Python to shipping a real stack.\n\n", style="#f0f0f5")
             for line in ("version control with git", "package apps with docker",
-                         "store files & run servers on AWS (S3, EC2, boto3)",
+                         "AWS — S3, EC2, Lambda, DynamoDB, IAM (CLI + boto3)",
                          "infrastructure as code with terraform",
                          "configure servers with ansible",
                          "guard every commit with a CI/CD pipeline"):
@@ -8564,15 +8669,11 @@ class TutorApp(App):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\n")
-            t.append("8 modules · ", style="dim")
+            t.append(f"{len(DEV_MODULES)} modules · ", style="dim")
             t.append(f"{len(DEV_LESSONS)} lessons", style="#d5d5d5")
             t.append(" · from first commit to full deploy", style="dim")
-            label = self._dev_checkpoint_label()
-            if label:
-                t.append("\n\n")
-                t.append(f"▶ saved checkpoint — resume at {label}", style="bold yellow")
-                t.append("\n")
-                t.append("press Enter to pick up where you left off", style="dim")
+            t.append("\n\n")
+            t.append("press Enter to browse the modules", style="dim")
             self.query_one("#menu-preview-inner", Static).update(t)
             return
         if self.series_sel == -2:
@@ -8761,6 +8862,9 @@ class TutorApp(App):
             self.series_sel += 1
             if self.series_sel >= len(GROUPS):
                 self.series_sel = -3
+        elif self.menu_level == "dev_modules":
+            n = len(self._dev_module_items())
+            self.menu_sel = (self.menu_sel + 1) % n
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
             self.menu_sel = (self.menu_sel + 1) % n
@@ -8774,6 +8878,9 @@ class TutorApp(App):
             self.series_sel -= 1
             if self.series_sel < -3:
                 self.series_sel = len(GROUPS) - 1
+        elif self.menu_level == "dev_modules":
+            n = len(self._dev_module_items())
+            self.menu_sel = (self.menu_sel - 1) % n
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
             self.menu_sel = (self.menu_sel - 1) % n
@@ -8827,7 +8934,7 @@ class TutorApp(App):
             self.query_one("#editor", VimEditor).focus()
             return
         if self.mode == "menu":
-            if self.menu_level == "challenges":
+            if self.menu_level in ("challenges", "dev_modules"):
                 self.menu_level = "series"
                 self._render_menu()
             return
@@ -8872,7 +8979,9 @@ class TutorApp(App):
         if self.mode == "menu":
             if self.menu_level == "series":
                 if self.series_sel == -3:
-                    self._dev_begin()
+                    self.menu_level = "dev_modules"
+                    self.menu_sel = 0
+                    self._render_menu()
                     return
                 if self.series_sel == -2:
                     self._shell_begin()
@@ -8888,6 +8997,8 @@ class TutorApp(App):
                         self.menu_sel = ci
                         break
                 self._render_menu()
+            elif self.menu_level == "dev_modules":
+                self._dev_enter_module()
             else:
                 self._select_challenge()
             return
@@ -10928,20 +11039,23 @@ class TutorApp(App):
             self._dev_pos = 0
 
     def _dev_begin(self, module_first=None):
-        """Open the CLOUD & DEVOPS overlay, resuming at a checkpoint or step."""
+        """Open the CLOUD & DEVOPS overlay. With an explicit `module_first`
+        (from the module picker) it jumps straight there; otherwise it resumes
+        from the saved checkpoint / step."""
         resume = None
-        cp = self.p.get("dev_checkpoint")
-        if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
-            if 0 <= cp["idx"] < len(DEV_LESSONS):
-                resume = cp["idx"]
-        if resume is None:
-            step = self.p.get("dev_step")
-            if isinstance(step, int) and 0 < step < len(DEV_LESSONS):
-                resume = step
-            elif module_first is not None:
-                resume = module_first
-            else:
-                resume = 0
+        if module_first is not None:
+            resume = module_first
+        else:
+            cp = self.p.get("dev_checkpoint")
+            if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
+                if 0 <= cp["idx"] < len(DEV_LESSONS):
+                    resume = cp["idx"]
+            if resume is None:
+                step = self.p.get("dev_step")
+                if isinstance(step, int) and 0 < step < len(DEV_LESSONS):
+                    resume = step
+                else:
+                    resume = 0
         self._dev_on = True
         self._dev_idx = resume
         self._dev_cmd = ""
@@ -11399,17 +11513,22 @@ class TutorApp(App):
             return self._dev_render_editor()
         return self._dev_render_term()
 
+    def _dev_term_width(self):
+        # terminal pane is ~66% of the width (34% is the CLOUD panel); subtract
+        # borders + box padding so wrapped text never overflows the box
+        return max(20, int((self.size.width or 120) * 0.62) - 8)
+
     def _dev_render_term(self):
         t = Text()
-        w = max(20, self.size.width - 38)
+        term_w = self._dev_term_width()
         if self._dev_idx < len(DEV_LESSONS) and self._dev_lesson().get("kind") == "info":
-            for line in _wrap_words(self._dev_lesson()["why"], w):
+            for line in _wrap_words(self._dev_lesson()["why"], term_w):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\n")
             t.append(self._dev_prompt() + " ", style="bold #86efac")
             t.append("▍", style="bold #22c55e")
-            return _box_lines(_lines_of(t))
+            return _box_lines(_lines_of(t), max_width=term_w)
         for kind, text in self._dev_history[-18:]:
             if kind == "cmd":
                 p, c = text
@@ -11423,7 +11542,7 @@ class TutorApp(App):
         t.append(self._dev_prompt() + " ", style="bold #86efac")
         t.append(self._dev_cmd, style="#f0f0f5")
         t.append("▍", style="bold #22c55e")
-        return _box_lines(_lines_of(t))
+        return _box_lines(_lines_of(t), max_width=term_w)
 
     def _dev_render_editor(self):
         target = self._dev_target
@@ -11448,7 +11567,7 @@ class TutorApp(App):
                 t.append(line[n + 1:], style="#5a5a5a")
             t.append("\n")
             offset = end + 1
-        return _box_lines(_lines_of(t))
+        return _box_lines(_lines_of(t), max_width=self._dev_term_width())
 
     def _dev_render_state(self):
         lab = self._dev_lab
