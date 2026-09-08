@@ -4766,7 +4766,7 @@ class VolumeBar(Static):
     can_focus = True
     METER_W = 22   # meter width in terminal cells
 
-    def _render(self) -> str:
+    def _bar_markup(self) -> str:
         vol = _MASTER_VOL
         muted = _MASTER_MUTED
         filled = int(round(vol * self.METER_W))
@@ -4779,6 +4779,10 @@ class VolumeBar(Static):
         pct = int(round(vol * 100))
         hint = "[dim]←/→ nudge · click bar to set · F4 close[/]"
         return f"{icon} {bar} [bold]{pct:3d}%[/]  {hint}"
+
+    def repaint(self) -> None:
+        """Repaint the bar from the current master volume/mute globals."""
+        self.update(Text.from_markup(self._bar_markup()))
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -4827,7 +4831,7 @@ class TutorApp(App):
     #task { height: 3; padding: 1 2; background: $accent; color: $text; }
     #cmd { dock: bottom; display: none; }
     #cmd.visible { display: block; }
-    #volume-bar { dock: bottom; height: 1; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
+    #volume-bar { dock: bottom; height: 2; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
     #volume-bar.visible { display: block; }
     #cmd.flash { border: tall yellow; background: #4d4000; }
     #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
@@ -7077,7 +7081,7 @@ class TutorApp(App):
         if self._vol_open:
             self._close_volume()
             return
-        bar.update(bar._render())
+        bar.repaint()
         bar.add_class("visible")
         bar.focus()
         self._vol_open = True
@@ -7118,7 +7122,7 @@ class TutorApp(App):
         self.p["volume"] = _MASTER_VOL
         self.p["muted"] = _MASTER_MUTED
         save_progress(self.p)
-        bar.update(bar._render())
+        bar.repaint()
         self._update_status()
 
     # ---- run / check / review -------------------------------------------- #
