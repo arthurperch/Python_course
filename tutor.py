@@ -11061,7 +11061,7 @@ class TutorApp(App):
         self._dev_lab.fs.latest = p
         self._dev_msg = f"saved {lesson['file']} ✓"
         self._dev_msg_kind = "win"
-        play_complete()
+        play_console_result(True)
         if self.voice_on:
             speak(_pers(lesson.get("on_win", "Nice work.")))
         self._dev_render()
@@ -11087,7 +11087,7 @@ class TutorApp(App):
         if self._dev_correct(lesson, cmd):
             self._dev_msg = lesson.get("on_win", "Correct!")
             self._dev_msg_kind = "win"
-            play_complete()
+            play_console_result(True)
             if self.voice_on:
                 speak(_pers(lesson.get("on_win", "Correct!")))
             self._dev_render()
