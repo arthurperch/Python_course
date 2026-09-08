@@ -5538,6 +5538,7 @@ class TutorApp(App):
         self._shell_cmd = ""           # the command being typed (free text)
         self._shell_history: list[tuple] = []   # (kind, text) terminal scrollback
         self._shell_msg = ""           # transient feedback line (win / nudge)
+        self._shell_msg_kind = ""      # "win" (green) or "hint" (amber)
         self._shell_confirm = False    # "save checkpoint? Y/N" popup is showing
         self._shell_flash = 0          # >0 → flash the just-made entry in the tree
         self._shell_flash_timer = None
@@ -7738,9 +7739,18 @@ class TutorApp(App):
         self._shell_cmd = ""
         self._shell_history = []
         self._shell_msg = ""
+        self._shell_msg_kind = ""
         self._shell_confirm = False
         self._shell_flash = 0
-        self._shell_fs = ShellFS()
+        # rebuild the filesystem up to the resume point, so a mid-track
+        # checkpoint starts with the folders/files the earlier lessons made
+        fs = ShellFS()
+        for i in range(resume):
+            lesson = SHELL_LESSONS[i]
+            if lesson.get("kind") != "info":
+                fs.run(lesson["cmd_hint"])
+        fs.latest = None   # don't re-flash a stale entry on resume
+        self._shell_fs = fs
         self.query_one("#shell", ShellTrainer).add_class("visible")
         self.query_one("#shell", ShellTrainer).focus()
         self._shell_lesson_speak()
@@ -7825,14 +7835,16 @@ class TutorApp(App):
             self._shell_history.append(("err", line))
         if self._shell_correct(lesson, cmd):
             play_console_result(True)
-            self._shell_history.append(("win", lesson["on_win"]))
+            self._shell_msg = lesson["on_win"]
+            self._shell_msg_kind = "win"
             self._shell_flash_start()
             if self.voice_on:
                 speak(_pers(lesson["on_win"]))
             self._shell_advance()
         else:
             play_ghost_error()
-            self._shell_history.append(("hint", "hint: type →  " + lesson["cmd_hint"]))
+            self._shell_msg = lesson["cmd_hint"]
+            self._shell_msg_kind = "hint"
             if self.voice_on:
                 speak(_pers("not quite — try " + lesson["cmd_hint"]))
             self._shell_render()
@@ -7847,6 +7859,8 @@ class TutorApp(App):
     def _shell_next(self):
         self._shell_adv_timer = None
         self._shell_idx += 1
+        self._shell_msg = ""
+        self._shell_msg_kind = ""
         if self._shell_idx >= len(SHELL_LESSONS):
             self._shell_graduate()
             return
@@ -7956,11 +7970,6 @@ class TutorApp(App):
                 t.append(text, style="#e6e6e6")
             elif kind == "err":
                 t.append(text, style="bold #f87171")
-            elif kind == "win":
-                t.append("✓ ", style="bold green")
-                t.append(text, style="bold #22c55e")
-            elif kind == "hint":
-                t.append(text, style="#f0c674")
             t.append("\n")
         t.append(self._shell_prompt() + " ", style="bold #86efac")
         t.append(self._shell_cmd, style="#f0f0f5")
@@ -8001,6 +8010,14 @@ class TutorApp(App):
             t.append(" · Esc exits", style="dim")
             return t
         lesson = self._shell_lesson()
+        if self._shell_msg:
+            if self._shell_msg_kind == "win":
+                t.append("✓  ", style="bold #22c55e")
+                t.append(self._shell_msg, style="bold #22c55e")
+            else:
+                t.append("→  ", style="bold #fbbf24")
+                t.append(self._shell_msg, style="bold #fbbf24")
+            t.append("\n")
         if lesson.get("kind") == "info":
             t.append("press Enter when you've read along · Esc exits", style="dim")
             return t
