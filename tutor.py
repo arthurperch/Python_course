@@ -33,6 +33,7 @@ import os
 import re
 import sys
 import random
+import shlex
 import shutil
 import struct
 import subprocess
@@ -5504,9 +5505,17 @@ class AwsEnv:
         self.buckets = {}      # name -> {key: content}
         self.instances = {}    # id -> {"ImageId","InstanceType","State":{...}}
         self.next_inst = 1
+        self.lambda_fns = {}      # name -> {"code","runtime","handler"}
+        self.dynamo_tables = {}   # name -> list of native item dicts
+        self.iam_users = set()    # usernames
+        self.iam_roles = {}       # role -> {"policies": []}
+        self.iam_policies = {}    # policy name -> arn
 
     def run(self, rest):
-        parts = rest.split()
+        try:
+            parts = shlex.split(rest)
+        except ValueError:
+            parts = rest.split()
         if not parts:
             return [], ["usage: aws <service> <command>"]
         svc = parts[0]
@@ -5514,9 +5523,15 @@ class AwsEnv:
             return self._s3(parts[1:])
         if svc == "ec2":
             return self._ec2(parts[1:])
+        if svc == "lambda":
+            return self._lambda(parts[1:])
+        if svc == "dynamodb":
+            return self._dynamodb(parts[1:])
+        if svc == "iam":
+            return self._iam(parts[1:])
         if svc in ("--version", "version"):
             return ["aws-cli/2.15.0"], []
-        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2"]
+        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam"]
 
     def _s3(self, args):
         if not args:
@@ -5603,6 +5618,160 @@ class AwsEnv:
                     self.instances[iid]["State"]["Name"] = state
             return [f"{iid}: {state}" for iid in ids], []
         return [], [f"aws ec2: unknown command '{cmd}'"]
+
+    def _lambda(self, args):
+        if not args:
+            return [], ["usage: aws lambda <command>"]
+        cmd = args[0]
+        if cmd == "create-function":
+            d = _aws_flags(args[1:])
+            name = d.get("function-name", "fn")
+            handler = d.get("handler", "lambda_function.handler")
+            runtime = d.get("runtime", "python3.11")
+            code = ""
+            zf = d.get("zip-file", "")
+            if zf.startswith("fileb://"):
+                p = self.fs._resolve(zf[8:])
+                code = self.fs.files.get(p, "")
+            self.lambda_fns[name] = {"code": code, "runtime": runtime, "handler": handler}
+            return [f"FunctionName: {name}", f"Runtime: {runtime}", f"Handler: {handler}",
+                    f"FunctionArn: arn:aws:lambda:us-east-1:123456789012:function:{name}"], []
+        if cmd == "invoke":
+            d = _aws_flags(args[1:])
+            name = d.get("function-name", "")
+            if name not in self.lambda_fns:
+                return [], [f"An error occurred (ResourceNotFoundException): Function not found: {name}"]
+            fn = self.lambda_fns[name]
+            func = fn["handler"].split(".")[-1]
+            code = fn["code"] + f"\nprint({func}({{}}, None))\n"
+            stdout, stderr = run_lesson_code(code)
+            out = ["Status: 200", "Execution result:"]
+            if stderr.strip():
+                out += ["(error)"] + stderr.strip().splitlines()
+            else:
+                out += stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else ["(no output)"]
+            return out, []
+        if cmd == "list-functions":
+            if not self.lambda_fns:
+                return ["Functions: []"], []
+            return [f"{n}" for n in sorted(self.lambda_fns)], []
+        return [], [f"aws lambda: unknown command '{cmd}'"]
+
+    def _dynamodb(self, args):
+        if not args:
+            return [], ["usage: aws dynamodb <command>"]
+        cmd = args[0]
+        if cmd == "create-table":
+            d = _aws_flags(args[1:])
+            name = d.get("table-name", "")
+            self.dynamo_tables.setdefault(name, [])
+            return [f"TableDescription: TableName {name} · status ACTIVE"], []
+        if cmd == "put-item":
+            d = _aws_flags(args[1:])
+            name = d.get("table-name", "")
+            try:
+                item = _ddb_from_json(json.loads(d.get("item", "{}")))
+            except Exception:
+                return [], ["An error occurred (ValidationException): invalid item JSON"]
+            if name not in self.dynamo_tables:
+                return [], [f"An error occurred (ResourceNotFoundException): Table not found: {name}"]
+            self.dynamo_tables[name].append(item)
+            return [], []
+        if cmd == "get-item":
+            d = _aws_flags(args[1:])
+            name = d.get("table-name", "")
+            key = _ddb_from_json(json.loads(d.get("key", "{}")))
+            for it in self.dynamo_tables.get(name, []):
+                if all(it.get(k) == v for k, v in key.items()):
+                    return [json.dumps(_ddb_to_json(it))], []
+            return ["{}"], []
+        if cmd == "scan":
+            d = _aws_flags(args[1:])
+            name = d.get("table-name", "")
+            items = self.dynamo_tables.get(name, [])
+            if not items:
+                return ["Items: []  Count: 0"], []
+            return [json.dumps(_ddb_to_json(it)) for it in items] + [f"Count: {len(items)}"], []
+        if cmd == "list-tables":
+            return ["TableNames:"] + sorted(self.dynamo_tables), []
+        return [], [f"aws dynamodb: unknown command '{cmd}'"]
+
+    def _iam(self, args):
+        if not args:
+            return [], ["usage: aws iam <command>"]
+        cmd = args[0]
+        if cmd == "create-user":
+            d = _aws_flags(args[1:])
+            u = d.get("user-name", "")
+            self.iam_users.add(u)
+            return [f"User created: {u}"], []
+        if cmd == "create-role":
+            d = _aws_flags(args[1:])
+            r = d.get("role-name", "")
+            self.iam_roles[r] = {"policies": []}
+            return [f"Role created: {r}"], []
+        if cmd == "create-policy":
+            d = _aws_flags(args[1:])
+            p = d.get("policy-name", "")
+            arn = f"arn:aws:iam::123456789012:policy/{p}"
+            self.iam_policies[p] = arn
+            return [f"Policy created: {arn}"], []
+        if cmd == "attach-role-policy":
+            d = _aws_flags(args[1:])
+            r, arn = d.get("role-name", ""), d.get("policy-arn", "")
+            if r in self.iam_roles:
+                self.iam_roles[r]["policies"].append(arn)
+            return [], []
+        if cmd == "list-users":
+            return [f"{u}" for u in sorted(self.iam_users)], []
+        if cmd == "list-roles":
+            return [f"{r} (policies: {len(self.iam_roles[r]['policies'])})" for r in sorted(self.iam_roles)], []
+        return [], [f"aws iam: unknown command '{cmd}'"]
+
+
+def _aws_flags(args):
+    """Parse `--key value --key2 value2 ...` into a dict (bare args dropped)."""
+    d = {}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--") and i + 1 < len(args):
+            d[a[2:]] = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    return d
+
+
+def _ddb_from_json(item):
+    """DynamoDB low-level JSON ({\"S\": v}) → native Python dict."""
+    out = {}
+    for k, v in item.items():
+        if isinstance(v, dict):
+            if "S" in v:
+                out[k] = v["S"]
+            elif "N" in v:
+                out[k] = int(v["N"]) if str(v["N"]).lstrip("-").isdigit() else v["N"]
+            elif "BOOL" in v:
+                out[k] = v["BOOL"]
+            else:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
+def _ddb_to_json(item):
+    """Native Python dict → DynamoDB low-level JSON."""
+    out = {}
+    for k, v in item.items():
+        if isinstance(v, bool):
+            out[k] = {"BOOL": v}
+        elif isinstance(v, int):
+            out[k] = {"N": str(v)}
+        else:
+            out[k] = {"S": str(v)}
+    return out
 
 
 # ---- terraform (simulated) ---------------------------------------------------
@@ -6072,6 +6241,88 @@ class _Object:
         return {"ETag": '"abc"'}
 
 
+class _LambdaClient:
+    def __init__(self, s):
+        self.s = s
+    def create_function(self, FunctionName, Runtime="python3.11", Role="", Handler="", Code=None):
+        code = ""
+        if Code and "ZipFile" in Code:
+            zf = Code["ZipFile"]
+            code = zf.decode() if isinstance(zf, bytes) else str(zf)
+        self.s["lambda_fns"][FunctionName] = {"code": code, "runtime": Runtime, "handler": Handler}
+        return {"FunctionArn": "arn:aws:lambda:us-east-1:123456789012:function:" + FunctionName}
+    def invoke(self, FunctionName, Payload="{}"):
+        fn = self.s["lambda_fns"].get(FunctionName)
+        if not fn:
+            raise Exception("ResourceNotFoundException: " + FunctionName)
+        func = fn["handler"].split(".")[-1]
+        code = fn["code"] + chr(10) + "print(" + func + "({}, None))"
+        import subprocess, sys as _sys
+        r = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True, timeout=10)
+        return {"StatusCode": 200, "Payload": r.stdout}
+    def list_functions(self):
+        return {"Functions": [{"FunctionName": n} for n in sorted(self.s["lambda_fns"])]}
+
+
+class _DynamoClient:
+    def __init__(self, s):
+        self.s = s
+    def create_table(self, TableName, KeySchema=None, AttributeDefinitions=None, BillingMode="PAY_PER_REQUEST"):
+        self.s["dynamo_tables"].setdefault(TableName, [])
+        return {"TableDescription": {"TableName": TableName, "TableStatus": "ACTIVE"}}
+    def put_item(self, TableName, Item):
+        self.s["dynamo_tables"].setdefault(TableName, []).append(dict(Item))
+        return {}
+    def get_item(self, TableName, Key):
+        for it in self.s["dynamo_tables"].get(TableName, []):
+            if all(it.get(k) == v for k, v in Key.items()):
+                return {"Item": dict(it)}
+        return {}
+    def scan(self, TableName):
+        items = self.s["dynamo_tables"].get(TableName, [])
+        return {"Items": [dict(it) for it in items], "Count": len(items)}
+    def list_tables(self):
+        return {"TableNames": list(self.s["dynamo_tables"].keys())}
+
+
+class _DynamoTable:
+    def __init__(self, s, name):
+        self.s, self.name = s, name
+    def put_item(self, Item):
+        self.s["dynamo_tables"].setdefault(self.name, []).append(dict(Item))
+        return {}
+    def get_item(self, Key):
+        for it in self.s["dynamo_tables"].get(self.name, []):
+            if all(it.get(k) == v for k, v in Key.items()):
+                return {"Item": dict(it)}
+        return {}
+    def scan(self):
+        items = self.s["dynamo_tables"].get(self.name, [])
+        return {"Items": [dict(it) for it in items], "Count": len(items)}
+
+
+class _IamClient:
+    def __init__(self, s):
+        self.s = s
+    def create_user(self, UserName):
+        if UserName not in self.s["iam_users"]:
+            self.s["iam_users"].append(UserName)
+        return {"User": {"UserName": UserName}}
+    def create_role(self, RoleName, AssumeRolePolicyDocument="{}"):
+        self.s["iam_roles"][RoleName] = {"policies": []}
+        return {"Role": {"RoleName": RoleName}}
+    def create_policy(self, PolicyName, PolicyDocument="{}"):
+        arn = "arn:aws:iam::123456789012:policy/" + PolicyName
+        self.s["iam_policies"][PolicyName] = arn
+        return {"Policy": {"Arn": arn}}
+    def attach_role_policy(self, RoleName, PolicyArn):
+        if RoleName in self.s["iam_roles"]:
+            self.s["iam_roles"][RoleName]["policies"].append(PolicyArn)
+        return {}
+    def list_users(self):
+        return {"Users": [{"UserName": u} for u in sorted(self.s["iam_users"])]}
+
+
 class _Resource:
     def __init__(self, s):
         self.s = s
@@ -6079,6 +6330,8 @@ class _Resource:
         return _Bucket(self.s, name)
     def Object(self, bucket, key):
         return _Object(self.s, bucket, key)
+    def Table(self, name):
+        return _DynamoTable(self.s, name)
 
 
 def client(name, **kw):
@@ -6087,12 +6340,20 @@ def client(name, **kw):
         return _S3Client(s)
     if name == "ec2":
         return _Ec2Client(s)
+    if name == "lambda":
+        return _LambdaClient(s)
+    if name == "dynamodb":
+        return _DynamoClient(s)
+    if name == "iam":
+        return _IamClient(s)
     raise Exception("UnknownServiceError: " + name)
 
 
 def resource(name, **kw):
     s = _get_state()
     if name == "s3":
+        return _Resource(s)
+    if name == "dynamodb":
         return _Resource(s)
     raise Exception("UnknownServiceError: " + name)
 '''
@@ -6180,12 +6441,22 @@ class CloudLab:
         p = self.fs._resolve(parts[1])
         code = self.fs.files[p]
         state = {"buckets": self.aws.buckets, "instances": self.aws.instances,
-                 "next_inst": self.aws.next_inst}
+                 "next_inst": self.aws.next_inst,
+                 "lambda_fns": self.aws.lambda_fns,
+                 "dynamo_tables": self.aws.dynamo_tables,
+                 "iam_users": sorted(self.aws.iam_users),
+                 "iam_roles": self.aws.iam_roles,
+                 "iam_policies": self.aws.iam_policies}
         stdout, stderr, new_state = _run_boto3_script(code, state)
         if new_state is not None:
             self.aws.buckets = new_state["buckets"]
             self.aws.instances = new_state["instances"]
             self.aws.next_inst = new_state["next_inst"]
+            self.aws.lambda_fns = new_state["lambda_fns"]
+            self.aws.dynamo_tables = new_state["dynamo_tables"]
+            self.aws.iam_users = set(new_state["iam_users"])
+            self.aws.iam_roles = new_state["iam_roles"]
+            self.aws.iam_policies = new_state["iam_policies"]
         out = stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else []
         err = stderr.rstrip("\n").split("\n") if stderr.strip() else []
         return out, err
@@ -6707,6 +6978,165 @@ DEV_LESSONS = [
      "why": "Terminating is permanent cleanup. In the real cloud, leaving servers running costs money, so engineers always shut down what they're done with.",
      "verify_lab": lambda lab: bool(lab.aws.instances) and all(i["State"]["Name"] == "terminated" for i in lab.aws.instances.values()),
      "replay": ["aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004"]},
+
+    # ==== MODULE · AWS Lambda ============================================
+    {"module": "AWS Lambda", "kind": "info", "title": "code that runs on demand",
+     "say": "Now serverless. Lambda runs your code only when you call it — no server to manage, you just pay for the split second it runs.",
+     "why": "Lambda is 'serverless': you upload a function, and AWS runs it on demand. No server to provision, no idle machine — just code that fires when asked. It's the backbone of cloud automation."},
+
+    {"module": "AWS Lambda", "kind": "write", "title": "write the function",
+     "file": "lambda_function.py",
+     "content": "def handler(event, context):\n    return \"hello from lambda\"\n",
+     "lines": [
+         ("def handler", "a lambda is just a Python function named handler"),
+         ("event, context", "every lambda receives these two arguments — the incoming data and the runtime"),
+         ("return", "whatever it returns is the function's result"),
+     ],
+     "say": "Write the lambda function — a plain Python function that returns a message.",
+     "why": "A lambda function is ordinary Python with one job: take an event, return a result. The handler is the entry point AWS calls.",
+     "on_win": "That's a complete lambda function. Two lines, ready to deploy."},
+
+    {"module": "AWS Lambda", "kind": "run", "title": "deploy it",
+     "verify": lambda c: c.startswith("aws lambda create-function"),
+     "cmd_hint": "aws lambda create-function --function-name hello --runtime python3.11 --handler lambda_function.handler --zip-file fileb://lambda_function.py",
+     "say": "Deploy the function with the aws command line, pointing at your file.",
+     "why": "create-function uploads your code and registers it under a name. The handler field says which function inside the file to call.",
+     "on_win": "Deployed. Your function now lives in the cloud, waiting to be called."},
+
+    {"module": "AWS Lambda", "kind": "run", "title": "invoke it",
+     "verify": lambda c: c.startswith("aws lambda invoke"),
+     "cmd_hint": "aws lambda invoke --function-name hello",
+     "say": "Invoke the function to run it and see its result.",
+     "why": "invoke runs the function and returns its output. No server, no setup — the code just executed on demand.",
+     "on_win": "There's 'hello from lambda' — your code ran in the cloud."},
+
+    {"module": "AWS Lambda", "kind": "run", "title": "list your functions",
+     "expect": ["aws lambda list-functions"], "cmd_hint": "aws lambda list-functions",
+     "say": "List the functions you've deployed.",
+     "why": "list-functions shows every lambda in your account. Right now, just hello.",
+     "on_win": "There's hello, deployed and ready."},
+
+    {"module": "AWS Lambda", "kind": "write", "title": "drive it with python",
+     "file": "invoke.py",
+     "content": "import boto3\n\nlmb = boto3.client('lambda')\nresp = lmb.invoke(FunctionName='hello')\nprint(resp['Payload'])\n",
+     "lines": [
+         ("client('lambda')", "talk to the lambda service from code"),
+         ("invoke", "run the function on demand"),
+         ("Payload", "the result comes back in the Payload field"),
+     ],
+     "say": "Write a script that invokes your lambda with boto3 and prints the result.",
+     "why": "boto3 can call your function just like the CLI. That means one script can trigger a hundred lambdas.",
+     "on_win": "Now code can run your code, on demand."},
+
+    {"module": "AWS Lambda", "kind": "run", "title": "run the trigger",
+     "expect": ["python3 invoke.py"], "cmd_hint": "python3 invoke.py",
+     "say": "Run your invoke script.",
+     "why": "Run it and watch your lambda's message come back through boto3.",
+     "on_win": "'hello from lambda', round-tripped through code. Serverless, end to end."},
+
+    # ==== MODULE · AWS DynamoDB ==========================================
+    {"module": "AWS DynamoDB", "kind": "info", "title": "a database in the cloud",
+     "say": "Now a database. DynamoDB is a NoSQL table in the cloud — you store rows of data and fetch them back in milliseconds.",
+     "why": "DynamoDB is a managed NoSQL database: tables of rows (called items), each with a key. No server to run — AWS stores and serves your data."},
+
+    {"module": "AWS DynamoDB", "kind": "run", "title": "make a table",
+     "verify": lambda c: c.startswith("aws dynamodb create-table"),
+     "cmd_hint": "aws dynamodb create-table --table-name users",
+     "say": "Create a database table called users.",
+     "why": "create-table makes a table. Tables hold your rows — in DynamoDB each row is an item with a key and values.",
+     "on_win": "Table created. It's empty, waiting for rows."},
+
+    {"module": "AWS DynamoDB", "kind": "run", "title": "add a row",
+     "verify": lambda c: c.startswith("aws dynamodb put-item") and "users" in c,
+     "cmd_hint": "aws dynamodb put-item --table-name users --item '{\"id\": {\"S\": \"1\"}, \"name\": {\"S\": \"Alice\"}}'",
+     "say": "Put a row into the table — an id and a name.",
+     "why": "put-item stores one item. DynamoDB uses a special format where each value is tagged with its type — S for string, N for number.",
+     "on_win": "Alice is in the table. One row stored."},
+
+    {"module": "AWS DynamoDB", "kind": "run", "title": "fetch a row",
+     "verify": lambda c: c.startswith("aws dynamodb get-item") and "1" in c,
+     "cmd_hint": "aws dynamodb get-item --table-name users --key '{\"id\": {\"S\": \"1\"}}'",
+     "say": "Fetch the row back by its id.",
+     "why": "get-item looks up a single item by its key. Give the id, get the row back.",
+     "on_win": "There's Alice — the exact row you stored."},
+
+    {"module": "AWS DynamoDB", "kind": "run", "title": "scan everything",
+     "expect": ["aws dynamodb scan --table-name users"], "cmd_hint": "aws dynamodb scan --table-name users",
+     "say": "Scan the table to list every row.",
+     "why": "scan returns every item in the table, with a count. For big tables you'd query by key, but scan shows it all.",
+     "on_win": "One row, one count. That's your table."},
+
+    {"module": "AWS DynamoDB", "kind": "write", "title": "drive it with python",
+     "file": "db.py",
+     "content": "import boto3\n\ndynamodb = boto3.resource('dynamodb')\ntable = dynamodb.Table('tasks')\ntable.put_item(Item={'id': 'a', 'done': False})\ntable.put_item(Item={'id': 'b', 'done': True})\nr = table.scan()\nprint(r['Count'])\nfor item in r['Items']:\n    print(item['id'], item['done'])\n",
+     "lines": [
+         ("resource('dynamodb')", "the resource API gives you a Table object"),
+         ("dynamodb.Table", "grab the table by name"),
+         ("put_item", "store a row — just a Python dict"),
+         ("scan", "list every row in the table"),
+         ("for item in", "loop over the rows and print each one"),
+     ],
+     "say": "Write a script that stores two rows with boto3, then scans the table and prints each row.",
+     "why": "With boto3, a row is just a Python dict — no type tags. put_item stores it, scan lists them all.",
+     "on_win": "Two rows in, two rows out. A real database, from code."},
+
+    {"module": "AWS DynamoDB", "kind": "run", "title": "run the data script",
+     "expect": ["python3 db.py"], "cmd_hint": "python3 db.py",
+     "say": "Run your database script.",
+     "why": "Run it and watch the count and each row stream back.",
+     "on_win": "Two rows, printed. You just read and wrote a cloud database."},
+
+    # ==== MODULE · AWS IAM ================================================
+    {"module": "AWS IAM", "kind": "info", "title": "who can do what",
+     "say": "Now security. IAM controls who can do what in your cloud account — users, roles, and the permissions you attach to them.",
+     "why": "IAM (Identity and Access Management) is the lock on your cloud: you create users (people), roles (things that act on their behalf), and policies (what they're allowed to do). Least privilege is the rule."},
+
+    {"module": "AWS IAM", "kind": "run", "title": "make a user",
+     "verify": lambda c: c.startswith("aws iam create-user"),
+     "cmd_hint": "aws iam create-user --user-name alice",
+     "say": "Create a user called alice.",
+     "why": "create-user makes an identity for a person or a service. Every action in AWS is done by a user or a role.",
+     "on_win": "Alice now has an identity in your cloud account."},
+
+    {"module": "AWS IAM", "kind": "run", "title": "make a role",
+     "verify": lambda c: c.startswith("aws iam create-role"),
+     "cmd_hint": "aws iam create-role --role-name lambda-exec",
+     "say": "Create a role for your lambda to assume.",
+     "why": "A role is an identity a service assumes — your lambda runs AS the role, so you don't put your own credentials in code.",
+     "on_win": "Role created. Your lambda can now act as it."},
+
+    {"module": "AWS IAM", "kind": "run", "title": "make a policy",
+     "verify": lambda c: c.startswith("aws iam create-policy"),
+     "cmd_hint": "aws iam create-policy --policy-name s3-read",
+     "say": "Create a policy named s3-read — a permission you can attach.",
+     "why": "A policy is a permission document: what someone is allowed to do. Name it, then attach it to users or roles.",
+     "on_win": "Policy created. It's a permission waiting to be granted."},
+
+    {"module": "AWS IAM", "kind": "run", "title": "attach it to the role",
+     "verify": lambda c: c.startswith("aws iam attach-role-policy"),
+     "cmd_hint": "aws iam attach-role-policy --role-name lambda-exec --policy-arn arn:aws:iam::123456789012:policy/s3-read",
+     "say": "Attach the s3-read policy to the lambda-exec role.",
+     "why": "attach-role-policy grants the role the policy's permissions. Now anything assuming lambda-exec can read S3.",
+     "on_win": "Attached. The role now has the s3-read permission."},
+
+    {"module": "AWS IAM", "kind": "write", "title": "drive it with python",
+     "file": "iam.py",
+     "content": "import boto3\n\niam = boto3.client('iam')\niam.create_user(UserName='bob')\nfor u in iam.list_users()['Users']:\n    print(u['UserName'])\n",
+     "lines": [
+         ("client('iam')", "talk to IAM from code"),
+         ("create_user", "make a new user, just like the CLI"),
+         ("list_users", "list every user in the account"),
+         ("for u in", "loop over the users and print each name"),
+     ],
+     "say": "Write a script that creates a user called bob with boto3, then lists every user.",
+     "why": "Security, automated: boto3 can create users and roles programmatically, so onboarding is a script, not a click-fest.",
+     "on_win": "Both users listed — alice from the CLI, bob from code."},
+
+    {"module": "AWS IAM", "kind": "run", "title": "run the security script",
+     "expect": ["python3 iam.py"], "cmd_hint": "python3 iam.py",
+     "say": "Run your IAM script.",
+     "why": "Run it and watch both users come back — the whole account, from code.",
+     "on_win": "alice and bob. You just managed cloud security with Python."},
 
     # ==== MODULE 5 · Terraform ============================================
     {"module": "Terraform", "kind": "info", "title": "infrastructure as code",
@@ -11044,6 +11474,24 @@ class TutorApp(App):
             sec("EC2 INSTANCES")
             for iid, inst in lab.aws.instances.items():
                 t.append(f"  {iid} {inst['State']['Name']}", style="#d5d5d5")
+                t.append("\n")
+        if lab.aws.lambda_fns:
+            sec("LAMBDA")
+            for n in sorted(lab.aws.lambda_fns):
+                t.append(f"  {n}", style="#d5d5d5")
+                t.append("\n")
+        if lab.aws.dynamo_tables:
+            sec("DYNAMODB")
+            for n in sorted(lab.aws.dynamo_tables):
+                t.append(f"  {n} ({len(lab.aws.dynamo_tables[n])})", style="#d5d5d5")
+                t.append("\n")
+        if lab.aws.iam_users or lab.aws.iam_roles:
+            sec("IAM")
+            for u in sorted(lab.aws.iam_users):
+                t.append(f"  user {u}", style="#d5d5d5")
+                t.append("\n")
+            for r in sorted(lab.aws.iam_roles):
+                t.append(f"  role {r}", style="#d5d5d5")
                 t.append("\n")
         if lab.tf.resources:
             sec("TERRAFORM")

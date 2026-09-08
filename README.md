@@ -10,11 +10,12 @@ local TTS voice coaching you through every step.
 - 🧱 drills, worked examples, a VIM dojo, and an animated "watch it run" tracer
 - 🛠️ **BUILD STUFF** — a real bash terminal + live folder tree: make folders and
   files, then run your own program (`pwd` → `mkdir` → `python3 hello.py`)
-- ☁️ **CLOUD & DEVOPS** — go from noob to engineer in 8 modules / 71 lessons:
-  version control with **git**, packaging with **docker**, **AWS S3 + EC2** (CLI
-  *and* real **boto3** Python), infrastructure-as-code with **terraform**,
-  server automation with **ansible** (idempotency + handlers), and a **CI/CD**
-  pipeline that goes red/green — all in a simulated, offline cloud
+- ☁️ **CLOUD & DEVOPS** — go from noob to engineer in 11 modules / 92 lessons:
+  version control with **git**, packaging with **docker**, **AWS** (S3, EC2, and
+  **Lambda / DynamoDB / IAM** — CLI *and* real **boto3** Python),
+  infrastructure-as-code with **terraform**, server automation with **ansible**
+  (idempotency + handlers), and a **CI/CD** pipeline that goes red/green — all
+  in a simulated, offline cloud
 - 💾 progress saved to `~/.learning/progress.json`
 
 ---
