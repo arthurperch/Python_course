@@ -4883,59 +4883,70 @@ class ShellFS:
 #   on_win   — TTS celebration that points out the thing the user just made
 SHELL_LESSONS = [
     {"title": "where am I?", "stage": 0, "expect": ["pwd"], "cmd_hint": "pwd",
-     "goal": "Type  pwd  and press Enter to ask the terminal where you are.",
+     "goal": "Ask the terminal where you are.",
+     "say": "Write the print working directory command. The question mark icon up top opens a bash manual whenever you need it.",
      "why": "pwd means 'print working directory'. Every terminal always has one current folder, and this prints its full path.",
      "on_win": "That's your home folder. Everything you make starts right here."},
 
     {"title": "what's in here?", "stage": 0, "expect": ["ls"], "cmd_hint": "ls",
-     "goal": "Type  ls  and press Enter to list what's in this folder.",
+     "goal": "See what's in this folder.",
+     "say": "Write the list command.",
      "why": "ls means 'list'. Your home folder is empty right now, so it stays silent. That's normal — empty just means empty.",
      "on_win": "Nothing showed up, because the folder is empty. Silent success is a real unix thing."},
 
     {"title": "make a folder", "stage": 1, "expect": ["mkdir projects"], "cmd_hint": "mkdir projects",
-     "goal": "Make a folder called projects:   mkdir projects",
+     "goal": "Make a folder called projects.",
+     "say": "Write the make directory command, to make a folder called projects.",
      "why": "mkdir means 'make directory' — directory is just the full word for folder. Watch it appear in the file tree on the right.",
      "on_win": "You just made a folder called projects. Look to the right — it's in the tree now."},
 
     {"title": "step inside", "stage": 1, "expect": ["cd projects"], "cmd_hint": "cd projects",
-     "goal": "Move into it:   cd projects",
+     "goal": "Step inside the projects folder.",
+     "say": "Write the change directory command, to step inside projects.",
      "why": "cd means 'change directory'. It moves you inside a folder. Your prompt will change to show you're now in projects.",
      "on_win": "The prompt changed to tilde slash projects — you moved inside."},
 
     {"title": "make a python file", "stage": 1, "expect": ["touch hello.py"], "cmd_hint": "touch hello.py",
-     "goal": "Create an empty file called hello.py:   touch hello.py",
+     "goal": "Create an empty file called hello.py.",
+     "say": "Write the command that makes an empty file, called hello.py.",
      "why": "touch creates an empty file. The dot-p-y ending tells the computer this is a Python program.",
      "on_win": "You just made a file called hello.py. It's empty for now — a blank page, ready to write on."},
 
     {"title": "look in detail", "stage": 1, "expect": ["ls -l"], "cmd_hint": "ls -l",
-     "goal": "List with details:   ls -l",
+     "goal": "Look at hello.py with all its details.",
+     "say": "Write the list command with the long flag, for the detailed view.",
      "why": "The dash-l flag means 'long'. It shows each file's size and when it was made. hello.py is zero bytes — nothing inside it yet.",
      "on_win": "See the zero on the left of hello.py? That's its size — zero because it's still empty."},
 
     {"title": "write a line into it", "stage": 2,
      "verify": lambda c: c.startswith("echo") and "> hello.py" in c and "print" in c,
      "cmd_hint": "echo \"print('hello from my first file!')\" > hello.py",
-     "goal": "Put a line of Python inside hello.py using  echo  and a redirect.",
+     "goal": "Put a line of Python inside hello.py.",
+     "say": "Write the command that writes a line into hello.py, using a redirect arrow.",
      "why": "echo prints text. The greater-than arrow redirects it INTO a file instead of the screen. That's the fast way to write files from the terminal.",
      "on_win": "The arrow shoved that line straight into hello.py. The file is no longer empty."},
 
     {"title": "read it back", "stage": 2, "expect": ["cat hello.py"], "cmd_hint": "cat hello.py",
-     "goal": "Show what's inside:   cat hello.py",
+     "goal": "Show what's inside hello.py.",
+     "say": "Write the command that reads a file back, to show hello.py.",
      "why": "cat dumps a file's contents onto the screen. It's the fastest way to peek inside a file.",
      "on_win": "There it is — the line you wrote. cat reads a file out loud to your screen."},
 
     {"title": "run your first program", "stage": 2, "expect": ["python3 hello.py"], "cmd_hint": "python3 hello.py",
-     "goal": "Run it!   python3 hello.py",
+     "goal": "Run hello.py — make it actually do its thing.",
+     "say": "Write the command that runs your python file, hello.py.",
      "why": "python3 runs a Python file. This is the moment your file stops being text and becomes a real, working program.",
      "on_win": "It ran! Your file printed hello from my first file. That's a real program."},
 
     {"title": "rename it", "stage": 3, "expect": ["mv hello.py app.py"], "cmd_hint": "mv hello.py app.py",
-     "goal": "Rename hello.py to app.py:   mv hello.py app.py",
+     "goal": "Rename hello.py to app.py.",
+     "say": "Write the move command, to rename hello.py to app.py.",
      "why": "mv means 'move'. But moving a file to a new name is the same thing as renaming it — one command does both.",
      "on_win": "hello.py is now app.py. Move and rename are the same idea in the terminal."},
 
     {"title": "clean up", "stage": 3, "expect": ["rm app.py"], "cmd_hint": "rm app.py",
-     "goal": "Delete it:   rm app.py",
+     "goal": "Delete app.py.",
+     "say": "Write the remove command, to delete app.py.",
      "why": "rm means 'remove'. It's permanent — there's no recycle bin in the terminal, so double-check before you press Enter.",
      "on_win": "app.py is gone. rm is forever, so always look twice before you hit Enter."},
 
@@ -4948,6 +4959,25 @@ SHELL_LESSONS = [
      "goal": "Meet tmux — read along, then press Enter.",
      "why": "tmux splits one terminal into many panes side by side, so you can edit your code on the left and run your program on the right, all in one window. And if the window closes, your session survives. It's the tool professionals reach for every single day.",
      "on_win": "One window, many panes, and no lost sessions. tmux is a real superpower."},
+]
+
+# how many command lessons get the ghost-write hint before it fades away
+SHELL_GHOST_UNTIL = 5
+
+# the clickable bash manual — (command, what it does, a visual example)
+SHELL_MANUAL = [
+    ("pwd", "print working directory — where am I?", "/home/you"),
+    ("ls", "list — what's in this folder", "hello.py   projects/"),
+    ("ls -l", "list long — sizes + dates", "-rw-r--r--  1 you  you  0  hello.py"),
+    ("mkdir name", "make a folder", "mkdir projects"),
+    ("cd name", "step into a folder", "cd projects"),
+    ("touch name", "make an empty file", "touch hello.py"),
+    ('echo "x" > f', "write text into a file", 'echo "hi" > hello.py'),
+    ("cat name", "read a file", "cat hello.py"),
+    ("python3 f", "run a python file", "python3 hello.py"),
+    ("mv a b", "move / rename", "mv hello.py app.py"),
+    ("cp a b", "copy a file", "cp app.py backup.py"),
+    ("rm name", "remove — permanent!", "rm app.py"),
 ]
 
 # Post-ghost vim edit warm-up: a short run of real edits the user must perform in
@@ -5204,6 +5234,15 @@ class ShellTrainer(Vertical):
         self.app._shell_on_key(event)
 
 
+class ShellHelpIcon(Static):
+    """The always-visible, clickable `?` in the shell's top bar — opens the
+    bash manual. Mouse-click only (the shell owns the keyboard for typing)."""
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._shell_toggle_help()
+
+
 class VolumeBar(Static):
     """Docked bottom volume faders: two rows — VOICE (TTS) and SFX (keyboard /
     win-fail sounds) — each with its own mute toggle and clickable level meter.
@@ -5362,7 +5401,10 @@ class TutorApp(App):
     #vim-foot { width: 100%; text-align: center; }
     #shell { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #shell.visible { display: block; }
-    #shell-head { width: 100%; height: auto; }
+    #shell-topbar { width: 100%; height: auto; }
+    #shell-head { width: 1fr; height: auto; }
+    #shell-help-icon { width: 5; height: 3; padding: 0 1; color: #d5d5d5; text-style: bold; }
+    #shell-help-icon:hover { background: $surface; color: $text; }
     #shell-body { width: 100%; height: 1fr; }
     #shell-term { width: 1fr; height: 1fr; border: tall $primary; }
     #shell-output { height: 1fr; padding: 1 2; background: #0d1117; }
@@ -5370,6 +5412,8 @@ class TutorApp(App):
     #shell-fs-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
     #shell-fs-tree { height: 1fr; padding: 1 2; }
     #shell-foot { width: 100%; height: auto; margin-top: 1; }
+    #shell-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
+    #shell-help.visible { display: block; }
     #cheat { width: 34%; border: tall $warning; padding: 1 2; display: none; }
     #cheat.visible { display: block; }
     #side-examples { width: 42%; border: tall $warning; padding: 0; }
@@ -5665,7 +5709,9 @@ class TutorApp(App):
             yield Static("", id="vim-kb")
             yield Static("", id="vim-foot")
         with ShellTrainer(id="shell"):
-            yield Static("", id="shell-head")
+            with Horizontal(id="shell-topbar"):
+                yield Static("", id="shell-head")
+                yield ShellHelpIcon(" ? ", id="shell-help-icon")
             with Horizontal(id="shell-body"):
                 with Vertical(id="shell-term"):
                     yield Static("", id="shell-output")
@@ -5673,6 +5719,7 @@ class TutorApp(App):
                     yield Static("FILES", id="shell-fs-title")
                     yield Static("", id="shell-fs-tree")
             yield Static("", id="shell-foot")
+        yield Static("", id="shell-help")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -7751,6 +7798,7 @@ class TutorApp(App):
                 fs.run(lesson["cmd_hint"])
         fs.latest = None   # don't re-flash a stale entry on resume
         self._shell_fs = fs
+        self.query_one("#shell-help", Static).remove_class("visible")
         self.query_one("#shell", ShellTrainer).add_class("visible")
         self.query_one("#shell", ShellTrainer).focus()
         self._shell_lesson_speak()
@@ -7765,13 +7813,18 @@ class TutorApp(App):
         if lesson.get("kind") == "info":
             speak(_pers(lesson["why"]))
         else:
-            speak(_pers(lesson["goal"] + " " + lesson["why"]))
+            speak(_pers(lesson.get("say", lesson["goal"]) + " " + lesson["why"]))
 
     def _shell_on_key(self, event):
         if not self._shell_on:
             return
         event.stop(); event.prevent_default()
         key = event.key
+        # the bash manual overlay is open — Esc closes it, everything else waits
+        if self.query_one("#shell-help", Static).has_class("visible"):
+            if key == "escape":
+                self._shell_toggle_help()
+            return
         if key == "escape":
             if self._shell_confirm:
                 self._shell_confirm = False
@@ -7892,6 +7945,7 @@ class TutorApp(App):
         self._shell_on = False
         self._shell_confirm = False
         self._shell_flash_stop()
+        self.query_one("#shell-help", Static).remove_class("visible")
         t = getattr(self, "_shell_adv_timer", None)
         if t is not None:
             t.stop(); self._shell_adv_timer = None
@@ -7915,6 +7969,31 @@ class TutorApp(App):
         self._shell_flash = 0
         if self._shell_flash_timer is not None:
             self._shell_flash_timer.stop(); self._shell_flash_timer = None
+
+    def _shell_toggle_help(self):
+        help_widget = self.query_one("#shell-help", Static)
+        if help_widget.has_class("visible"):
+            help_widget.remove_class("visible")
+            self.query_one("#shell", ShellTrainer).focus()
+        else:
+            help_widget.update(self._shell_render_help())
+            help_widget.add_class("visible")
+
+    def _shell_render_help(self):
+        t = Text()
+        t.append("BASH MANUAL", style="bold cyan")
+        t.append("   ", style="dim")
+        t.append("click [?] or Esc to close", style="dim")
+        t.append("\n\n")
+        for cmd, what, example in SHELL_MANUAL:
+            t.append(cmd, style="bold #86efac")
+            t.append("   ", style="dim")
+            t.append(what, style="#d5d5d5")
+            t.append("\n")
+            t.append("     → ", style="dim")
+            t.append(example, style="#8b949e")
+            t.append("\n")
+        return t
 
     def _shell_render(self):
         self.query_one("#shell-head", Static).update(self._shell_render_head())
@@ -7943,9 +8022,15 @@ class TutorApp(App):
         t.append("\n")
         t.append(lesson["why"], style="#b0b0b8")
         if lesson.get("kind") != "info":
-            t.append("\n\n")
-            t.append("TYPE THIS:  ", style="dim")
-            t.append(lesson["cmd_hint"], style="bold #fbbf24")
+            if self._shell_idx < SHELL_GHOST_UNTIL:
+                # ghost-write hint: the exact command, faint — it fades away
+                # after the first few lessons so you type it from memory
+                t.append("\n\n")
+                t.append("⌁ ghost:  ", style="dim")
+                t.append(lesson["cmd_hint"], style="#5b6472")
+            else:
+                t.append("\n\n")
+                t.append("you know this one — type it from memory", style="dim")
         return t
 
     def _shell_render_term(self):
@@ -8019,9 +8104,9 @@ class TutorApp(App):
                 t.append(self._shell_msg, style="bold #fbbf24")
             t.append("\n")
         if lesson.get("kind") == "info":
-            t.append("press Enter when you've read along · Esc exits", style="dim")
+            t.append("press Enter when you've read along · Esc exits · click [?] for the manual", style="dim")
             return t
-        t.append("type the command, Enter to run · Esc exits · Ctrl+U clears the line", style="dim")
+        t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
 
     def action_demo(self):
