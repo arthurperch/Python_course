@@ -1494,30 +1494,65 @@ GHOST_TARGET = 8   # how many reps to drill (up to) before a challenge unlocks
 _GHOST_WORDS = ["bean", "kiwi", "apple", "delta", "gamma", "thing", "value",
                 "city", "item", "name"]
 
+# string literals that are STRUCTURE, not data — never value-swap these (doing so
+# breaks the code: open(..., "w") -> open(..., "bean") is an invalid file mode)
+_NO_SWAP = {"r", "w", "a", "x", "rb", "wb", "ab", "xb", "rt", "wt", "at", "xt",
+            "utf8", "ascii", "latin1", "cp1252"}
 
-def _ghost_variant(code: str) -> str | None:
+
+def _with_prefix(prefix: str, code: str) -> str:
+    """Join a challenge's starter context with an example so it runs as one
+    self-contained snippet (the starter defines the variables the example uses,
+    e.g. `fruits` for `print(fruits[1])`). Empty prefix = the code stands alone."""
+    prefix = (prefix or "").rstrip()
+    return (prefix + "\n" + code) if prefix else code
+
+
+def _swap_word(m, q: str) -> str:
+    """Swap a quoted word for a fresh value, unless it's structural (file mode /
+    encoding) — those must stay put so the code still runs."""
+    w = m.group(1)
+    if w in _NO_SWAP:
+        return m.group(0)
+    return q + _GHOST_WORDS[abs(hash(w)) % len(_GHOST_WORDS)] + q
+
+
+def _ghost_variant(code: str, stdin: str = "", prefix: str = "") -> str | None:
     """One syntax-safe value-swap for an extra ghost rep: swap simple string
     literals and bump standalone integer literals (never indices). The structure
     is identical — only the VALUES differ — so it's fresh typing with no new
-    rules. Returns None when nothing can safely change."""
+    rules. The result is then RUN in its context to make sure the swap didn't
+    break anything (e.g. a file mode like "w" or a dict key like "alice") —
+    broken variants are rejected so the drill never hands you crashing code.
+    Returns None when nothing can safely change."""
     v = code
-    v = re.sub(r'"([a-zA-Z_][a-zA-Z0-9_]*)"',
-               lambda m: '"' + _GHOST_WORDS[abs(hash(m.group(1))) % len(_GHOST_WORDS)] + '"', v)
-    v = re.sub(r"'([a-zA-Z_][a-zA-Z0-9_]*)'",
-               lambda m: "'" + _GHOST_WORDS[abs(hash(m.group(1))) % len(_GHOST_WORDS)] + "'", v)
+    v = re.sub(r'"([a-zA-Z_][a-zA-Z0-9_]*)"', lambda m: _swap_word(m, '"'), v)
+    v = re.sub(r"'([a-zA-Z_][a-zA-Z0-9_]*)'", lambda m: _swap_word(m, "'"), v)
     # bump standalone positive integers, but never slice/index bits: skip digits
     # preceded by '[' (index), ':' (slice step) or '-' (a negative literal's sign).
     # Bumping the -1 in s[::-1] to 0 would emit the invalid s[::0].
     v = re.sub(r'(?<![\w.\[\-:])\d+(?![\w.])',
                lambda m: str(int(m.group(0)) + 1), v)
-    return v if v != code else None
+    if v == code:
+        return None
+    # validate: the swapped variant must still run clean in its real context,
+    # otherwise the swap hit something structural (file mode, dict key, recursion
+    # step) and the rep would crash at reveal time.
+    try:
+        _, err = run_lesson_code(_with_prefix(prefix, v), stdin)
+    except Exception:
+        return None
+    if err.strip():
+        return None
+    return v
 
 
-def _change_variant(code: str, stdin: str = "") -> tuple[str, dict] | None:
+def _change_variant(code: str, stdin: str = "", prefix: str = "") -> tuple[str, dict] | None:
     """One MEANINGFUL edit for a 'change it' rep: alter a single integer literal
     so the OUTPUT visibly changes — teaching that editing THIS bit changes THAT
     result. Returns (new_code, change) or None, where change = {old, new,
-    meaning, before, after} and before/after are the run outputs (capped)."""
+    meaning, before, after} and before/after are the run outputs (capped).
+    `prefix` is the starter context for challenge examples that reference it."""
     try:
         tree = ast.parse(code)
     except Exception:
@@ -1537,7 +1572,7 @@ def _change_variant(code: str, stdin: str = "") -> tuple[str, dict] | None:
         return (0 if m == "the stop number" else
                 1 if m in ("the start number", "the step") else 2)
     numbers.sort(key=lambda e: (prio(e), -e[2]))
-    before = (run_lesson_code(code, stdin)[0] or "").rstrip("\n")
+    before = (run_lesson_code(_with_prefix(prefix, code), stdin)[0] or "").rstrip("\n")
     lines = code.split("\n")
     starts = [0]
     for ln in lines:
@@ -1550,7 +1585,7 @@ def _change_variant(code: str, stdin: str = "") -> tuple[str, dict] | None:
             s = starts[node.lineno - 1] + node.col_offset
             e = starts[node.end_lineno - 1] + node.end_col_offset
             new_code = code[:s] + str(nv) + code[e:]
-            after_out, after_err = run_lesson_code(new_code, stdin)
+            after_out, after_err = run_lesson_code(_with_prefix(prefix, new_code), stdin)
             if after_err:
                 continue   # this edit breaks the code (e.g. step -> 0) — skip it
             after = (after_out or "").rstrip("\n")
@@ -5054,6 +5089,7 @@ class TutorApp(App):
         self._ghost_idx = 0
         self._ghost_target = ""
         self._ghost_stdin = ""
+        self._ghost_prefix = ""
         self._ghost_pos = 0
         self._ghost_errors: dict[int, str] = {}   # target index -> wrong char typed
         self._ghost_done = False
@@ -5958,16 +5994,19 @@ class TutorApp(App):
         GHOST_TARGET — so the drill lands ~8 different styles of the syntax."""
         codes = []
         seen = set()
+        starter = c.get("starter", "") or ""
 
-        def add(code, stdin=""):
+        def add(code, stdin="", prefix=""):
             code = (code or "").strip()
             if code and code not in seen:
                 seen.add(code)
-                codes.append({"code": code, "stdin": stdin or ""})
+                codes.append({"code": code, "stdin": stdin or "", "prefix": prefix})
 
         for ex in EXAMPLES.get(c["title"], []):
             add(ex["code"], ex.get("stdin", ""))
-        add(example_code(c.get("example", ""))[1], c.get("stdin", ""))
+        # the challenge's own worked example references the starter's variables
+        # (e.g. `print(fruits[1])`), so run it WITH the starter as its context
+        add(example_code(c.get("example", ""))[1], c.get("stdin", ""), prefix=starter)
         topic = c.get("topic", "custom")
         for ex in LESSONS.get(topic, LESSONS.get("custom")).get("examples", []):
             add(ex.get("code", ""), ex.get("stdin", ""))
@@ -5978,10 +6017,11 @@ class TutorApp(App):
             for ex in base:
                 if len(codes) >= GHOST_TARGET:
                     break
-                var = _ghost_variant(ex["code"])
+                var = _ghost_variant(ex["code"], ex.get("stdin", ""), ex.get("prefix", ""))
                 if var and var not in seen:
-                    add(var, ex.get("stdin", ""))
-                    base.append({"code": var, "stdin": ex.get("stdin", "")})
+                    add(var, ex.get("stdin", ""), prefix=ex.get("prefix", ""))
+                    base.append({"code": var, "stdin": ex.get("stdin", ""),
+                                 "prefix": ex.get("prefix", "")})
                     added = True
             if not added:
                 break
@@ -5991,12 +6031,13 @@ class TutorApp(App):
         for ex in codes[:3]:
             if len(codes) >= GHOST_TARGET + 2:
                 break
-            res = _change_variant(ex["code"], ex.get("stdin", ""))
+            res = _change_variant(ex["code"], ex.get("stdin", ""), ex.get("prefix", ""))
             if res:
                 nc, ch = res
                 if nc and nc not in seen:
                     seen.add(nc)
-                    codes.append({"code": nc, "stdin": ex.get("stdin", ""), "change": ch})
+                    codes.append({"code": nc, "stdin": ex.get("stdin", ""),
+                                  "prefix": ex.get("prefix", ""), "change": ch})
         return codes
 
     def _start_ghost_required(self):
@@ -6120,6 +6161,7 @@ class TutorApp(App):
         ex = self._ghost_examples[idx]
         self._ghost_target = ex["code"]
         self._ghost_stdin = ex.get("stdin", "")
+        self._ghost_prefix = ex.get("prefix", "")
         self._ghost_errors = {}
         self._ghost_phase = "type"
         self._ghost_out_text = ""
@@ -6335,20 +6377,23 @@ class TutorApp(App):
         self._ghost_render()
         gen = self._ghost_gen
         threading.Thread(target=self._ghost_capture,
-                         args=(self._ghost_target, self._ghost_stdin, gen),
+                         args=(self._ghost_target, self._ghost_stdin, self._ghost_prefix, gen),
                          daemon=True).start()
 
-    def _ghost_capture(self, code, stdin, gen):
+    def _ghost_capture(self, code, stdin, prefix, gen):
         self._ghost_final_vars = None
+        # challenge examples rely on the starter's variables (e.g. print(fruits[1]))
+        # — prepend it so the run is self-contained and the output is correct
+        full = _with_prefix(prefix, code)
         if stdin:
-            out = run_demo_session(code, stdin)
+            out = run_demo_session(full, stdin)
             err = ""
         else:
-            out, err = run_lesson_code(code, stdin)
+            out, err = run_lesson_code(full, stdin)
             if not out.strip() and not err.strip():
                 # printed nothing (pure math / assignment) — surface the final
                 # variable values so the answer is still visible, never a blank
-                final = final_vars_of(code, stdin)
+                final = final_vars_of(full, stdin)
                 if final:
                     self._ghost_final_vars = final
                     out = "\n".join(f"{k} = {v}" for k, v in final.items())
