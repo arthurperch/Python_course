@@ -6792,8 +6792,9 @@ DEV_LESSONS = [
      "on_win": "There's your first commit, message and all."},
 
     {"module": "Git Foundations", "kind": "challenge", "title": "commit a change",
-     "say": "Change app.py to print something new, stage it, and commit. Do it all yourself — no hints.",
-     "why": "This is the full loop, alone: edit, add, commit. Every developer runs this dozens of times a day.",
+     "say": "Make a second commit. First change app.py to print something different, then stage it, then commit it.",
+     "why": "The full loop — edit, add, commit — chained together on your own. You've done each piece; now put them in order.",
+     "tools": ["echo \"...\" > app.py", "git add app.py", "git commit -m \"...\""],
      "verify_lab": lambda lab: len(lab.git.commits) >= 2,
      "replay": ["echo \"print('changed')\" > app.py", "git add app.py", "git commit -m second"]},
 
@@ -6848,8 +6849,9 @@ DEV_LESSONS = [
      "on_win": "Those are your app's logs, straight from inside the container."},
 
     {"module": "Docker", "kind": "challenge", "title": "stop and clean up",
-     "say": "Stop the web container, then remove it. Two commands, no hints.",
-     "why": "A good engineer cleans up: stop what you're not using, then remove it so it's not lying around.",
+     "say": "Make the web container disappear entirely — stop it first, then remove it.",
+     "why": "Cleanup has an order: a running container must be stopped before you can remove it. You know both commands; now sequence them.",
+     "tools": ["docker stop", "docker rm"],
      "verify_lab": lambda lab: "web" not in lab.docker.containers,
      "replay": ["docker stop web", "docker rm web"]},
 
@@ -6974,8 +6976,9 @@ DEV_LESSONS = [
      "on_win": "That server is now stopped. You still own it; it's just off."},
 
     {"module": "EC2 / VPS", "kind": "challenge", "title": "tear it all down",
-     "say": "Terminate every server you launched — all four. Terminating deletes them for good. No hints.",
-     "why": "Terminating is permanent cleanup. In the real cloud, leaving servers running costs money, so engineers always shut down what they're done with.",
+     "say": "Terminate every server so the CLOUD panel shows them all terminated. You have four, and one command can take them all at once.",
+     "why": "Terminating is permanent cleanup, and leaving servers running costs money. One command, every id listed together, does the whole fleet.",
+     "tools": ["aws ec2 terminate-instances --instance-ids", "i-0001 · i-0002 · i-0003 · i-0004"],
      "verify_lab": lambda lab: bool(lab.aws.instances) and all(i["State"]["Name"] == "terminated" for i in lab.aws.instances.values()),
      "replay": ["aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004"]},
 
@@ -7212,8 +7215,9 @@ DEV_LESSONS = [
      "on_win": "Everything's gone. Create, change, destroy — all from files."},
 
     {"module": "Terraform", "kind": "challenge", "title": "rebuild from the files",
-     "say": "Your infrastructure was destroyed — but your files are still there. Bring it back: plan, then apply. No hints.",
-     "why": "The .tf files are your blueprint. Even after destroy, you rebuild the exact same infrastructure from the same files. That's the whole point of infrastructure as code.",
+     "say": "Bring your bucket and server back after the destroy. The .tf files are still there — plan first, then apply.",
+     "why": "The files are the blueprint: plan shows what's missing, apply makes it real. Order matters — you plan before you apply.",
+     "tools": ["terraform plan", "terraform apply"],
      "verify_lab": lambda lab: {"aws_s3_bucket.static", "aws_instance.web"} <= set(lab.tf.resources),
      "replay": ["terraform plan", "terraform apply"]},
 
@@ -7308,8 +7312,9 @@ DEV_LESSONS = [
      "on_win": "db.yml written. Two playbooks, one inventory."},
 
     {"module": "Ansible", "kind": "challenge", "title": "run it yourself",
-     "say": "Run the db playbook you just wrote. No hints.",
-     "why": "The pattern never changes: ansible-playbook, then the playbook name. You've done this — now recall it alone.",
+     "say": "Install postgres on the db group by running the db.yml playbook you just wrote.",
+     "why": "The pattern never changes: ansible-playbook, then the playbook name. You've run playbooks before — now recall the command on your own.",
+     "tools": ["ansible-playbook", "db.yml"],
      "verify_lab": lambda lab: "postgres" in lab.ansible._host_state("db-1")["packages"],
      "replay": ["ansible-playbook db.yml"]},
 
@@ -11104,10 +11109,10 @@ class TutorApp(App):
         tier = self._dev_attempts
         if lesson.get("kind") == "challenge":
             if tier == 0:
-                return "not yet — think about the end state you need"
+                return "not yet — look at the toolbox: which command comes first?"
             if tier == 1:
-                return "re-read the 'why' — what does the goal describe?"
-            return "the command should produce the state shown in the CLOUD panel"
+                return "check the order — what has to happen before what?"
+            return "use every tool in the toolbox, in the order that makes sense"
         if tier == 0:
             return "not quite — look at the hint bar above"
         if tier == 1:
@@ -11364,7 +11369,14 @@ class TutorApp(App):
         lesson = self._dev_lesson()
         kind = lesson["kind"]
         if kind == "challenge":
-            t.append("challenge — no hint this time. you've got this.", style="bold #fbbf24")
+            tools = lesson.get("tools", [])
+            if tools:
+                t.append("TOOLBOX  ", style="bold #fbbf24")
+                t.append("  ·  ".join(tools), style="#f0f0f5")
+                t.append("   ", style="dim")
+                t.append("→ assemble them in the right order", style="dim")
+            else:
+                t.append("challenge — you've got this.", style="bold #fbbf24")
             return t
         if kind == "info":
             t.append("read along, then press Enter", style="dim")
