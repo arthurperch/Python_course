@@ -45,7 +45,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Checkbox, Header, Input, Markdown, Static
+from textual.widgets import Button, Checkbox, Header, Input, Markdown, Static
 
 WELCOME = """## Welcome to tutor
 
@@ -2147,9 +2147,28 @@ def _prep_tts(text: str) -> str:
     return clean
 
 
+# The user's chosen name (from the home screen). Empty = keep the "Bean"
+# placeholder. Used to personalise the spoken voice AND the example code.
+_CURRENT_NAME = ""
+
+
+def _pers(text: str) -> str:
+    """Swap the name placeholder 'Bean' for the user's own name (voice + examples).
+    Only the capitalised 'Bean' (the name) is swapped — generic lowercase 'bean'
+    in example data is left alone."""
+    if not _CURRENT_NAME or not text:
+        return text
+    return text.replace("Bean", _CURRENT_NAME)
+
+
+def set_current_name(name: str) -> None:
+    global _CURRENT_NAME
+    _CURRENT_NAME = (name or "").strip()
+
+
 def speak(text: str, rate: float = 1.0) -> None:
     global _PIPER_GEN
-    clean = _prep_tts(text)
+    clean = _prep_tts(_pers(text))
     if not clean:
         return
     engine = _tts_engine()
@@ -3244,20 +3263,48 @@ def _explain_code(code: str) -> list[tuple[str, str]]:
     return final
 
 
+def _plain_syntax_hint(code: str) -> str:
+    """A genuinely useful plain-English line for a snippet the AST explainer
+    couldn't classify — instead of the filler 'runs top to bottom'. Names the
+    actual construct so the voice always says something about the syntax."""
+    c = (code or "").strip()
+    first = c.splitlines()[0] if c.splitlines() else c
+    if not first:
+        return ""
+    if "print(" in c:
+        return "print() shows whatever is inside its parentheses on the screen."
+    if "input(" in c:
+        return "input() asks a question and waits for you to type an answer."
+    if "def " in c:
+        return "def names a block of code so you can call it again later."
+    if "for " in c:
+        return "for repeats the indented block, once for each item."
+    if "while " in c:
+        return "while keeps running the block as long as its condition is true."
+    if "if " in c:
+        return "if runs the indented block only when its condition is true."
+    if "=" in c and "==" not in c:
+        return "the = stores the value on its right into the name on its left."
+    if "." in c and "(" in c:
+        return "the dot calls a method — a command attached to that value."
+    # a bare expression: Python computes it, but without print you never see it
+    return f"Python computes {first}, but without print it won't show you the answer."
+
+
 def _ghost_tip(code: str) -> str:
     """Spoken pointer about THIS example — the confusing bits explained in
     plain words, personalized to the actual variables/numbers in play (so two
     different examples never get the same generic line)."""
     bits = _explain_code(code)
     if not bits:
-        return "watch how it runs top to bottom, one line at a time."
+        return _plain_syntax_hint(code)
     parts: list[str] = []
     for _, m in bits[:3]:
         m = m.strip().rstrip(".")
         if m and m not in parts:
             parts.append(m)
     if not parts:
-        return "watch how it runs top to bottom, one line at a time."
+        return _plain_syntax_hint(code)
     return ". ".join(parts) + "."
 
 
@@ -3467,7 +3514,7 @@ def _ghost_why_text(code: str) -> Text:
     bits = _explain_code(code)
     if not bits:
         first = code.splitlines()[0] if code.splitlines() else code
-        bits = [(first, "runs top to bottom, one line at a time")]
+        bits = [(first, _plain_syntax_hint(code))]
     for frag, meaning in bits:
         t.append("   ")
         t.append_text(_spotlight_token(frag))
@@ -3619,7 +3666,7 @@ def _line_explain(line: str) -> str:
     bits = _explain_code(line)
     if bits:
         return ". ".join(m for _, m in bits[:2]).rstrip(".") + "."
-    return "this line runs top to bottom"
+    return _plain_syntax_hint(line)
 
 
 def _tour_parts_for(code: str) -> list[dict]:
@@ -4572,6 +4619,36 @@ VIM_CHALLENGES = [
      "kind": "edit", "start": VIM_DEMO,
      "keys": "yy p",
      "verify": lambda b: b.lines.count("def greet(name):") >= 3},
+
+    # ---- bonus round (fun) ----
+    {"title": "drop into the loop",
+     "desc": "press j three times to hop down into the for loop",
+     "kind": "move", "start": VIM_DEMO,
+     "keys": "j", "target": (3, 0)},
+    {"title": "zoom to the bottom-right corner",
+     "desc": "G to the last line, then $ to blast to the very end",
+     "kind": "move", "start": VIM_DEMO,
+     "keys": "G $", "target": (10, 15)},
+    {"title": "shave off the def line",
+     "desc": "you're standing on it — press dd to shave the whole line away",
+     "kind": "edit", "start": VIM_DEMO,
+     "keys": "dd",
+     "verify": lambda b: "def greet(name):" not in b.lines},
+    {"title": "yeet the second loop",
+     "desc": "G to the bottom, k k up to the loop, then dd to yeet it",
+     "kind": "edit", "start": VIM_DEMO,
+     "keys": "G k dd",
+     "verify": lambda b: "for i in range(5):" not in b.lines},
+    {"title": "twin the total line",
+     "desc": "G to the last line, yy to copy it, p to paste its twin",
+     "kind": "edit", "start": VIM_DEMO,
+     "keys": "G yy p",
+     "verify": lambda b: b.lines.count("    print(total)") >= 2},
+    {"title": "shave the indent",
+     "desc": "G to the bottom, then x to shave one space off the indent",
+     "kind": "edit", "start": VIM_DEMO,
+     "keys": "G x",
+     "verify": lambda b: "   print(total)" in b.lines},
 ]
 
 # Post-ghost vim edit warm-up: a short run of real edits the user must perform in
@@ -5000,6 +5077,11 @@ class TutorApp(App):
     #menu-preview-inner { height: auto; padding: 1 2; }
     #menu-keys { width: 34; padding: 1 2; border-left: solid $primary; background: $boost; }
     #menu-keys-inner { width: 1fr; height: auto; }
+    #menu-name-title { height: 1; padding: 1 1 0 1; text-style: bold; color: $text; }
+    #menu-name-row { height: 3; padding: 0 1; }
+    #menu-name-row Input { width: 1fr; }
+    #menu-name-row Button { width: 10; }
+    #menu-name-hint { height: 1; padding: 0 1; }
     #menu-settings-title { height: 1; padding: 1 1 0 1; text-style: bold; color: $text; }
     #menu-keys Checkbox { margin: 0 1; height: 1; }
     #menu-help { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
@@ -5049,6 +5131,8 @@ class TutorApp(App):
         self.last: str | None = None
         self.seen_topics = set()
         self.p = load_progress()
+        # personalise the voice + examples with the user's chosen name (if any)
+        set_current_name(self.p.get("name", ""))
         # persist the prelude + full-topic-lecture flags so they don't replay on
         # every app restart (in-memory-only meant "how python works" each session)
         self._structure_taught = bool(self.p.get("structure_taught", False))
@@ -5126,6 +5210,7 @@ class TutorApp(App):
         self._vim_pending = None       # first key of a 2-key command in a challenge
         self._vim_preview = None       # (row, col) ghost showing where the key lands
         self._vim_done = False         # all challenges cleared
+        self._vim_confirm = False      # "save checkpoint? Y/N" popup is showing
         self._vim_advance_timer = None # short hold showing the move before the next lesson
         self._menu_anim_timer = None
         self._menu_frame = 0
@@ -5196,6 +5281,11 @@ class TutorApp(App):
                 with VerticalScroll(id="menu-preview-scroll"):
                     yield Static("", id="menu-preview-inner")
             with VerticalScroll(id="menu-keys"):
+                yield Static("YOUR NAME", id="menu-name-title")
+                with Horizontal(id="menu-name-row"):
+                    yield Input(placeholder="your name", id="name-input")
+                    yield Button("Save", id="name-save", variant="primary")
+                yield Static("", id="menu-name-hint")
                 yield Static("SETTINGS", id="menu-settings-title")
                 yield Checkbox("Voice  (reads aloud)", id="set-voice", value=True)
                 yield Checkbox("Music  (win/fail sounds)", id="set-music", value=True)
@@ -5307,6 +5397,7 @@ class TutorApp(App):
             self.query_one(w).add_class("hidden")
         self._render_menu()
         self._sync_settings_checkboxes()
+        self._sync_name_field()
 
     def _show_challenge(self):
         self.mode = "challenge"
@@ -5363,6 +5454,19 @@ class TutorApp(App):
 
     # ---- the two menu levels --------------------------------------------- #
 
+    def _vim_checkpoint_label(self):
+        """A one-line description of the saved VIM checkpoint, or "" if none."""
+        cp = self.p.get("vim_checkpoint")
+        if not isinstance(cp, dict):
+            return ""
+        phase = cp.get("phase")
+        idx = cp.get("idx")
+        if phase == "challenge" and isinstance(idx, int) and 0 <= idx < len(VIM_CHALLENGES):
+            return f"challenge {idx + 1} — {VIM_CHALLENGES[idx]['title']}"
+        if phase == "lesson" and isinstance(idx, int) and 0 <= idx < len(VIM_LESSONS):
+            return f"lesson {idx + 1}"
+        return ""
+
     def _render_series_list(self):
         t = Text()
         t.append("CHOOSE A SERIES", style="bold magenta")
@@ -5375,6 +5479,10 @@ class TutorApp(App):
         t.append("\n")
         t.append("   ")
         t.append("learn h j k l, editing, then a live challenge", style="dim")
+        label = self._vim_checkpoint_label()
+        if label:
+            t.append("\n   ")
+            t.append(f"⏵ resume at {label}", style="bold yellow")
         t.append("\n\n")
         for gi, g in enumerate(GROUPS):
             done, total = self._group_progress(gi)
@@ -5442,6 +5550,12 @@ class TutorApp(App):
                 t.append("• ", style="dim")
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
+            label = self._vim_checkpoint_label()
+            if label:
+                t.append("\n")
+                t.append(f"▶ saved checkpoint — resume at {label}", style="bold yellow")
+                t.append("\n")
+                t.append("press Enter to pick up where you left off", style="dim")
             self.query_one("#menu-preview-inner", Static).update(t)
             return
         c = self._preview_challenge()
@@ -5476,6 +5590,13 @@ class TutorApp(App):
             if pad:
                 t.append(" " * pad)
             t.append(ln, style=CAT_STYLE)
+            t.append("\n")
+        name = self.p.get("name", "")
+        if name:
+            greet = f"welcome back, {name}!"
+            gpad = max(0, (self.size.width - len(greet)) // 2)
+            t.append(" " * gpad)
+            t.append(greet, style="bold #ff9d00")
             t.append("\n")
         return t
 
@@ -5517,6 +5638,37 @@ class TutorApp(App):
                 f"[dim]{kc('F1')} full keymap[/]"
             )
         )
+
+    # ---- name field (menu) ---------------------------------------------- #
+
+    def _sync_name_field(self):
+        """Pre-fill the name input with the saved name."""
+        try:
+            self.query_one("#name-input", Input).value = self.p.get("name", "")
+        except Exception:
+            pass
+
+    def _save_name(self):
+        name = self.query_one("#name-input", Input).value.strip()
+        self.p["name"] = name
+        save_progress(self.p)
+        set_current_name(name)
+        hint = self.query_one("#menu-name-hint", Static)
+        if name:
+            hint.update(f"[green]saved — your examples now use '{name}'[/]")
+            if self.voice_on:
+                speak(f"Got it, {name}. I'll use your name from now on.")
+        else:
+            hint.update("[dim]name cleared — back to 'Bean'[/]")
+        self._render_menu_preview()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "name-save":
+            self._save_name()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "name-input":
+            self._save_name()
 
     # ---- settings checkboxes (menu) ------------------------------------- #
 
@@ -5997,7 +6149,8 @@ class TutorApp(App):
         starter = c.get("starter", "") or ""
 
         def add(code, stdin="", prefix=""):
-            code = (code or "").strip()
+            code = _pers((code or "").strip())
+            prefix = _pers(prefix or "")
             if code and code not in seen:
                 seen.add(code)
                 codes.append({"code": code, "stdin": stdin or "", "prefix": prefix})
@@ -6629,19 +6782,40 @@ class TutorApp(App):
     # ---- VIM / NEOVIM trainer course ------------------------------------- #
 
     def _vim_begin(self):
-        """Open the VIM course overlay and start the first lesson."""
+        """Open the VIM course overlay. Resumes at a saved checkpoint if one
+        exists (from pressing Esc → 'save checkpoint' earlier)."""
+        cp = self.p.get("vim_checkpoint")
+        resume = None
+        if isinstance(cp, dict) and cp.get("phase") in ("lesson", "challenge"):
+            idx = cp.get("idx")
+            n = len(VIM_CHALLENGES) if cp["phase"] == "challenge" else len(VIM_LESSONS)
+            if isinstance(idx, int) and 0 <= idx < n:
+                resume = (cp["phase"], idx)
         self._vim_on = True
         self._vim_idx = 0
         self._vim_step = 0
         self._vim_challenge = False
         self._vim_done = False
         self._vim_msg = ""
+        self._vim_confirm = False
         self._vim_buf = VimDemoBuffer(VIM_DEMO)
-        self._vim_home()
         self.query_one("#vim", VimTrainer).add_class("visible")
         self.query_one("#vim", VimTrainer).focus()
         if self._vim_blink_timer is None:
             self._vim_blink_timer = self.set_interval(0.5, self._vim_blink_tick)
+        if resume:
+            phase, idx = resume
+            if phase == "challenge":
+                self._vim_challenge = True
+                self._vim_challenge_idx = idx
+                self._vim_start_one_challenge()
+                return
+            self._vim_idx = idx
+            self._vim_home()
+            self._vim_lesson_speak()
+            self._vim_render()
+            return
+        self._vim_home()
         self._vim_lesson_speak()
         self._vim_render()
 
@@ -6708,6 +6882,11 @@ class TutorApp(App):
         key = event.key
         if key == "escape":
             event.stop(); event.prevent_default()
+            if self._vim_confirm:
+                # Esc again = cancel the popup, stay in the dojo
+                self._vim_confirm = False
+                self._vim_render()
+                return
             # The "Esc" lesson needs Esc to register as the key to press, NOT to
             # quit the course — otherwise that lesson is unplayable. Only back
             # out when Esc isn't the thing being taught right now.
@@ -6715,6 +6894,17 @@ class TutorApp(App):
             if expected and expected.lower() == "esc":
                 self._vim_advance()
             else:
+                self._vim_confirm = True   # offer to save a checkpoint first
+                self._vim_render()
+            return
+        if self._vim_confirm:
+            # checkpoint popup owns the keys: y saves, n leaves, anything else waits
+            event.stop(); event.prevent_default()
+            ch = (event.character or "").lower()
+            if ch == "y":
+                self._vim_save_checkpoint()
+                self._vim_dismiss()
+            elif ch == "n":
                 self._vim_dismiss()
             return
         # bare modifier presses (Shift/Ctrl/Alt/Super held alone) are not keys —
@@ -6820,6 +7010,10 @@ class TutorApp(App):
         if self._vim_challenge_idx >= len(VIM_CHALLENGES):
             self._vim_done = True
             self._vim_msg = "ALL CHALLENGES CLEARED — you can move AND edit. Esc to leave."
+            # course finished — drop any stale checkpoint so it starts fresh next time
+            if "vim_checkpoint" in self.p:
+                del self.p["vim_checkpoint"]
+                save_progress(self.p)
             if self.voice_on:
                 speak("All challenges cleared. You can move and edit like a pro.")
             self._vim_render()
@@ -6856,8 +7050,19 @@ class TutorApp(App):
     def _vim_label(self, key):
         return {"Bksp": "⌫", "Enter": "⏎", "Space": "␣"}.get(key, key)
 
+    def _vim_save_checkpoint(self):
+        """Remember exactly where the user is in the dojo so they can jump back."""
+        if self._vim_challenge:
+            self.p["vim_checkpoint"] = {"phase": "challenge", "idx": self._vim_challenge_idx}
+        else:
+            self.p["vim_checkpoint"] = {"phase": "lesson", "idx": self._vim_idx}
+        save_progress(self.p)
+        if self.voice_on:
+            speak("Checkpoint saved. You can pick up right here later.")
+
     def _vim_dismiss(self):
         self._vim_on = False
+        self._vim_confirm = False
         if self._vim_blink_timer is not None:
             self._vim_blink_timer.stop(); self._vim_blink_timer = None
         t = getattr(self, "_vim_advance_timer", None)
@@ -7061,6 +7266,15 @@ class TutorApp(App):
 
     def _vim_render_foot(self):
         t = Text()
+        if self._vim_confirm:
+            t.append("Save a checkpoint so you can resume here later?", style="bold yellow")
+            t.append("\n")
+            t.append("[y] save & leave", style="bold green")
+            t.append("   ")
+            t.append("[n] leave without saving", style="#f0f0f5")
+            t.append("   ")
+            t.append("[Esc] keep going", style="dim")
+            return t
         if self._vim_challenge:
             if self._vim_done:
                 if self._vim_msg:
