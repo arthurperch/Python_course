@@ -17,6 +17,15 @@ curl -fsSL "$BASE/tutor.py" -o "$DEST/tutor.py"
 # optional piper daemon (faster neural TTS if piper is installed)
 curl -fsSL "$BASE/assets/piper_daemon.py" -o "$HOME/.learning/piper_daemon.py" 2>/dev/null || true
 
+# bundled media: keypress "thock" samples, win/fail stings, and the cat clip
+echo "→ fetching sounds, keypress samples, and the cat clip…"
+if curl -fsSL "$BASE/assets/media.tar.gz" -o "$HOME/.learning/media.tar.gz"; then
+    tar -xzf "$HOME/.learning/media.tar.gz" -C "$HOME/.learning"
+    rm -f "$HOME/.learning/media.tar.gz"
+else
+    echo "⚠  media download failed — tutor still works (synthesized fallback sounds)." >&2
+fi
+
 echo "→ creating a private virtualenv + installing deps (textual, rich)…"
 if [ ! -x "$DEST/venv/bin/python" ]; then
     "$PY" -m venv "$DEST/venv"

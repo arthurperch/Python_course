@@ -2524,14 +2524,24 @@ def play_key() -> None:
 
 # ---- celebration music (the user's own win / fail sounds) ----------------- #
 
-MUSIC_DIR = Path.home() / "Music"
+MUSIC_DIRS = [
+    Path.home() / ".learning" / "music",   # bundled install location (install.sh)
+    Path.home() / "Music",                 # legacy / the user's own copies
+]
 
 
 def _music_list(*patterns) -> list[Path]:
-    """Sorted audio files under ~/Music matching any glob pattern."""
+    """Audio files matching any glob pattern, searched across the bundled dir
+    and ~/Music. Deduped by filename so a bundled copy + a local copy never
+    double up (and the celebration/fail pools stay the same length)."""
     out: list[Path] = []
-    for p in patterns:
-        out.extend(sorted(MUSIC_DIR.glob(p)))
+    seen: set[str] = set()
+    for d in MUSIC_DIRS:
+        for p in patterns:
+            for f in sorted(d.glob(p)):
+                if f.name not in seen:
+                    seen.add(f.name)
+                    out.append(f)
     return out
 
 
@@ -2564,7 +2574,17 @@ def play_file(path: Path, volume: float = 0.7) -> None:
 
 # ---- tier-complete cat clip (real video, not ASCII) ----------------------- #
 
-CAT_VIDEO = Path.home() / "Downloads" / "catmicrowave.mp4"
+def _cat_video() -> Path | None:
+    """Locate the tier-complete cat clip: bundled install location first, then
+    the legacy ~/Downloads spot. Returns None if neither exists (the caller
+    falls back to the plain 'tier complete' banner)."""
+    for p in (Path.home() / ".learning" / "catmicrowave.mp4",
+              Path.home() / "Downloads" / "catmicrowave.mp4"):
+        if p.exists():
+            return p
+    return None
+
+
 CAT_VIDEO_S = 5.6   # clip length + mpv window-open latency — timer fires just after it ends
 
 
@@ -9150,7 +9170,7 @@ class TutorApp(App):
         self.query_one("#confetti", Confetti).dismiss()
         self._cat_on_done = on_done
         self._cat_playing = True
-        self._cat_proc = play_video(CAT_VIDEO, mute=False)   # full audio loading screen
+        self._cat_proc = play_video(_cat_video(), mute=False)   # full audio loading screen
         self.query_one("#cat", Static).add_class("visible")
         self.query_one("#cat", Static).update(self._cat_banner())
         t = getattr(self, "_cat_timer", None)

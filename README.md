@@ -42,6 +42,20 @@ tutor
 
 ---
 
+## Update (bring everything up to date)
+
+Re-run the same installer — it's idempotent and pulls the latest code **and**
+the media pack (sounds, keypress samples, cat clip):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arthurperch/Python_course/main/install.sh | bash
+```
+
+Your progress (XP, level, streak, volume) is untouched — it lives in
+`~/.learning/progress.json`.
+
+---
+
 ## Voice (optional, but recommended)
 
 `tutor` reads everything aloud with a **local** voice — it auto-detects what's
@@ -57,8 +71,9 @@ No voice? Everything still works, just silently. Toggle the voice with `F6`.
 ## Sound
 
 Uses `aplay` + `paplay` (ALSA / PulseAudio — preinstalled on most desktops) for
-key sounds and win/fail stings. For mechanical-keypress "thock" sounds, drop
-your own samples in `~/.learning/keypress/keypress-*.wav`.
+key sounds and win/fail stings. The installer also bundles the full media pack —
+32 mechanical-keypress "thock" samples, the win/fail sting library, and the
+tier-complete cat clip — into `~/.learning/`, so it's all there on day one.
 
 Press **`F4`** to open a volume bar at the bottom: click the `(♪)`/`(✕)` icon to
 mute everything (sounds + voice) at once, click the meter to jump to a level, or
