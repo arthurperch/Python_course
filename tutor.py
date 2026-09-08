@@ -29,7 +29,9 @@ import array
 import ast
 import json
 import math
+import os
 import re
+import sys
 import random
 import shutil
 import struct
@@ -5093,6 +5095,1102 @@ class ShellFS:
         return [], [f"chmod: invalid mode: '{mode}'"]
 
 
+# ============================================================================
+# CLOUD & DEVOPS — a simulated enterprise environment (offline, deterministic)
+# ============================================================================
+# The learner writes real infrastructure-as-code (Dockerfiles, Ansible
+# playbooks, Terraform, boto3 scripts, CI workflows) and these simulators
+# EXECUTE it against an in-memory "cloud": fake AWS (S3 + EC2/VPS), a local
+# docker daemon, terraform state, an ansible inventory, git, and a CI/CD
+# pipeline. Nothing touches the network — everything replays deterministically
+# so lessons can be tested and resumed exactly.
+
+# ---- tiny YAML subset parser (two-space indentation) -----------------------
+
+def _yaml_lines(text):
+    """Strip comments/blank lines; return (indent, content) pairs."""
+    out = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        content = line.strip()
+        # strip a trailing `# comment` (outside quotes) — naive but fits the subset
+        i = content.find("#")
+        if i > 0 and content[i - 1] == " ":
+            content = content[:i].rstrip()
+        if not content:
+            continue
+        out.append((indent, content))
+    return out
+
+
+def _yaml_scalar(s):
+    s = s.strip()
+    if s in ("", "null", "~", "None"):
+        return None
+    if s.lower() in ("yes", "true", "on"):
+        return True
+    if s.lower() in ("no", "false", "off"):
+        return False
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1]
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        return [x.strip().strip("'\"") for x in inner.split(",")]
+    if re.fullmatch(r"-?\d+", s):
+        return int(s)
+    return s
+
+
+def yaml_parse(text):
+    """Parse the tiny YAML subset we teach into Python lists/dicts."""
+    lines = _yaml_lines(text)
+    if not lines:
+        return None
+    root_is_list = lines[0][1].startswith("- ")
+    root = [] if root_is_list else {}
+    stack = [(-1, root, None)]  # (indent, container, key)
+
+    def down_to(indent):
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+    i, n = 0, len(lines)
+    while i < n:
+        indent, content = lines[i]
+        if content.startswith("- "):
+            down_to(indent)
+            parent = stack[-1][1]
+            if not isinstance(parent, list):
+                parent = root
+            rest = content[2:].strip()
+            if ":" in rest and rest.split(":", 1)[0].strip():
+                k, _, v = rest.partition(":")
+                item = {k.strip(): _yaml_scalar(v) if v.strip() else None}
+                parent.append(item)
+                stack.append((indent, item, None))
+            else:
+                parent.append(_yaml_scalar(rest))
+            i += 1
+            continue
+        if ":" in content:
+            k, _, v = content.partition(":")
+            k = k.strip()
+            down_to(indent)
+            parent = stack[-1][1]
+            if not isinstance(parent, dict):
+                parent = root
+            if v.strip():
+                parent[k] = _yaml_scalar(v)
+            else:
+                nxt = i + 1
+                if nxt < n and lines[nxt][0] > indent:
+                    child = [] if lines[nxt][1].startswith("- ") else {}
+                    parent[k] = child
+                    stack.append((indent, child, None))
+                else:
+                    parent[k] = None
+            i += 1
+            continue
+        i += 1
+    return root
+
+
+def ini_parse(text):
+    """Parse a tiny INI inventory (`[group]` then one host per line)."""
+    groups = {}
+    cur = None
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#") or s.startswith(";"):
+            continue
+        if s.startswith("[") and s.endswith("]"):
+            cur = s[1:-1]
+            groups.setdefault(cur, [])
+        elif cur is not None:
+            groups[cur].append(s)
+    return groups
+
+
+def _hcl_val(v):
+    v = v.strip()
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1]
+    if v.lower() in ("true", "false"):
+        return v.lower() == "true"
+    if re.fullmatch(r"\d+", v):
+        return int(v)
+    if v.startswith("[") and v.endswith("]"):
+        return [x.strip().strip('"') for x in v[1:-1].split(",") if x.strip()]
+    return v
+
+
+def hcl_parse(text):
+    """Parse the tiny HCL subset (blocks + `key = value` attrs)."""
+    blocks, stack = [], []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#") or s.startswith("//"):
+            continue
+        if s.endswith("{") and "=" not in s:
+            header = s[:-1].strip()
+            parts = header.split()
+            block = {"type": parts[0], "labels": [p.strip('"') for p in parts[1:]],
+                     "attrs": {}, "blocks": []}
+            if stack:
+                stack[-1]["blocks"].append(block)
+            else:
+                blocks.append(block)
+            stack.append(block)
+        elif s == "}":
+            if stack:
+                stack.pop()
+        elif "=" in s and stack:
+            k, _, v = s.partition("=")
+            stack[-1]["attrs"][k.strip()] = _hcl_val(v)
+    return blocks
+
+
+# ---- git (simulated) --------------------------------------------------------
+
+class GitRepo:
+    def __init__(self, fs):
+        self.fs = fs
+        self.inited = False
+        self.branch = "main"
+        self.commits = []              # list of {hash, msg, branch}
+        self.staged = {}               # path -> content snapshot at `git add`
+        self.committed = {}            # path -> content snapshot at last commit
+        self.n = 0
+
+    def _hash(self, msg):
+        self.n += 1
+        return "a%06d" % self.n
+
+    def _status_lines(self):
+        out = []
+        if not self.inited:
+            return ["fatal: not a git repository (or any of the parent directories)"]
+        if self.branch:
+            out.append(f"On branch {self.branch}")
+        changed = [p for p, c in self.fs.files.items() if self.committed.get(p) != c]
+        # untracked = in fs but never committed
+        untracked = [p for p in self.fs.files if p not in self.committed]
+        staged_names = sorted(self.staged.keys())
+        if staged_names:
+            out.append("Changes to be committed:")
+            for p in staged_names:
+                out.append(f"  new file:   {p}")
+        if changed:
+            out.append("Changes not staged for commit:")
+            for p in sorted(changed):
+                out.append(f"  modified:   {p}")
+        if untracked:
+            out.append("Untracked files:")
+            for p in sorted(untracked):
+                out.append(f"\t{p}")
+        if not staged_names and not changed and not untracked:
+            out.append("nothing to commit, working tree clean")
+        return out
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["usage: git <command>"]
+        cmd = parts[0]
+        args = parts[1:]
+        if cmd == "init":
+            self.inited = True
+            return [f"Initialized empty Git repository"], []
+        if not self.inited:
+            return [], ["fatal: not a git repository"]
+        if cmd == "add":
+            if not args:
+                return [], ["Nothing specified, nothing added."]
+            added = []
+            for a in args:
+                if a == "." or a == "-A":
+                    for p, c in self.fs.files.items():
+                        self.staged[p] = c
+                        added.append(p)
+                else:
+                    p = self.fs._resolve(a)
+                    if p in self.fs.files:
+                        self.staged[p] = self.fs.files[p]
+                        added.append(p)
+                    else:
+                        return [], [f"fatal: pathspec '{a}' did not match any files"]
+            return (["staged: " + ", ".join(added)] if added else []), []
+        if cmd == "commit":
+            msg = ""
+            m = re.search(r'-m\s+["\']([^"\']*)["\']', rest)
+            if m:
+                msg = m.group(1)
+            else:
+                m = re.search(r'-m\s+(\S+)', rest)
+                if m:
+                    msg = m.group(1)
+            if not self.staged:
+                return [], ["nothing to commit, working tree clean"]
+            h = self._hash(msg)
+            self.committed.update(self.staged)
+            self.commits.append({"hash": h, "msg": msg, "branch": self.branch})
+            self.staged = {}
+            out = [f"[{self.branch} {h}] {msg}", f" {len(self.commits)} file changed" if len(self.commits) == 1 else f" {len(self.commits)} files changed"]
+            # trigger the CI/CD pipeline on every commit (teaches the loop)
+            return out, []
+        if cmd == "log":
+            if not self.commits:
+                return [], []
+            out = []
+            for c in reversed(self.commits):
+                out.append(f"commit {c['hash']} ({c['branch']})")
+                if c["msg"]:
+                    out.append(f"    {c['msg']}")
+            return out, []
+        if cmd == "status":
+            return self._status_lines(), []
+        if cmd == "branch":
+            if args and not args[0].startswith("-"):
+                return [f"branch '{args[0]}' created"], []
+            return [f"* {self.branch}"], []
+        if cmd in ("checkout", "switch"):
+            if args and args[0] == "-b":
+                self.branch = args[1] if len(args) > 1 else "feature"
+            elif args:
+                self.branch = args[0]
+            return [f"Switched to branch '{self.branch}'"], []
+        if cmd == "merge":
+            if args:
+                return [f"Merge made by the 'recursive' strategy"], []
+            return [], ["fatal: no branch specified"]
+        if cmd == "diff":
+            changed = [p for p, c in self.fs.files.items() if self.committed.get(p) != c]
+            if not changed:
+                return [], []
+            return ["diff --git a/" + p for p in sorted(changed)], []
+        return [], [f"git: '{cmd}' is not a git command"]
+
+
+# ---- docker (simulated) ------------------------------------------------------
+
+class DockerEnv:
+    def __init__(self, fs):
+        self.fs = fs
+        self.images = {}       # name -> {"id": str, "exposed": [ports]}
+        self.containers = {}   # name -> {"image", "running", "ports"}
+        self.next = 1
+
+    def _dockerfile(self):
+        p = self.fs._resolve("Dockerfile")
+        return self.fs.files.get(p, "")
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["docker: missing command"]
+        cmd = parts[0]
+        if cmd == "build":
+            tag = None
+            if "-t" in parts:
+                ti = parts.index("-t")
+                if ti + 1 < len(parts):
+                    tag = parts[ti + 1]
+            tag = tag or "app:latest"
+            df = self._dockerfile()
+            if not df:
+                return [], ["unable to prepare context: unable to evaluate symlinks in Dockerfile path: lstat Dockerfile: no such file or directory"]
+            lines = []
+            for ln in df.splitlines():
+                s = ln.strip()
+                if s.upper().startswith("FROM "):
+                    lines.append(f" ---> pulling {s[5:].strip()}")
+            lines.append(" ---> build complete")
+            self.images[tag] = {"id": "img%03d" % self.next, "exposed": []}
+            self.next += 1
+            return ["Sending build context to Docker daemon",
+                    "Step 1/1 : FROM python:3.11-slim"] + lines + [f"Successfully tagged {tag}"], []
+        if cmd == "images":
+            if not self.images:
+                return ["REPOSITORY  TAG  IMAGE ID  CREATED  SIZE"], []
+            out = ["REPOSITORY  TAG  IMAGE ID  CREATED  SIZE"]
+            for name, im in self.images.items():
+                repo, _, tag = name.partition(":")
+                out.append(f"{repo}  {tag or 'latest'}  {im['id']}  2 minutes ago  128MB")
+            return out, []
+        if cmd == "run":
+            name, img = None, None
+            ports = []
+            detached = "-d" in parts
+            if "--name" in parts:
+                ni = parts.index("--name")
+                if ni + 1 < len(parts):
+                    name = parts[ni + 1]
+            if "-p" in parts:
+                pi = parts.index("-p")
+                if pi + 1 < len(parts):
+                    ports.append(parts[pi + 1])
+            # last positional arg = image
+            for a in parts:
+                if not a.startswith("-") and a not in ("run", name, *ports):
+                    img = a
+            if not img:
+                return [], ["docker run requires an image"]
+            if img not in self.images:
+                return [], [f"Unable to find image '{img}' locally: docker: Error response from daemon: pull access denied"]
+            name = name or f"container{self.next}"
+            cid = "c%03d" % self.next
+            self.next += 1
+            self.containers[name] = {"image": img, "running": True, "ports": ports, "id": cid}
+            out = [cid]
+            if not detached:
+                # foreground run shows app output (first lines of the image's CMD)
+                out += self._fake_logs(img)
+            return out, []
+        if cmd == "ps":
+            if not self.containers:
+                return ["CONTAINER ID  IMAGE  STATUS  PORTS  NAMES"], []
+            out = ["CONTAINER ID  IMAGE  STATUS  PORTS  NAMES"]
+            for name, c in self.containers.items():
+                st = "Up 2 minutes" if c["running"] else "Exited (0)"
+                out.append(f"{c['id']}  {c['image']}  {st}  {' '.join(c['ports'])}  {name}")
+            return out, []
+        if cmd == "stop":
+            if args := parts[1:]:
+                for n in args:
+                    if n in self.containers:
+                        self.containers[n]["running"] = False
+                return [a for a in args], []
+            return [], ["docker stop requires a container name"]
+        if cmd == "start":
+            for n in parts[1:]:
+                if n in self.containers:
+                    self.containers[n]["running"] = True
+            return parts[1:], []
+        if cmd == "rm":
+            for n in parts[1:]:
+                self.containers.pop(n, None)
+            return [], []
+        if cmd == "rmi":
+            for n in parts[1:]:
+                self.images.pop(n, None)
+            return [], []
+        if cmd == "logs":
+            n = parts[1] if len(parts) > 1 else ""
+            if n in self.containers:
+                return self._fake_logs(self.containers[n]["image"]), []
+            return [], [f"Error: No such container: {n}"]
+        if cmd == "exec":
+            # docker exec <name> <cmd...>
+            n = parts[1] if len(parts) > 1 else ""
+            if n in self.containers:
+                return [f"(inside {n}) ran: {' '.join(parts[2:])}"], []
+            return [], [f"Error: No such container: {n}"]
+        return [], [f"docker: unknown command '{cmd}'"]
+
+    def _fake_logs(self, img):
+        return [" * Serving Flask app", " * Running on http://0.0.0.0:5000"]
+
+
+# ---- AWS (simulated S3 + EC2/VPS) -------------------------------------------
+
+class AwsEnv:
+    def __init__(self, fs):
+        self.fs = fs
+        self.buckets = {}      # name -> {key: content}
+        self.instances = {}    # id -> {"ImageId","InstanceType","State":{...}}
+        self.next_inst = 1
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["usage: aws <service> <command>"]
+        svc = parts[0]
+        if svc == "s3":
+            return self._s3(parts[1:])
+        if svc == "ec2":
+            return self._ec2(parts[1:])
+        if svc in ("--version", "version"):
+            return ["aws-cli/2.15.0"], []
+        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2"]
+
+    def _s3(self, args):
+        if not args:
+            return [], ["usage: aws s3 <command>"]
+        cmd = args[0]
+        if cmd == "mb":
+            if len(args) < 2:
+                return [], ["usage: aws s3 mb <s3://bucket>"]
+            name = args[1].replace("s3://", "")
+            if name in self.buckets:
+                return [], [f"make_bucket failed: s3://{name} An error occurred (BucketAlreadyOwnedByYou)"]
+            self.buckets[name] = {}
+            return [f"make_bucket: {name}"], []
+        if cmd == "ls":
+            if len(args) == 1:
+                if not self.buckets:
+                    return [], []
+                return [f"2026-09-07 09:00:00 {name}" for name in sorted(self.buckets)], []
+            name = args[1].replace("s3://", "")
+            if name not in self.buckets:
+                return [], [f"An error occurred (NoSuchBucket): {name}"]
+            return [f"2026-09-07 09:00:00 {len(c):>5} {k}" for k, c in sorted(self.buckets[name].items())], []
+        if cmd == "cp":
+            src, dst = args[1], args[2]
+            if src.startswith("s3://"):
+                # download
+                b, _, k = src[5:].partition("/")
+                if b in self.buckets and k in self.buckets[b]:
+                    self.fs.files[self.fs._resolve(dst)] = self.buckets[b][k]
+                    return [f"download: s3://{b}/{k} to ./{dst}"], []
+                return [], [f"fatal error: An error occurred (404) when calling the HeadObject operation"]
+            # upload
+            b, _, k = dst[5:].partition("/")
+            p = self.fs._resolve(src)
+            if b not in self.buckets:
+                return [], [f"upload failed: {dst} An error occurred (NoSuchBucket)"]
+            body = self.fs.files.get(p, src)
+            self.buckets[b][k] = body
+            return [f"upload: ./{src} to {dst}"], []
+        if cmd == "rm":
+            if len(args) < 2:
+                return [], ["usage: aws s3 rm <s3://bucket/key>"]
+            b, _, k = args[1][5:].partition("/")
+            if b in self.buckets:
+                self.buckets[b].pop(k, None)
+            return [f"delete: s3://{b}/{k}"], []
+        if cmd == "rb":
+            b = args[1].replace("s3://", "")
+            if b in self.buckets and self.buckets[b]:
+                return [], [f"remove_bucket failed: s3://{b} An error occurred (BucketNotEmpty)"]
+            self.buckets.pop(b, None)
+            return [f"remove_bucket: {b}"], []
+        return [], [f"aws s3: unknown command '{cmd}'"]
+
+    def _ec2(self, args):
+        if not args:
+            return [], ["usage: aws ec2 <command>"]
+        cmd = args[0]
+        if cmd == "run-instances":
+            d = dict(zip(args[1::2], args[2::2]))
+            ami = d.get("--image-id", "ami-default")
+            itype = d.get("--instance-type", "t3.micro")
+            iid = "i-%04d" % self.next_inst
+            self.next_inst += 1
+            self.instances[iid] = {"ImageId": ami, "InstanceType": itype,
+                                   "State": {"Name": "running"}}
+            return [f"INSTANCE  {iid}  {ami}  {itype}  running"], []
+        if cmd == "describe-instances":
+            if not self.instances:
+                return ["Reservations: []"], []
+            out = []
+            for iid, inst in self.instances.items():
+                out.append(f"{iid}  {inst['ImageId']}  {inst['InstanceType']}  {inst['State']['Name']}")
+            return out, []
+        if cmd in ("terminate-instances", "stop-instances", "start-instances"):
+            state = {"terminate-instances": "terminated",
+                     "stop-instances": "stopped",
+                     "start-instances": "running"}[cmd]
+            ids = []
+            if "--instance-ids" in args:
+                ids = args[args.index("--instance-ids") + 1:]
+            for iid in ids:
+                if iid in self.instances:
+                    self.instances[iid]["State"]["Name"] = state
+            return [f"{iid}: {state}" for iid in ids], []
+        return [], [f"aws ec2: unknown command '{cmd}'"]
+
+
+# ---- terraform (simulated) ---------------------------------------------------
+
+class TerraformEnv:
+    def __init__(self, fs):
+        self.fs = fs
+        self.resources = {}   # "type.name" -> {"attrs": {...}}
+        self.plan = []        # ("+"|"~"|"-", key, attrs)
+        self.inited = False
+
+    def _config(self):
+        cfg = {}
+        for path, content in self.fs.files.items():
+            if path.endswith(".tf"):
+                for b in hcl_parse(content):
+                    if b["type"] in ("resource", "data") and b["labels"]:
+                        key = ".".join(b["labels"])
+                        cfg[key] = {"type": b["type"], "attrs": dict(b["attrs"])}
+        return cfg
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["Usage: terraform <command>"]
+        cmd = parts[0]
+        if cmd == "init":
+            self.inited = True
+            return ["Initializing the backend...",
+                    "Initializing provider plugins...",
+                    "Terraform has been successfully initialized!"], []
+        if cmd == "plan":
+            if not self.inited:
+                return [], ["Error: Backend initialization required"]
+            cfg = self._config()
+            plan = []
+            for key, r in cfg.items():
+                if key not in self.resources:
+                    plan.append(("+", key, r["attrs"]))
+                elif self.resources[key]["attrs"] != r["attrs"]:
+                    plan.append(("~", key, r["attrs"]))
+            for key in list(self.resources):
+                if key not in cfg:
+                    plan.append(("-", key, {}))
+            self.plan = plan
+            if not plan:
+                return ["No changes. Your infrastructure matches the configuration."], []
+            out = ["Terraform will perform the following actions:"]
+            for op, key, attrs in plan:
+                detail = " " + ", ".join(f"{k}={v!r}" for k, v in attrs.items()) if attrs else ""
+                out.append(f"  {op} {key}{detail}")
+            a = sum(1 for o, _, _ in plan if o == "+")
+            c = sum(1 for o, _, _ in plan if o == "~")
+            d = sum(1 for o, _, _ in plan if o == "-")
+            out.append(f"Plan: {a} to add, {c} to change, {d} to destroy.")
+            return out, []
+        if cmd == "apply":
+            for op, key, attrs in self.plan:
+                if op == "-":
+                    self.resources.pop(key, None)
+                else:
+                    self.resources[key] = {"attrs": attrs}
+            n = len(self.plan)
+            self.plan = []
+            return [f"Apply complete! Resources: {n} added/changed."], []
+        if cmd == "destroy":
+            self.resources.clear()
+            return ["Destroy complete! Resources: 0 remaining."], []
+        if cmd == "state":
+            if len(parts) > 1 and parts[1] == "list":
+                return sorted(self.resources.keys()), []
+            return [], []
+        if cmd == "show":
+            return [f"{k}: {json.dumps(self.resources[k]['attrs'])}" for k in sorted(self.resources)], []
+        return [], [f"terraform: unknown command '{cmd}'"]
+
+
+# ---- ansible (simulated) -----------------------------------------------------
+
+class AnsibleEnv:
+    def __init__(self, fs):
+        self.fs = fs
+        self.hosts = {}        # host -> {"packages": set, "services": {}, "files": {}}
+        self.handlers_fired = []
+
+    def _host_state(self, host):
+        return self.hosts.setdefault(host, {"packages": set(), "services": {}, "files": {}})
+
+    def _module(self, host, module, params):
+        st = self._host_state(host)
+        if module == "apt":
+            name = params.get("name", "")
+            if name in st["packages"]:
+                return False, f"{name} is already installed"
+            st["packages"].add(name)
+            return True, f"installed {name}"
+        if module == "service":
+            name = params.get("name", "")
+            state = params.get("state", "started")
+            if st["services"].get(name) == state:
+                return False, f"{name} is already {state}"
+            st["services"][name] = state
+            return True, f"{name} is now {state}"
+        if module == "copy":
+            dest = params.get("dest", params.get("path", ""))
+            content = params.get("content", self.fs.files.get(self.fs._resolve(params.get("src", "")), ""))
+            if st["files"].get(dest) == content:
+                return False, f"{dest} is unchanged"
+            st["files"][dest] = content
+            return True, f"copied to {dest}"
+        if module in ("file", "template", "user", "shell", "command", "get_url", "debug"):
+            # these are "real actions" — always count as changed on first touch,
+            # idempotent if the exact same action was already recorded
+            key = f"{module}:{json.dumps(params, sort_keys=True)}"
+            done = st.setdefault("actions", set())
+            if key in done:
+                return False, f"{module} already applied"
+            done.add(key)
+            return True, f"{module}: ok"
+        return True, f"ran {module}"
+
+    def _play_hosts(self, hosts_spec):
+        # hosts: "web" | "all" | "web,db" | explicit list
+        result = []
+        for grp in [h.strip() for h in hosts_spec.split(",")]:
+            if grp in self.inventory:
+                result.extend(self.inventory[grp])
+            elif grp == "all":
+                for g in self.inventory.values():
+                    result.extend(g)
+            else:
+                result.append(grp)
+        return sorted(set(result))
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["usage: ansible-playbook <playbook.yml>"]
+        # strip flags like -i <file> / --tags <t>
+        playbook = None
+        tags = None
+        i = 0
+        argv = parts
+        while i < len(argv):
+            a = argv[i]
+            if a in ("-i", "--inventory"):
+                inv = argv[i + 1] if i + 1 < len(argv) else "hosts.ini"
+                self._load_inventory(inv)
+                i += 2
+                continue
+            if a in ("--tags", "-t"):
+                tags = argv[i + 1] if i + 1 < len(argv) else None
+                i += 2
+                continue
+            if not a.startswith("-"):
+                playbook = a
+            i += 1
+        if not playbook:
+            return [], ["ansible-playbook: no playbook given"]
+        p = self.fs._resolve(playbook)
+        if p not in self.fs.files:
+            return [], [f"ERROR! the playbook: {playbook} could not be found"]
+        self._load_inventory("hosts.ini")
+        data = yaml_parse(self.fs.files[p])
+        if not isinstance(data, list):
+            return [], ["ERROR! playbook must be a list of plays"]
+        events = []
+        self.handlers_fired = []
+        for play in data:
+            if not isinstance(play, dict):
+                continue
+            name = play.get("name", "unnamed")
+            hosts = self._play_hosts(str(play.get("hosts", "all")))
+            tasks = play.get("tasks", [])
+            handlers = play.get("handlers", [])
+            notify = {}  # handler-name -> set of hosts to run it on
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                tname = task.get("name", "unnamed")
+                if tags and tname not in str(tags).split(","):
+                    continue
+                mod = next((k for k in task if k not in ("name", "notify", "tags")), None)
+                if mod is None:
+                    continue
+                params = task.get(mod, {}) or {}
+                for host in hosts:
+                    changed, msg = self._module(host, mod, params)
+                    events.append({"play": name, "task": tname, "host": host,
+                                   "changed": changed, "msg": msg})
+                    if changed and task.get("notify"):
+                        notify.setdefault(task["notify"], set()).add(host)
+            # run handlers on the hosts that notified them
+            for hdl in handlers:
+                if not isinstance(hdl, dict):
+                    continue
+                hname = hdl.get("name", "")
+                if hname not in notify:
+                    continue
+                mod = next((k for k in hdl if k != "name"), None)
+                if mod is None:
+                    continue
+                params = hdl.get(mod, {}) or {}
+                for host in notify[hname]:
+                    changed, msg = self._module(host, mod, params)
+                    events.append({"play": name, "task": f"HANDLER: {hname}",
+                                   "host": host, "changed": changed, "msg": msg})
+                    self.handlers_fired.append(hname)
+        return self._render_events(events), []
+
+    def _load_inventory(self, invfile):
+        p = self.fs._resolve(invfile)
+        if p in self.fs.files:
+            groups = ini_parse(self.fs.files[p])
+            if groups:
+                self.inventory = groups
+                return
+        self.inventory = {"web": ["web-1", "web-2"], "db": ["db-1"],
+                          "all": ["web-1", "web-2", "db-1"]}
+
+    def _render_events(self, events):
+        if not events:
+            return ["PLAY [no hosts matched] ***************"]
+        out = []
+        cur_play = None
+        cur_task = None
+        for e in events:
+            if e["play"] != cur_play:
+                out.append(f"PLAY [{e['play']}] *******************************")
+                cur_play = e["play"]
+                cur_task = None
+            if e["task"] != cur_task:
+                out.append(f"TASK [{e['task']}] ******************************")
+                cur_task = e["task"]
+            status = "changed" if e["changed"] else "ok"
+            out.append(f"{status}: [{e['host']}]  {e['msg']}")
+        # recap
+        out.append("PLAY RECAP *****************************************")
+        hosts = sorted({e["host"] for e in events})
+        for h in hosts:
+            ok = sum(1 for e in events if e["host"] == h and not e["changed"])
+            ch = sum(1 for e in events if e["host"] == h and e["changed"])
+            out.append(f"{h} : ok={ok} changed={ch} unreachable=0 failed=0")
+        return out
+
+
+# ---- CI/CD pipeline (simulated) ----------------------------------------------
+
+class Pipeline:
+    def __init__(self, fs):
+        self.fs = fs
+        self.runs = []     # {"id", "commit", "stages": [{"name","status"}], "log": [lines]}
+
+    def _workflow(self):
+        p = self.fs._resolve(".github/workflows/ci.yml")
+        return self.fs.files.get(p, "")
+
+    def _stages(self):
+        wf = self._workflow()
+        if not wf:
+            return [{"name": "build", "cmd": "echo build"}]
+        stages = []
+        data = yaml_parse(wf)
+        jobs = (data or {}).get("jobs", {}) if isinstance(data, dict) else {}
+        for name, job in (jobs.items() if isinstance(jobs, dict) else []):
+            steps = job.get("steps", []) if isinstance(job, dict) else []
+            for st in steps:
+                if isinstance(st, dict) and st.get("run"):
+                    stages.append({"name": st.get("name", "run"), "cmd": st["run"]})
+                elif isinstance(st, dict) and st.get("uses"):
+                    stages.append({"name": st.get("name", st["uses"]), "cmd": "uses:" + st["uses"]})
+        return stages or [{"name": "build", "cmd": "echo build"}]
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["usage: ci <run|status|logs>"]
+        cmd = parts[0]
+        if cmd == "run":
+            return self._run_pipeline("manual")
+        if cmd == "status":
+            if not self.runs:
+                return ["no pipeline runs yet"], []
+            out = []
+            for r in self.runs[-5:]:
+                ok = all(s["status"] == "pass" for s in r["stages"])
+                out.append(f"#{r['id']}  commit {r['commit']}  {'green' if ok else 'red'}")
+            return out, []
+        if cmd == "logs":
+            rid = parts[1] if len(parts) > 1 else (self.runs[-1]["id"] if self.runs else None)
+            for r in self.runs:
+                if str(r["id"]) == str(rid):
+                    return r["log"], []
+            return [], ["no such run"]
+        return [], [f"ci: unknown command '{cmd}'"]
+
+    def _run_pipeline(self, commit):
+        rid = len(self.runs) + 1
+        stages = self._stages()
+        log = [f"Run #{rid} — commit {commit}", "=" * 40]
+        built = []
+        for st in stages:
+            name, cmd = st["name"], st["cmd"]
+            log.append(f"▶ {name}")
+            status = "pass"
+            if cmd.startswith("uses:"):
+                log.append(f"  → {cmd}")
+            elif cmd.startswith("python3") or cmd.startswith("pytest"):
+                # actually run the test file so a broken test fails the build
+                file = cmd.split()[1] if cmd.startswith("python3") else cmd.split()[1]
+                fp = self.fs._resolve(file)
+                if fp in self.fs.files:
+                    stdout, stderr = run_lesson_code(self.fs.files[fp])
+                    if stderr.strip() or "Error" in stdout or "Traceback" in stdout:
+                        status = "fail"
+                        log += [("  " + l) for l in stderr.strip().splitlines()[:4]]
+                    else:
+                        log += [("  " + l) for l in stdout.strip().splitlines()[:4]]
+                else:
+                    status = "fail"
+                    log.append(f"  {file}: No such file or directory")
+            else:
+                log.append(f"  → {cmd}")
+            if status == "pass":
+                log.append(f"  ✓ {name} passed")
+            else:
+                log.append(f"  ✗ {name} failed")
+            built.append({"name": name, "status": status})
+        run = {"id": rid, "commit": commit, "stages": built, "log": log}
+        self.runs.append(run)
+        ok = all(s["status"] == "pass" for s in built)
+        log.append("=" * 40)
+        log.append(f"RESULT: {'✓ green' if ok else '✗ red'}")
+        return log, []
+
+
+# ---- CloudLab: the one orchestrator the trainer talks to --------------------
+
+_BOTO3_STUB = '''\
+"""A tiny offline stand-in for boto3 — enough S3 + EC2 to teach the API.
+
+Reads state from $BOTO3_STATE (JSON), applies the learner's calls, and writes
+the result back on exit. No network, no real AWS, deterministic."""
+import json, os, atexit
+
+_STATE_PATH = os.environ.get("BOTO3_STATE", "")
+_state = None
+
+
+def _get_state():
+    global _state
+    if _state is None:
+        with open(_STATE_PATH) as f:
+            _state = json.load(f)
+        atexit.register(_flush)
+    return _state
+
+
+def _flush():
+    global _state
+    if _state is not None:
+        with open(_STATE_PATH, "w") as f:
+            json.dump(_state, f)
+
+
+class _Body:
+    def __init__(self, content):
+        self._content = content
+    def read(self):
+        return self._content
+
+
+class _S3Client:
+    def __init__(self, s):
+        self.s = s
+    def list_buckets(self):
+        return {"Buckets": [{"Name": n} for n in self.s["buckets"]]}
+    def create_bucket(self, Bucket):
+        if Bucket in self.s["buckets"]:
+            raise Exception("BucketAlreadyExists: " + Bucket)
+        self.s["buckets"][Bucket] = {}
+        return {"Location": "/" + Bucket}
+    def put_object(self, Bucket, Key, Body=""):
+        if Bucket not in self.s["buckets"]:
+            raise Exception("NoSuchBucket: " + Bucket)
+        self.s["buckets"][Bucket][Key] = str(Body)
+        return {"ETag": '"abc"'}
+    def get_object(self, Bucket, Key):
+        if Bucket not in self.s["buckets"] or Key not in self.s["buckets"][Bucket]:
+            raise Exception("NoSuchKey: " + Key)
+        return {"Body": _Body(self.s["buckets"][Bucket][Key])}
+    def list_objects_v2(self, Bucket):
+        if Bucket not in self.s["buckets"]:
+            raise Exception("NoSuchBucket: " + Bucket)
+        return {"Contents": [{"Key": k} for k in sorted(self.s["buckets"][Bucket])]}
+    def delete_object(self, Bucket, Key):
+        self.s["buckets"].get(Bucket, {}).pop(Key, None)
+        return {}
+    def delete_bucket(self, Bucket):
+        if Bucket in self.s["buckets"] and self.s["buckets"][Bucket]:
+            raise Exception("BucketNotEmpty: " + Bucket)
+        self.s["buckets"].pop(Bucket, None)
+        return {}
+
+
+class _Ec2Client:
+    def __init__(self, s):
+        self.s = s
+    def run_instances(self, ImageId, InstanceType="t3.micro", MinCount=1, MaxCount=1):
+        ids = []
+        for _ in range(int(MinCount)):
+            iid = "i-%04d" % self.s["next_inst"]
+            self.s["next_inst"] += 1
+            self.s["instances"][iid] = {"ImageId": ImageId, "InstanceType": InstanceType,
+                                        "State": {"Name": "running"}}
+            ids.append(iid)
+        return {"Instances": [{"InstanceId": i, "State": {"Name": "running"}} for i in ids]}
+    def describe_instances(self):
+        out = []
+        for iid, inst in self.s["instances"].items():
+            out.append({"InstanceId": iid, "ImageId": inst["ImageId"],
+                        "InstanceType": inst["InstanceType"], "State": {"Name": inst["State"]["Name"]}})
+        return {"Reservations": [{"Instances": out}]}
+    def terminate_instances(self, InstanceIds):
+        for iid in InstanceIds:
+            if iid in self.s["instances"]:
+                self.s["instances"][iid]["State"]["Name"] = "terminated"
+        return {"TerminatingInstances": [{"InstanceId": i} for i in InstanceIds]}
+    def stop_instances(self, InstanceIds):
+        for iid in InstanceIds:
+            if iid in self.s["instances"]:
+                self.s["instances"][iid]["State"]["Name"] = "stopped"
+        return {"StoppingInstances": [{"InstanceId": i} for i in InstanceIds]}
+    def start_instances(self, InstanceIds):
+        for iid in InstanceIds:
+            if iid in self.s["instances"]:
+                self.s["instances"][iid]["State"]["Name"] = "running"
+        return {"StartingInstances": [{"InstanceId": i} for i in InstanceIds]}
+
+
+class _Bucket:
+    def __init__(self, s, name):
+        self.s, self.name = s, name
+    def create(self):
+        if self.name in self.s["buckets"]:
+            raise Exception("BucketAlreadyExists: " + self.name)
+        self.s["buckets"][self.name] = {}
+        return self
+    def put_object(self, Key, Body=""):
+        if self.name not in self.s["buckets"]:
+            raise Exception("NoSuchBucket: " + self.name)
+        self.s["buckets"][self.name][Key] = str(Body)
+        return {"ETag": '"abc"'}
+
+
+class _Object:
+    def __init__(self, s, bucket, key):
+        self.s, self.bucket, self.key = s, bucket, key
+    def get(self):
+        if self.bucket not in self.s["buckets"] or self.key not in self.s["buckets"][self.bucket]:
+            raise Exception("NoSuchKey: " + self.key)
+        return {"Body": _Body(self.s["buckets"][self.bucket][self.key])}
+    def put(self, Body=""):
+        if self.bucket not in self.s["buckets"]:
+            raise Exception("NoSuchBucket: " + self.bucket)
+        self.s["buckets"][self.bucket][self.key] = str(Body)
+        return {"ETag": '"abc"'}
+
+
+class _Resource:
+    def __init__(self, s):
+        self.s = s
+    def Bucket(self, name):
+        return _Bucket(self.s, name)
+    def Object(self, bucket, key):
+        return _Object(self.s, bucket, key)
+
+
+def client(name, **kw):
+    s = _get_state()
+    if name == "s3":
+        return _S3Client(s)
+    if name == "ec2":
+        return _Ec2Client(s)
+    raise Exception("UnknownServiceError: " + name)
+
+
+def resource(name, **kw):
+    s = _get_state()
+    if name == "s3":
+        return _Resource(s)
+    raise Exception("UnknownServiceError: " + name)
+'''
+
+
+def _run_boto3_script(code, state):
+    """Run a learner's boto3 script against the simulated AWS state in a
+    subprocess, returning (stdout, stderr, new_state)."""
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "boto3.py"), "w") as f:
+            f.write(_BOTO3_STUB)
+        with open(os.path.join(d, "script.py"), "w") as f:
+            f.write(code)
+        state_path = os.path.join(d, "state.json")
+        with open(state_path, "w") as f:
+            json.dump(state, f)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = d + os.pathsep + env.get("PYTHONPATH", "")
+        env["BOTO3_STATE"] = state_path
+        try:
+            r = subprocess.run([sys.executable, os.path.join(d, "script.py")],
+                               capture_output=True, text=True, timeout=10,
+                               cwd=d, env=env)
+        except subprocess.TimeoutExpired:
+            return "", "[timed out]", None
+        try:
+            with open(state_path) as f:
+                new_state = json.load(f)
+        except Exception:
+            new_state = None
+        return r.stdout, r.stderr, new_state
+
+
+class CloudLab:
+    """One offline 'developer environment': local bash + git + docker + AWS +
+    terraform + ansible + CI/CD. `run(cmdline)` executes one line and returns
+    (out_lines, err_lines), exactly like ShellFS.run."""
+
+    def __init__(self):
+        self.fs = ShellFS()
+        self.git = GitRepo(self.fs)
+        self.docker = DockerEnv(self.fs)
+        self.aws = AwsEnv(self.fs)
+        self.tf = TerraformEnv(self.fs)
+        self.ansible = AnsibleEnv(self.fs)
+        self.pipeline = Pipeline(self.fs)
+        self.history = []
+
+    def run(self, cmdline):
+        cmdline = cmdline.strip()
+        if not cmdline:
+            return [], []
+        self.history.append(cmdline)
+        cmd = cmdline.split()[0]
+        rest = cmdline[len(cmd):].strip()
+        if cmd == "git":
+            out, err = self.git.run(rest)
+            if cmdline.startswith("git commit"):
+                # every commit triggers a CI run (the "push to CI" loop)
+                self.pipeline._run_pipeline(self.git.commits[-1]["hash"] if self.git.commits else "HEAD")
+            return out, err
+        if cmd == "docker":
+            return self.docker.run(rest)
+        if cmd == "aws":
+            return self.aws.run(rest)
+        if cmd == "terraform":
+            return self.tf.run(rest)
+        if cmd in ("ansible-playbook", "ansible"):
+            return self.ansible.run(rest)
+        if cmd == "ci":
+            return self.pipeline.run(rest)
+        if cmd == "python3" and self._uses_boto3(cmdline):
+            return self._run_boto3(cmdline)
+        return self.fs.run(cmdline)
+
+    def _uses_boto3(self, cmdline):
+        parts = cmdline.split()
+        if len(parts) < 2:
+            return False
+        p = self.fs._resolve(parts[1])
+        return p in self.fs.files and "boto3" in self.fs.files[p]
+
+    def _run_boto3(self, cmdline):
+        parts = cmdline.split()
+        p = self.fs._resolve(parts[1])
+        code = self.fs.files[p]
+        state = {"buckets": self.aws.buckets, "instances": self.aws.instances,
+                 "next_inst": self.aws.next_inst}
+        stdout, stderr, new_state = _run_boto3_script(code, state)
+        if new_state is not None:
+            self.aws.buckets = new_state["buckets"]
+            self.aws.instances = new_state["instances"]
+            self.aws.next_inst = new_state["next_inst"]
+        out = stdout.rstrip("\n").split("\n") if stdout.rstrip("\n") else []
+        err = stderr.rstrip("\n").split("\n") if stderr.strip() else []
+        return out, err
+
+
 # Each lesson = one real command the learner types (or "info" read-along, or a
 # "challenge" with no ghost hint).
 #   expect    — exact command(s) that count as correct (whitespace-normalised)
@@ -5378,6 +6476,561 @@ SHELL_MANUAL = [
     ("history", "your recent commands", "history"),
 ]
 
+DEV_LESSONS = [
+    # ==== MODULE 1 · Git Foundations ======================================
+    {"module": "Git Foundations", "kind": "info", "title": "your new workspace",
+     "say": "Welcome to the cloud lab. This is a pretend computer where you build real projects and deploy them. Every command really runs against a simulated environment, so you can break things safely and try again.",
+     "why": "Welcome to the cloud lab — a simulated dev environment where you'll build, version, package, and deploy real projects. Nothing here touches the real internet, so break things freely and try again."},
+
+    {"module": "Git Foundations", "kind": "run", "title": "start a repo",
+     "expect": ["git init"], "cmd_hint": "git init",
+     "say": "Start a version control repository. This is the first thing you do before saving your code.",
+     "why": "git init turns a folder into a repository — a place that remembers every version of your code, forever. You only do it once per project.",
+     "on_win": "Repository created. Now your folder can remember every change you ever make."},
+
+    {"module": "Git Foundations", "kind": "run", "title": "make a file",
+     "expect": ["touch app.py"], "cmd_hint": "touch app.py",
+     "say": "Create an empty file called app dot p y.",
+     "why": "touch makes an empty file. app.py is where your program will live.",
+     "on_win": "app.py exists. It's empty for now — a blank page."},
+
+    {"module": "Git Foundations", "kind": "run", "title": "write some code",
+     "verify": lambda c: c.startswith("echo") and "> app.py" in c and "print" in c,
+     "cmd_hint": "echo \"print('hello world')\" > app.py",
+     "say": "Write a line of Python into app.py, using a redirect arrow.",
+     "why": "echo prints text, and the greater-than arrow shoves it INTO a file instead of the screen. Your first line of code.",
+     "on_win": "app.py now holds one line: print hello world. Real code."},
+
+    {"module": "Git Foundations", "kind": "run", "title": "stage it",
+     "expect": ["git add app.py"], "cmd_hint": "git add app.py",
+     "say": "Stage the file, so git knows to save it in the next snapshot.",
+     "why": "git add marks a file as ready to save. Git saves in two steps — add picks what to include, commit takes the snapshot.",
+     "on_win": "Staged. Now git is watching app.py."},
+
+    {"module": "Git Foundations", "kind": "run", "title": "save a snapshot",
+     "verify": lambda c: c.startswith("git commit") and "-m" in c,
+     "cmd_hint": "git commit -m \"first commit\"",
+     "say": "Commit your staged file with a message, taking the first snapshot.",
+     "why": "git commit saves a permanent snapshot of everything you staged. The dash-m message describes what changed, so future-you knows what happened.",
+     "on_win": "First commit saved. Your code now has history."},
+
+    {"module": "Git Foundations", "kind": "run", "title": "read the history",
+     "expect": ["git log"], "cmd_hint": "git log",
+     "say": "Show the history of your commits.",
+     "why": "git log lists every snapshot you've made, newest first, with its message. This is how you look back in time.",
+     "on_win": "There's your first commit, message and all."},
+
+    {"module": "Git Foundations", "kind": "challenge", "title": "commit a change",
+     "say": "Change app.py to print something new, stage it, and commit. Do it all yourself — no hints.",
+     "why": "This is the full loop, alone: edit, add, commit. Every developer runs this dozens of times a day.",
+     "verify_lab": lambda lab: len(lab.git.commits) >= 2,
+     "replay": ["echo \"print('changed')\" > app.py", "git add app.py", "git commit -m second"]},
+
+    # ==== MODULE 2 · Docker ===============================================
+    {"module": "Docker", "kind": "info", "title": "what's a container",
+     "say": "Now let's package your app. A container is a box that holds your code and everything it needs to run, so it works the same on any machine.",
+     "why": "A container bundles your code plus its entire environment into one box that runs identically anywhere. Docker is the tool that builds and runs those boxes."},
+
+    {"module": "Docker", "kind": "write", "title": "write the recipe",
+     "file": "Dockerfile",
+     "content": "FROM python:3.11-slim\nWORKDIR /app\nCOPY app.py /app/app.py\nCMD [\"python3\", \"/app/app.py\"]\n",
+     "lines": [
+         ("FROM python:3.11-slim", "the base image — every container starts from one, and this one already has Python"),
+         ("WORKDIR /app", "set the working folder inside the container"),
+         ("COPY app.py /app/app.py", "copy your code from your computer into the container"),
+         ("CMD", "the command the container runs when it starts"),
+     ],
+     "say": "Type out the docker file — the recipe that tells docker how to build your app. Follow the ghost, and I'll explain each line as you write it.",
+     "why": "A Dockerfile is a recipe: FROM picks a base, COPY moves your code in, CMD says what to run. Docker reads it top to bottom and bakes the image.",
+     "on_win": "That's a complete Dockerfile. Four lines, and your app is packagable."},
+
+    {"module": "Docker", "kind": "run", "title": "bake the image",
+     "verify": lambda c: c.startswith("docker build") and "-t" in c,
+     "cmd_hint": "docker build -t myapp .",
+     "say": "Build the image from your docker file, tagging it with a name.",
+     "why": "docker build reads the Dockerfile and bakes it into an image — a frozen, ready-to-run snapshot. The dash-t flag gives it a name.",
+     "on_win": "Image built and tagged. It's an executable snapshot of your app."},
+
+    {"module": "Docker", "kind": "run", "title": "see your images",
+     "expect": ["docker images"], "cmd_hint": "docker images",
+     "say": "List the images on your machine.",
+     "why": "docker images shows every image you've built or pulled, with its id and size.",
+     "on_win": "There's myapp, freshly baked."},
+
+    {"module": "Docker", "kind": "run", "title": "run it",
+     "verify": lambda c: c.startswith("docker run") and "--name" in c and "-p" in c,
+     "cmd_hint": "docker run -d --name web -p 8080:5000 myapp",
+     "say": "Run the image as a container. Give it a name and map a port so you can reach it.",
+     "why": "docker run turns an image into a running container. The dash-d flag runs it in the background, and dash-p maps a port from your machine to the container.",
+     "on_win": "The container is running. Your app is now live inside its box."},
+
+    {"module": "Docker", "kind": "run", "title": "who's running?",
+     "expect": ["docker ps"], "cmd_hint": "docker ps",
+     "say": "List the running containers.",
+     "why": "docker ps shows every running container, its id, and which port it's listening on.",
+     "on_win": "There's web, up and running."},
+
+    {"module": "Docker", "kind": "run", "title": "peek at the logs",
+     "expect": ["docker logs web"], "cmd_hint": "docker logs web",
+     "say": "Read the logs from your web container.",
+     "why": "docker logs prints what your app has been saying. When something breaks, this is the first place you look.",
+     "on_win": "Those are your app's logs, straight from inside the container."},
+
+    {"module": "Docker", "kind": "challenge", "title": "stop and clean up",
+     "say": "Stop the web container, then remove it. Two commands, no hints.",
+     "why": "A good engineer cleans up: stop what you're not using, then remove it so it's not lying around.",
+     "verify_lab": lambda lab: "web" not in lab.docker.containers,
+     "replay": ["docker stop web", "docker rm web"]},
+
+    # ==== MODULE 3 · AWS S3 + boto3 =======================================
+    {"module": "AWS S3 + boto3", "kind": "info", "title": "what's the cloud",
+     "say": "Now the cloud. S3 is Amazon's storage service — a place to keep files that lives on their servers instead of yours.",
+     "why": "S3 (Simple Storage Service) stores files in 'buckets' — big named containers that live in the cloud. You'll learn to drive it two ways: the command line, then real Python code with boto3."},
+
+    {"module": "AWS S3 + boto3", "kind": "run", "title": "make a bucket",
+     "verify": lambda c: c.startswith("aws s3 mb"),
+     "cmd_hint": "aws s3 mb s3://cli-bucket",
+     "say": "Create a bucket using the aws command line, naming it cli dash bucket.",
+     "why": "aws s3 mb makes a bucket. The s3 colon slash slash prefix means 'a bucket on S3'.",
+     "on_win": "cli-bucket now exists in the simulated cloud."},
+
+    {"module": "AWS S3 + boto3", "kind": "run", "title": "list your buckets",
+     "expect": ["aws s3 ls"], "cmd_hint": "aws s3 ls",
+     "say": "List all your buckets.",
+     "why": "aws s3 ls shows every bucket in your account. Right now, just the one you made.",
+     "on_win": "There's cli-bucket."},
+
+    {"module": "AWS S3 + boto3", "kind": "write", "title": "drive it with python",
+     "file": "upload.py",
+     "content": "import boto3\n\ns3 = boto3.client('s3')\ns3.create_bucket(Bucket='data-bucket')\ns3.put_object(Bucket='data-bucket', Key='hello.txt', Body='hello from boto3')\nprint('uploaded')\n",
+     "lines": [
+         ("import boto3", "boto3 is Amazon's official library — this line pulls it in"),
+         ("boto3.client", "a client is your handle to one service; here, S3"),
+         ("create_bucket", "make a bucket, exactly like the command line did, but from code"),
+         ("put_object", "store a file — bucket, key name, and the body text"),
+         ("print", "report back that it worked"),
+     ],
+     "say": "Now write the same thing in real Python. Type along with the ghost — this is boto3, the library engineers use to talk to AWS from code.",
+     "why": "boto3 is how you automate AWS. Everything you did on the command line, you can script — which means it can run a thousand times without you.",
+     "on_win": "That's a real boto3 script. Code can now create buckets and store files."},
+
+    {"module": "AWS S3 + boto3", "kind": "run", "title": "run your script",
+     "expect": ["python3 upload.py"], "cmd_hint": "python3 upload.py",
+     "say": "Run your upload script.",
+     "why": "python3 runs your file. boto3 actually executes against the simulated cloud — watch it create the bucket and store the file.",
+     "on_win": "It printed 'uploaded'. Your code stored a file in the cloud."},
+
+    {"module": "AWS S3 + boto3", "kind": "write", "title": "read it back",
+     "file": "download.py",
+     "content": "import boto3\n\ns3 = boto3.client('s3')\nresp = s3.get_object(Bucket='data-bucket', Key='hello.txt')\nprint(resp['Body'].read())\n",
+     "lines": [
+         ("get_object", "fetch a file from the bucket"),
+         ("Body", "the response holds the file in a Body field"),
+         (".read()", "read the body to get the actual text back out"),
+     ],
+     "say": "Write a script that downloads the file back and prints what's inside.",
+     "why": "Reading is the mirror of writing: get_object fetches, then Body dot read returns the real text. Round-trip complete.",
+     "on_win": "You can now both store and retrieve files from code."},
+
+    {"module": "AWS S3 + boto3", "kind": "run", "title": "fetch it",
+     "expect": ["python3 download.py"], "cmd_hint": "python3 download.py",
+     "say": "Run the download script.",
+     "why": "Run it and watch the exact text you stored come back out of the cloud.",
+     "on_win": "There's 'hello from boto3', round-tripped from the cloud."},
+
+    {"module": "AWS S3 + boto3", "kind": "write", "title": "the resource api",
+     "file": "upload2.py",
+     "content": "import boto3\n\ns3 = boto3.resource('s3')\ns3.Bucket('res-bucket').create()\ns3.Object('res-bucket', 'note.txt').put(Body='via resource api')\nprint('done')\n",
+     "lines": [
+         ("resource('s3')", "the resource API — higher-level, friendlier objects than client"),
+         ("s3.Bucket", "grab a bucket as an object"),
+         (".create()", "create the bucket"),
+         ("s3.Object", "grab a file as an object — bucket plus key"),
+         (".put(Body=...)", "store the file's content"),
+     ],
+     "say": "boto3 has a second style — the resource API. Write it out: friendlier objects, same result.",
+     "why": "boto3 offers two APIs: client (low-level, explicit) and resource (higher-level, objects). This script does the same bucket-and-file job with the friendlier resource style.",
+     "on_win": "You've now used both boto3 styles. That's real AWS automation."},
+
+    {"module": "AWS S3 + boto3", "kind": "run", "title": "run the resource script",
+     "expect": ["python3 upload2.py"], "cmd_hint": "python3 upload2.py",
+     "say": "Run the resource-style script.",
+     "why": "Run it — the resource API creates the bucket and stores the note, same as before but through objects.",
+     "on_win": "It printed 'done'. Two APIs, one cloud."},
+
+    # ==== MODULE 4 · EC2 / VPS servers ====================================
+    {"module": "EC2 / VPS", "kind": "info", "title": "spinning up servers",
+     "say": "Time to run your own server. EC2 is Amazon's service for virtual machines — you ask for one, and it boots up in the cloud in seconds.",
+     "why": "EC2 lets you rent virtual servers ('instances'). An instance is a whole computer — CPU, memory, disk — that starts when you launch it. This is how almost every website gets its servers."},
+
+    {"module": "EC2 / VPS", "kind": "run", "title": "launch a server",
+     "verify": lambda c: c.startswith("aws ec2 run-instances"),
+     "cmd_hint": "aws ec2 run-instances --image-id ami-123 --instance-type t3.micro",
+     "say": "Launch a server. Give it an image to boot from and a size.",
+     "why": "run-instances starts a new server. The image id is the operating system to boot, and the instance type is how big a machine you want.",
+     "on_win": "A server is booting. You just launched hardware from a command."},
+
+    {"module": "EC2 / VPS", "kind": "run", "title": "check on it",
+     "expect": ["aws ec2 describe-instances"], "cmd_hint": "aws ec2 describe-instances",
+     "say": "Describe your instances to see what's running.",
+     "why": "describe-instances lists every server you own and its current state — running, stopped, or terminated.",
+     "on_win": "There's your instance, running."},
+
+    {"module": "EC2 / VPS", "kind": "write", "title": "launch from code",
+     "file": "launch.py",
+     "content": "import boto3\n\nec2 = boto3.client('ec2')\nr = ec2.run_instances(ImageId='ami-123', InstanceType='t3.micro', MinCount=3, MaxCount=3)\nfor inst in r['Instances']:\n    print(inst['InstanceId'])\n",
+     "lines": [
+         ("client('ec2')", "this time we talk to EC2, not S3"),
+         ("run_instances", "launch servers from code — MinCount and MaxCount say how many"),
+         ("for inst in", "loop over each server we just got"),
+         ("InstanceId", "each server has an id, like i dash zero zero zero one"),
+     ],
+     "say": "Write code that launches three servers at once, then prints each one's id.",
+     "why": "One command launched one server. Code can launch a hundred. The loop prints each id so you can track them all.",
+     "on_win": "Three servers, three ids. That's the power of automating infrastructure."},
+
+    {"module": "EC2 / VPS", "kind": "run", "title": "run the fleet",
+     "expect": ["python3 launch.py"], "cmd_hint": "python3 launch.py",
+     "say": "Run your launch script to bring up three servers.",
+     "why": "Run it and watch three instance ids stream out — a fleet, from one command.",
+     "on_win": "Three new servers are running, each with its own id."},
+
+    {"module": "EC2 / VPS", "kind": "run", "title": "power down",
+     "verify": lambda c: c.startswith("aws ec2 stop-instances"),
+     "cmd_hint": "aws ec2 stop-instances --instance-ids i-0001",
+     "say": "Stop your first server, giving its instance id.",
+     "why": "stop-instances powers a server down without deleting it — you keep it, but stop paying for a running machine. Give the id of the one to stop.",
+     "on_win": "That server is now stopped. You still own it; it's just off."},
+
+    {"module": "EC2 / VPS", "kind": "challenge", "title": "tear it all down",
+     "say": "Terminate every server you launched — all four. Terminating deletes them for good. No hints.",
+     "why": "Terminating is permanent cleanup. In the real cloud, leaving servers running costs money, so engineers always shut down what they're done with.",
+     "verify_lab": lambda lab: bool(lab.aws.instances) and all(i["State"]["Name"] == "terminated" for i in lab.aws.instances.values()),
+     "replay": ["aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004"]},
+
+    # ==== MODULE 5 · Terraform ============================================
+    {"module": "Terraform", "kind": "info", "title": "infrastructure as code",
+     "say": "So far you launched servers by typing commands. Terraform flips that — you write a file describing what you want, and it makes it real.",
+     "why": "Terraform is 'infrastructure as code': you describe your servers, buckets, and networks in a config file, then Terraform creates them. The file is the single source of truth — anyone can read exactly what you have."},
+
+    {"module": "Terraform", "kind": "write", "title": "describe a bucket",
+     "file": "main.tf",
+     "content": "resource \"aws_s3_bucket\" \"static\" {\n  bucket = \"my-static-site\"\n  acl    = \"private\"\n}\n",
+     "lines": [
+         ("resource", "a resource is one thing you want to exist"),
+         ("aws_s3_bucket", "the type of resource — here, an S3 bucket"),
+         ("static", "your name for it, used to refer to it later"),
+         ("bucket =", "the bucket's actual name in AWS"),
+         ("acl", "who can access it — private means just you"),
+     ],
+     "say": "Write a terraform file describing one S3 bucket. Follow the ghost and I'll explain each line.",
+     "why": "This is a Terraform resource block: a type, a name, and the settings inside braces. Notice you're DESCRIBING what you want, not typing launch commands.",
+     "on_win": "You just wrote infrastructure as code. That block describes a real bucket."},
+
+    {"module": "Terraform", "kind": "run", "title": "get ready",
+     "expect": ["terraform init"], "cmd_hint": "terraform init",
+     "say": "Initialize terraform in this folder.",
+     "why": "terraform init sets up the working directory and downloads the providers it needs. Run it once, first.",
+     "on_win": "Initialized. Terraform is ready to plan."},
+
+    {"module": "Terraform", "kind": "run", "title": "plan it",
+     "expect": ["terraform plan"], "cmd_hint": "terraform plan",
+     "say": "Plan the changes — see what terraform would do, without doing it.",
+     "why": "terraform plan is a dry run. It compares your file to what already exists and shows you the difference BEFORE touching anything.",
+     "on_win": "It planned one bucket to add. Nothing was created yet — that's the safe preview."},
+
+    {"module": "Terraform", "kind": "run", "title": "make it real",
+     "expect": ["terraform apply"], "cmd_hint": "terraform apply",
+     "say": "Apply the plan to actually create the bucket.",
+     "why": "terraform apply makes the plan real. The bucket now exists in the simulated cloud.",
+     "on_win": "Applied. The bucket described in your file is now real."},
+
+    {"module": "Terraform", "kind": "run", "title": "plan again",
+     "expect": ["terraform plan"], "cmd_hint": "terraform plan",
+     "say": "Plan again — with no changes to your file, watch what it says.",
+     "why": "This is the magic: plan again and Terraform says 'no changes'. It only creates what's missing. That idempotency is why teams trust it — running twice is safe.",
+     "on_win": "No changes. Your infrastructure already matches your file."},
+
+    {"module": "Terraform", "kind": "write", "title": "grow the plan",
+     "file": "ec2.tf",
+     "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-123\"\n  instance_type = \"t3.micro\"\n}\n",
+     "lines": [
+         ("aws_instance", "a different resource type — a server this time"),
+         ("ami", "the operating system image to boot"),
+         ("instance_type", "how big the machine is"),
+     ],
+     "say": "Add a second file describing one server, alongside your bucket.",
+     "why": "Terraform reads every .tf file in the folder and merges them. Add a server here and it joins your bucket in one plan.",
+     "on_win": "Now your code describes two things: a bucket and a server."},
+
+    {"module": "Terraform", "kind": "run", "title": "apply the addition",
+     "expect": ["terraform apply"], "cmd_hint": "terraform apply",
+     "say": "Apply again to add the server.",
+     "why": "Apply again — it adds just the new server and leaves the bucket alone. Terraform only changes what changed.",
+     "on_win": "Server added. Your whole setup is described by two little files."},
+
+    {"module": "Terraform", "kind": "run", "title": "see the state",
+     "expect": ["terraform state list"], "cmd_hint": "terraform state list",
+     "say": "List everything terraform is managing.",
+     "why": "terraform state list shows every resource under Terraform's control — your bucket and your server, both.",
+     "on_win": "Two resources, both tracked."},
+
+    {"module": "Terraform", "kind": "run", "title": "tear it down",
+     "expect": ["terraform destroy"], "cmd_hint": "terraform destroy",
+     "say": "Destroy everything terraform created.",
+     "why": "terraform destroy removes every resource in your config. One command, clean slate. That's the whole lifecycle.",
+     "on_win": "Everything's gone. Create, change, destroy — all from files."},
+
+    {"module": "Terraform", "kind": "challenge", "title": "rebuild from the files",
+     "say": "Your infrastructure was destroyed — but your files are still there. Bring it back: plan, then apply. No hints.",
+     "why": "The .tf files are your blueprint. Even after destroy, you rebuild the exact same infrastructure from the same files. That's the whole point of infrastructure as code.",
+     "verify_lab": lambda lab: {"aws_s3_bucket.static", "aws_instance.web"} <= set(lab.tf.resources),
+     "replay": ["terraform plan", "terraform apply"]},
+
+    # ==== MODULE 6 · Ansible ==============================================
+    {"module": "Ansible", "kind": "info", "title": "declarative automation",
+     "say": "Now automation. Ansible configures servers — install packages, copy files, restart services — by you describing the end state in a playbook.",
+     "why": "Ansible is declarative like Terraform, but for the INSIDE of servers: you write a 'playbook' saying 'nginx should be installed', and Ansible makes it true on every machine in your inventory. Re-running it is safe — if it's already done, it says 'ok' instead of redoing work."},
+
+    {"module": "Ansible", "kind": "write", "title": "name your servers",
+     "file": "hosts.ini",
+     "content": "[web]\nweb-1\nweb-2\n\n[db]\ndb-1\n",
+     "lines": [
+         ("[web]", "a group called web — the servers that serve your site"),
+         ("web-1", "the first web server"),
+         ("[db]", "a second group called db — the database servers"),
+     ],
+     "say": "Write the inventory — a list of your servers, grouped by what they do.",
+     "why": "The inventory names your servers and groups them. Ansible reads it to know where to run things. web and db — the two halves of a real app.",
+     "on_win": "Your inventory lists three servers in two groups."},
+
+    {"module": "Ansible", "kind": "write", "title": "install something",
+     "file": "site.yml",
+     "content": "- name: install nginx\n  hosts: web\n  tasks:\n    - name: ensure nginx installed\n      apt:\n        name: nginx\n",
+     "lines": [
+         ("- name: install nginx", "a play — one job to run, with a name"),
+         ("hosts: web", "run this play on every server in the web group"),
+         ("tasks:", "a play holds a list of tasks"),
+         ("apt:", "the apt module installs packages"),
+         ("name: nginx", "the package to install — nginx, a web server"),
+     ],
+     "say": "Write the playbook that installs nginx on your web servers. Type along, and I'll explain each line.",
+     "why": "A playbook is a list of plays. This play targets the web group and runs one task: install nginx. You described the end state — 'nginx should be there' — not the install steps.",
+     "on_win": "That's a real playbook. Declarative automation, three tasks deep."},
+
+    {"module": "Ansible", "kind": "run", "title": "run it",
+     "verify": lambda c: c.startswith("ansible-playbook"),
+     "cmd_hint": "ansible-playbook site.yml",
+     "say": "Run your playbook to install nginx on the web servers.",
+     "why": "ansible-playbook runs your playbook. Watch it report 'changed' for each server — that means it actually did something.",
+     "on_win": "Both web servers now have nginx. See the word 'changed'? That's the install happening."},
+
+    {"module": "Ansible", "kind": "run", "title": "run it again",
+     "verify": lambda c: c.startswith("ansible-playbook"),
+     "cmd_hint": "ansible-playbook site.yml",
+     "say": "Run the exact same playbook again, and watch what changes.",
+     "why": "Run it again and the report flips to 'ok' instead of 'changed' — because nginx is already there, Ansible does nothing. That idempotency is the whole point.",
+     "on_win": "See 'ok'? Ansible checked, found nginx already installed, and skipped the work."},
+
+    {"module": "Ansible", "kind": "write", "title": "restart on change",
+     "file": "site.yml",
+     "content": "- name: install nginx\n  hosts: web\n  tasks:\n    - name: ensure nginx installed\n      apt:\n        name: nginx\n    - name: copy the homepage\n      copy:\n        dest: /var/www/html/index.html\n        content: \"<h1>hello</h1>\"\n      notify: restart nginx\n  handlers:\n    - name: restart nginx\n      service:\n        name: nginx\n        state: restarted\n",
+     "lines": [
+         ("copy:", "a second task — copy a file onto the server"),
+         ("notify: restart nginx", "if this task changes something, tell the handler to run"),
+         ("handlers:", "handlers are actions that only fire when notified"),
+         ("service:", "the service module restarts a service"),
+         ("state: restarted", "the state we want — restarted"),
+     ],
+     "say": "Rewrite the playbook to also copy a homepage, and only restart nginx when that copy actually changes something.",
+     "why": "Handlers are the smart part: the 'notify' only triggers 'restart nginx' if the copy task changed a file. No pointless restarts when nothing changed.",
+     "on_win": "You've wired up a handler. Changes now trigger restarts automatically."},
+
+    {"module": "Ansible", "kind": "run", "title": "watch the handler fire",
+     "verify": lambda c: c.startswith("ansible-playbook"),
+     "cmd_hint": "ansible-playbook site.yml",
+     "say": "Run the new playbook and watch the restart handler fire.",
+     "why": "The copy task changes the homepage, so it notifies the handler — and nginx restarts. See the handler line appear in the output.",
+     "on_win": "There's the handler — nginx restarted, only because the file changed."},
+
+    {"module": "Ansible", "kind": "run", "title": "handler goes quiet",
+     "verify": lambda c: c.startswith("ansible-playbook"),
+     "cmd_hint": "ansible-playbook site.yml",
+     "say": "Run it once more — nothing changed, so watch the handler stay silent.",
+     "why": "Second run: the homepage is already correct, so copy reports 'ok', no notify, and the handler doesn't fire. Declarative, and it knows when to stay quiet.",
+     "on_win": "No restart this time. The handler only fires when there's something to do."},
+
+    {"module": "Ansible", "kind": "info", "title": "vars, tags, roles",
+     "say": "As playbooks grow, you organize them with variables, tags, and roles. Variables let one playbook work for many servers. Tags let you run just one piece. Roles group related tasks into reusable folders.",
+     "why": "Real playbooks use variables (so one playbook fits many servers), tags (to run a subset), and roles (to bundle related tasks). You've learned the heart — these are the tools for scaling it up."},
+
+    {"module": "Ansible", "kind": "write", "title": "the database playbook",
+     "file": "db.yml",
+     "content": "- name: install postgres\n  hosts: db\n  tasks:\n    - name: ensure postgres installed\n      apt:\n        name: postgres\n",
+     "lines": [
+         ("- name: install postgres", "a play for the database servers"),
+         ("hosts: db", "target the db group this time, not web"),
+         ("apt:", "install a package"),
+         ("name: postgres", "postgres — the database engine"),
+     ],
+     "say": "Write a second playbook, this one for the database servers — install postgres on the db group.",
+     "why": "You've seen the pattern: play, hosts, tasks, module. Now apply it to the other half of the stack — the database — with a fresh playbook.",
+     "on_win": "db.yml written. Two playbooks, one inventory."},
+
+    {"module": "Ansible", "kind": "challenge", "title": "run it yourself",
+     "say": "Run the db playbook you just wrote. No hints.",
+     "why": "The pattern never changes: ansible-playbook, then the playbook name. You've done this — now recall it alone.",
+     "verify_lab": lambda lab: "postgres" in lab.ansible._host_state("db-1")["packages"],
+     "replay": ["ansible-playbook db.yml"]},
+
+    # ==== MODULE 7 · CI/CD ================================================
+    {"module": "CI/CD", "kind": "info", "title": "the pipeline",
+     "say": "The last piece: continuous integration. Every time you commit code, an automated pipeline runs your tests and deploys — so mistakes are caught instantly.",
+     "why": "CI/CD means every commit automatically runs a pipeline of stages — build, test, deploy. If any stage fails, the pipeline goes red and you fix it before it reaches users. This is how teams ship without breaking things."},
+
+    {"module": "CI/CD", "kind": "write", "title": "define the pipeline",
+     "file": ".github/workflows/ci.yml",
+     "content": "name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - name: run the tests\n        run: python3 test_app.py\n",
+     "lines": [
+         ("name: CI", "the pipeline's name"),
+         ("on: push", "trigger the pipeline whenever code is pushed"),
+         ("jobs:", "a pipeline is made of jobs"),
+         ("steps:", "each job has steps to run"),
+         ("run: python3 test_app.py", "this step actually runs your test file"),
+     ],
+     "say": "Write the workflow file that tells the pipeline to run your tests on every push.",
+     "why": "This YAML file defines the pipeline: on every push, run a job whose step executes your test file. If that step fails, the whole pipeline goes red.",
+     "on_win": "That's a pipeline definition. Now commits will run your tests automatically."},
+
+    {"module": "CI/CD", "kind": "write", "title": "a broken test",
+     "file": "test_app.py",
+     "content": "assert False\n",
+     "lines": [
+         ("assert False", "an assertion that is always wrong — a failing test"),
+     ],
+     "say": "Write a test that fails on purpose — an assertion that's false.",
+     "why": "This test always fails. That's the point: we're going to watch the pipeline catch it. A test is just code that checks code.",
+     "on_win": "A guaranteed failure, ready to be caught."},
+
+    {"module": "CI/CD", "kind": "run", "title": "stage everything",
+     "expect": ["git add .", "git add -A"], "cmd_hint": "git add .",
+     "say": "Stage everything — your workflow and the test — before you commit.",
+     "why": "git add with a single dot stages every file in the folder. You're about to commit the pipeline definition and the test together.",
+     "on_win": "Everything staged — the workflow and the test."},
+
+    {"module": "CI/CD", "kind": "run", "title": "commit and watch it fail",
+     "verify": lambda c: c.startswith("git commit"),
+     "cmd_hint": "git commit -m \"broken test\"",
+     "say": "Commit the broken test, then check the pipeline status.",
+     "why": "Committing triggers the pipeline automatically. With a failing test, it should go red — and that's the system working.",
+     "on_win": "Committed. The pipeline just ran your test and failed it."},
+
+    {"module": "CI/CD", "kind": "run", "title": "see the red",
+     "expect": ["ci status"], "cmd_hint": "ci status",
+     "say": "Check the pipeline status.",
+     "why": "ci status shows your latest runs and whether each was green (passed) or red (failed). Right now, red — the broken test.",
+     "on_win": "Red, as expected. The pipeline caught the broken test before it ever reached a user."},
+
+    {"module": "CI/CD", "kind": "write", "title": "fix it",
+     "file": "test_app.py",
+     "content": "print('all tests pass')\n",
+     "lines": [
+         ("print('all tests pass')", "a test that succeeds by printing and exiting cleanly"),
+     ],
+     "say": "Fix the test so it passes.",
+     "why": "Fix the test, and the pipeline will go green. Red to green — that's the developer's daily rhythm.",
+     "on_win": "The test passes now. Time to make it green."},
+
+    {"module": "CI/CD", "kind": "run", "title": "stage the fix",
+     "expect": ["git add .", "git add -A"], "cmd_hint": "git add .",
+     "say": "Stage the fixed test before you commit.",
+     "why": "Commit again, but first stage the fixed file. Red to green always goes through add, then commit.",
+     "on_win": "Fix staged."},
+
+    {"module": "CI/CD", "kind": "run", "title": "commit the fix",
+     "verify": lambda c: c.startswith("git commit"),
+     "cmd_hint": "git commit -m \"fix test\"",
+     "say": "Commit the fix, then check the status again.",
+     "why": "Commit again, and the pipeline re-runs. The fixed test should turn it green.",
+     "on_win": "Committed. The pipeline is re-running."},
+
+    {"module": "CI/CD", "kind": "run", "title": "see the green",
+     "expect": ["ci status"], "cmd_hint": "ci status",
+     "say": "Check the status one more time.",
+     "why": "Green! Your latest commit passes. You just closed the loop: break it, catch it, fix it — automatically.",
+     "on_win": "Green. That's CI in action: your tests guard every commit."},
+
+    # ==== MODULE 8 · Capstone: Ship It ====================================
+    {"module": "Capstone: Ship It", "kind": "info", "title": "the full stack",
+     "say": "You've learned every piece. Now combine them: package an app with docker, describe its servers with terraform, deploy it with ansible, and guard it with a pipeline.",
+     "why": "This is the capstone — a full 3-tier deployment using everything: docker to package, terraform for the servers, ansible to configure them, CI to guard every change. This is what an engineer actually does."},
+
+    {"module": "Capstone: Ship It", "kind": "write", "title": "package the app",
+     "file": "Dockerfile",
+     "content": "FROM python:3.11-slim\nWORKDIR /app\nCOPY app.py /app/app.py\nCMD [\"python3\", \"/app/app.py\"]\n",
+     "lines": [
+         ("FROM python:3.11-slim", "base image with Python"),
+         ("COPY app.py", "bring your code in"),
+         ("CMD", "what to run on start"),
+     ],
+     "say": "Package your app with a docker file.",
+     "why": "Step one of shipping: package the app so it runs anywhere.",
+     "on_win": "The app is packaged."},
+
+    {"module": "Capstone: Ship It", "kind": "run", "title": "build it",
+     "verify": lambda c: c.startswith("docker build") and "-t" in c,
+     "cmd_hint": "docker build -t myapp .",
+     "say": "Build the image.",
+     "why": "Bake the image from your Dockerfile.",
+     "on_win": "Image built."},
+
+    {"module": "Capstone: Ship It", "kind": "write", "title": "describe the servers",
+     "file": "main.tf",
+     "content": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-123\"\n  instance_type = \"t3.micro\"\n}\n",
+     "lines": [
+         ("aws_instance", "the server you're provisioning"),
+         ("instance_type", "its size"),
+     ],
+     "say": "Describe your production server with terraform.",
+     "why": "The server your app will run on, described as code.",
+     "on_win": "Server described."},
+
+    {"module": "Capstone: Ship It", "kind": "run", "title": "provision it",
+     "verify": lambda c: c.startswith("terraform apply"),
+     "cmd_hint": "terraform apply",
+     "say": "Initialize and apply to create the server.",
+     "why": "Provision the server: init, then apply.",
+     "on_win": "Server provisioned."},
+
+    {"module": "Capstone: Ship It", "kind": "write", "title": "deploy with ansible",
+     "file": "deploy.yml",
+     "content": "- name: deploy the app\n  hosts: web\n  tasks:\n    - name: ensure nginx installed\n      apt:\n        name: nginx\n",
+     "lines": [
+         ("- name: deploy the app", "the play that ships your app"),
+         ("hosts: web", "target the web servers"),
+         ("apt:", "install the web server"),
+     ],
+     "say": "Write an ansible playbook that configures your server.",
+     "why": "Configure the server: install the web server so your app can be served.",
+     "on_win": "Deployment playbook written."},
+
+    {"module": "Capstone: Ship It", "kind": "run", "title": "ship it",
+     "verify": lambda c: c.startswith("ansible-playbook"),
+     "cmd_hint": "ansible-playbook deploy.yml",
+     "say": "Run the deployment playbook.",
+     "why": "Run it — your server is now configured and your app is deployed.",
+     "on_win": "Shipped! Every layer, working together."},
+]
+
+# Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
+DEV_MODULES = []
+for _di, _dl in enumerate(DEV_LESSONS):
+    _m = _dl["module"]
+    if not DEV_MODULES or DEV_MODULES[-1]["name"] != _m:
+        DEV_MODULES.append({"name": _m, "first": _di, "count": 0})
+    DEV_MODULES[-1]["count"] += 1
+
+
 # Post-ghost vim edit warm-up: a short run of real edits the user must perform in
 # the ACTUAL editor (not the demo buffer) so the motions they just learned get
 # exercised right before the Python challenge. Each task starts from the same
@@ -5641,6 +7294,29 @@ class ShellHelpIcon(Static):
         self.app._shell_toggle_help()
 
 
+class CloudTrainer(Vertical):
+    """Full-screen CLOUD & DEVOPS overlay: a fake terminal (left) that runs
+    git/docker/aws/terraform/ansible against the CloudLab simulation, and a live
+    'cloud state' panel (right) showing buckets, servers, containers, and
+    resources. 'write' lessons turn the left panel into a ghost file editor
+    (type-along — the white transparent text). The app owns all state; this
+    widget holds focus and pipes every keystroke to `app._dev_on_key`."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._dev_on_key(event)
+
+
+class CloudHelpIcon(Static):
+    """The always-visible, clickable `?` in the dev top bar — opens the
+    command manual. Mouse-click only (the trainer owns the keyboard)."""
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._dev_toggle_help()
+
+
 class VolumeBar(Static):
     """Docked bottom volume faders: two rows — VOICE (TTS) and SFX (keyboard /
     win-fail sounds) — each with its own mute toggle and clickable level meter.
@@ -5813,6 +7489,22 @@ class TutorApp(App):
     #shell-foot { width: 100%; height: auto; margin-top: 1; }
     #shell-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #shell-help.visible { display: block; }
+    #dev { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #dev.visible { display: block; }
+    #dev-topbar { width: 100%; height: auto; }
+    #dev-head { width: 1fr; height: auto; }
+    #dev-help-icon { width: 5; height: 3; padding: 0 1; color: #d5d5d5; text-style: bold; }
+    #dev-help-icon:hover { background: $surface; color: $text; }
+    #dev-ghost { width: 100%; height: 3; padding: 0 2; background: #0d1117; border: solid #30363d; }
+    #dev-body { width: 100%; height: 1fr; }
+    #dev-term { width: 1fr; height: 1fr; border: tall $primary; }
+    #dev-output { height: 1fr; padding: 1 2; background: #0d1117; }
+    #dev-state { width: 34%; height: 1fr; border: tall $warning; }
+    #dev-state-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
+    #dev-state-tree { height: 1fr; padding: 1 2; }
+    #dev-foot { width: 100%; height: auto; margin-top: 1; }
+    #dev-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
+    #dev-help.visible { display: block; }
     #cheat { width: 34%; border: tall $warning; padding: 1 2; display: none; }
     #cheat.visible { display: block; }
     #side-examples { width: 42%; border: tall $warning; padding: 0; }
@@ -5994,6 +7686,29 @@ class TutorApp(App):
         self._shell_flash_timer = None
         self._shell_adv_timer = None   # short hold after a win before the next lesson
         self._shell_fs = ShellFS()
+        self._dev_on = False          # CLOUD & DEVOPS track overlay open
+        self._dev_idx = 0             # current DEV_LESSONS index
+        self._dev_lab = CloudLab()    # the simulated cloud/git/docker/aws/etc
+        self._dev_cmd = ""            # the command being typed (free text)
+        self._dev_history = []        # (kind, text) terminal scrollback
+        self._dev_msg = ""            # transient feedback (win / nudge)
+        self._dev_msg_kind = ""       # "win" (green) or "hint" (amber)
+        self._dev_phase = "run"       # "write" (ghost file) | "run" (command)
+        self._dev_target = ""         # write: the file content being typed
+        self._dev_pos = 0             # write: chars typed so far
+        self._dev_explained = set()   # write: line substrings already spoken
+        self._dev_wrong = False       # write: just hit a wrong char
+        self._dev_ghost = ""          # run: the command hint (typewriter)
+        self._dev_ghost_typed = 0
+        self._dev_ghost_on = False
+        self._dev_ghost_timer = None
+        self._dev_ghost_blink_timer = None
+        self._dev_ghost_blink = 0
+        self._dev_attempts = 0
+        self._dev_confirm = False
+        self._dev_flash = 0
+        self._dev_flash_timer = None
+        self._dev_adv_timer = None
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -6127,6 +7842,19 @@ class TutorApp(App):
                     yield Static("", id="shell-fs-tree")
             yield Static("", id="shell-foot")
         yield Static("", id="shell-help")
+        with CloudTrainer(id="dev"):
+            with Horizontal(id="dev-topbar"):
+                yield Static("", id="dev-head")
+                yield CloudHelpIcon(" ? ", id="dev-help-icon")
+            yield Static("", id="dev-ghost")
+            with Horizontal(id="dev-body"):
+                with Vertical(id="dev-term"):
+                    yield Static("", id="dev-output")
+                with Vertical(id="dev-state"):
+                    yield Static("CLOUD", id="dev-state-title")
+                    yield Static("", id="dev-state-tree")
+            yield Static("", id="dev-foot")
+        yield Static("", id="dev-help")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -6274,9 +8002,36 @@ class TutorApp(App):
             return f"lesson {step + 1} — {SHELL_LESSONS[step]['title']}"
         return ""
 
+    def _dev_checkpoint_label(self):
+        """A one-line description of where the learner is in CLOUD & DEVOPS, or \"\"."""
+        cp = self.p.get("dev_checkpoint")
+        if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
+            idx = cp["idx"]
+            if 0 <= idx < len(DEV_LESSONS):
+                return f"{DEV_LESSONS[idx]['module']} — {DEV_LESSONS[idx]['title']}"
+        step = self.p.get("dev_step")
+        if isinstance(step, int) and 0 < step < len(DEV_LESSONS):
+            return f"{DEV_LESSONS[step]['module']} — {DEV_LESSONS[step]['title']}"
+        return ""
+
     def _render_series_list(self):
         t = Text()
         t.append("CHOOSE A SERIES", style="bold magenta")
+        t.append("\n\n")
+        # CLOUD & DEVOPS — the noob → engineer path (series_sel == -3)
+        sel = self.series_sel == -3
+        t.append("▶ " if sel else "  ")
+        if isinstance(self.p.get("dev_step"), int) and self.p["dev_step"] >= len(DEV_LESSONS):
+            t.append("✓ ", style="green")
+        t.append("CLOUD & DEVOPS", style="bold #7dd3fc" if sel else "#67e8f9")
+        t.append("   noob → engineer", style="dim")
+        t.append("\n")
+        t.append("   ")
+        t.append("git · docker · AWS · terraform · ansible · CI/CD", style="dim")
+        label = self._dev_checkpoint_label()
+        if label:
+            t.append("\n   ")
+            t.append(f"⏵ resume at {label}", style="bold yellow")
         t.append("\n\n")
         # BUILD STUFF first — the "from nothing" path (series_sel == -2)
         sel = self.series_sel == -2
@@ -6352,8 +8107,8 @@ class TutorApp(App):
         self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
 
     def _preview_challenge(self):
-        if self.series_sel in (-1, -2):
-            return None   # VIM / BUILD courses — handled separately in _render_menu_preview
+        if self.series_sel in (-1, -2, -3):
+            return None   # VIM / BUILD / CLOUD courses — handled separately in _render_menu_preview
         if self.menu_level == "series":
             g = GROUPS[self.series_sel]
             return g["challenges"][0] if g["challenges"] else None
@@ -6361,6 +8116,30 @@ class TutorApp(App):
         return g["challenges"][self.menu_sel] if 0 <= self.menu_sel < len(g["challenges"]) else None
 
     def _render_menu_preview(self):
+        if self.series_sel == -3:
+            self.query_one("#menu-preview-title", Static).update("PREVIEW — CLOUD & DEVOPS")
+            t = Text()
+            t.append("Go from knowing bash + Python to shipping a real stack.\\n\\n", style="#f0f0f5")
+            for line in ("version control with git", "package apps with docker",
+                         "store files & run servers on AWS (S3, EC2, boto3)",
+                         "infrastructure as code with terraform",
+                         "configure servers with ansible",
+                         "guard every commit with a CI/CD pipeline"):
+                t.append("• ", style="dim")
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\n")
+            t.append("8 modules · ", style="dim")
+            t.append(f"{len(DEV_LESSONS)} lessons", style="#d5d5d5")
+            t.append(" · from first commit to full deploy", style="dim")
+            label = self._dev_checkpoint_label()
+            if label:
+                t.append("\n\n")
+                t.append(f"▶ saved checkpoint — resume at {label}", style="bold yellow")
+                t.append("\n")
+                t.append("press Enter to pick up where you left off", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
         if self.series_sel == -2:
             self.query_one("#menu-preview-title", Static).update("PREVIEW — BUILD STUFF")
             t = Text()
@@ -6546,7 +8325,7 @@ class TutorApp(App):
         if self.menu_level == "series":
             self.series_sel += 1
             if self.series_sel >= len(GROUPS):
-                self.series_sel = -2
+                self.series_sel = -3
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
             self.menu_sel = (self.menu_sel + 1) % n
@@ -6558,7 +8337,7 @@ class TutorApp(App):
             return
         if self.menu_level == "series":
             self.series_sel -= 1
-            if self.series_sel < -2:
+            if self.series_sel < -3:
                 self.series_sel = len(GROUPS) - 1
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
@@ -6597,6 +8376,8 @@ class TutorApp(App):
             return   # VIM course overlay owns the keyboard; Esc there exits it
         if self._shell_on:
             return   # BUILD STUFF shell overlay owns the keyboard; Esc there exits it
+        if self._dev_on:
+            return   # CLOUD & DEVOPS overlay owns the keyboard; Esc there exits it
         if self._lesson_on:
             self._finish_lesson()
             return
@@ -6646,6 +8427,8 @@ class TutorApp(App):
             return   # VIM course overlay owns the keyboard
         if self._shell_on:
             return   # BUILD STUFF shell overlay owns the keyboard
+        if self._dev_on:
+            return   # CLOUD & DEVOPS overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -6653,6 +8436,9 @@ class TutorApp(App):
             return
         if self.mode == "menu":
             if self.menu_level == "series":
+                if self.series_sel == -3:
+                    self._dev_begin()
+                    return
                 if self.series_sel == -2:
                     self._shell_begin()
                     return
@@ -8636,6 +10422,683 @@ class TutorApp(App):
             t.append("\n")
         if lesson.get("kind") == "info":
             t.append("press Enter when you've read along · Esc exits · click [?] for the manual", style="dim")
+            return t
+        t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
+        return t
+
+    # ---- CLOUD & DEVOPS trainer ------------------------------------------ #
+
+    def _dev_lesson(self):
+        return DEV_LESSONS[self._dev_idx]
+
+    def _dev_prompt(self):
+        return "you@cloud:~$"
+
+    def _dev_hand_hold(self):
+        """0 = full hand-holding … 3 = near-zero (TTS slowly lets go)."""
+        i = self._dev_idx
+        if i >= len(DEV_LESSONS) - 6:
+            return 3
+        if i >= 45:
+            return 2
+        if i >= 14:
+            return 1
+        return 0
+
+    def _dev_replay(self, lab, lesson):
+        """Rebuild one lesson's effect into a fresh lab (for resume)."""
+        kind = lesson["kind"]
+        if kind == "write":
+            lab.fs.files[lab.fs._resolve(lesson["file"])] = lesson["content"]
+        elif kind == "run":
+            lab.run(lesson["cmd_hint"])
+        elif kind == "challenge":
+            for item in lesson.get("replay", []):
+                if isinstance(item, dict) and "write" in item:
+                    lab.fs.files[lab.fs._resolve(item["write"])] = item["content"]
+                else:
+                    lab.run(item)
+
+    def _dev_correct(self, lesson, cmd):
+        if lesson.get("verify_lab"):
+            try:
+                return bool(lesson["verify_lab"](self._dev_lab))
+            except Exception:
+                return False
+        if lesson.get("verify"):
+            try:
+                return bool(lesson["verify"](cmd))
+            except Exception:
+                return False
+        ncmd = " ".join(cmd.lower().split())
+        for e in lesson.get("expect", []):
+            if " ".join(e.lower().split()) == ncmd:
+                return True
+        return False
+
+    def _dev_setup_lesson(self):
+        if self._dev_idx >= len(DEV_LESSONS):
+            self._dev_phase = "run"
+            return
+        lesson = self._dev_lesson()
+        if lesson["kind"] == "write":
+            self._dev_phase = "write"
+            self._dev_target = lesson["content"]
+            self._dev_pos = 0
+            self._dev_explained = set()
+            self._dev_wrong = False
+        else:
+            self._dev_phase = "run"
+            self._dev_target = ""
+            self._dev_pos = 0
+
+    def _dev_begin(self, module_first=None):
+        """Open the CLOUD & DEVOPS overlay, resuming at a checkpoint or step."""
+        resume = None
+        cp = self.p.get("dev_checkpoint")
+        if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
+            if 0 <= cp["idx"] < len(DEV_LESSONS):
+                resume = cp["idx"]
+        if resume is None:
+            step = self.p.get("dev_step")
+            if isinstance(step, int) and 0 < step < len(DEV_LESSONS):
+                resume = step
+            elif module_first is not None:
+                resume = module_first
+            else:
+                resume = 0
+        self._dev_on = True
+        self._dev_idx = resume
+        self._dev_cmd = ""
+        self._dev_history = []
+        self._dev_msg = ""
+        self._dev_msg_kind = ""
+        self._dev_confirm = False
+        self._dev_attempts = 0
+        lab = CloudLab()
+        for i in range(resume):
+            self._dev_replay(lab, DEV_LESSONS[i])
+        self._dev_lab = lab
+        self._dev_setup_lesson()
+        self.query_one("#dev-help", Static).remove_class("visible")
+        self.query_one("#dev", CloudTrainer).add_class("visible")
+        self.query_one("#dev", CloudTrainer).focus()
+        self._dev_lesson_speak()
+        self._dev_render()
+        self._dev_ghost_start()
+
+    def _dev_lesson_speak(self):
+        if not self.voice_on or self._dev_idx >= len(DEV_LESSONS):
+            return
+        lesson = self._dev_lesson()
+        tier = self._dev_hand_hold()
+        if lesson["kind"] == "info":
+            speak(_pers(lesson.get("say", lesson.get("why", ""))))
+            return
+        say = lesson.get("say", "")
+        why = lesson.get("why", "")
+        if tier <= 1:
+            speak(_pers(say + " " + why))
+        elif tier == 2:
+            speak(_pers(say))
+        else:
+            speak(_pers(say.split(". ")[0].rstrip(".") + "."))
+
+    # -- write-phase ghost typing (the "white transparent text") ------------ #
+
+    def _dev_structural(self, i):
+        c = self._dev_target[i]
+        if c == "\n":
+            return True
+        if c == " ":
+            j = i - 1
+            while j >= 0 and self._dev_target[j] == " ":
+                j -= 1
+            return j < 0 or self._dev_target[j] == "\n"
+        return False
+
+    def _dev_skip_ws(self):
+        while self._dev_pos < len(self._dev_target) and self._dev_structural(self._dev_pos):
+            self._dev_pos += 1
+
+    def _dev_explain_line(self):
+        lesson = self._dev_lesson()
+        lines = lesson.get("lines", [])
+        if not lines or not self.voice_on:
+            return
+        cur_line = self._dev_target[:self._dev_pos].rsplit("\n", 1)[-1]
+        for sub, explain in lines:
+            if sub in cur_line and sub not in self._dev_explained:
+                self._dev_explained.add(sub)
+                speak(_pers(explain))
+
+    def _dev_current_line_hint(self):
+        lesson = self._dev_lesson()
+        lines = lesson.get("lines", [])
+        target = self._dev_target
+        line_idx = target[:self._dev_pos].count("\n")
+        full_lines = target.split("\n")
+        if line_idx < len(full_lines):
+            full = full_lines[line_idx]
+            for sub, explain in lines:
+                if sub in full:
+                    return explain
+        return "follow the ghost — type the file exactly"
+
+    def _dev_write_key(self, event):
+        key = event.key
+        target = self._dev_target
+        if key == "enter":
+            if self._dev_pos >= len(target):
+                self._dev_write_done()
+            else:
+                self._dev_msg = "keep going — finish the file, then Enter"
+                self._dev_msg_kind = "hint"
+                play_ghost_error()
+                self._dev_render()
+            return
+        if key == "backspace":
+            if self._dev_pos > 0:
+                self._dev_pos -= 1
+                while self._dev_pos > 0 and self._dev_structural(self._dev_pos):
+                    self._dev_pos -= 1
+            self._dev_wrong = False
+            self._dev_render()
+            return
+        ch = event.character
+        if not ch or self._dev_pos >= len(target):
+            return
+        if ch == target[self._dev_pos]:
+            self._dev_pos += 1
+            self._dev_wrong = False
+            self._dev_explain_line()
+            self._dev_skip_ws()
+            if self._dev_pos >= len(target):
+                self._dev_write_done()
+                return
+            self._dev_render()
+        else:
+            self._dev_wrong = True
+            self._dev_msg = "not quite — follow the ghost exactly"
+            self._dev_msg_kind = "hint"
+            play_ghost_error()
+            self._dev_render()
+
+    def _dev_write_done(self):
+        lesson = self._dev_lesson()
+        p = self._dev_lab.fs._resolve(lesson["file"])
+        self._dev_lab.fs.files[p] = lesson["content"]
+        self._dev_lab.fs.latest = p
+        self._dev_msg = f"saved {lesson['file']} ✓"
+        self._dev_msg_kind = "win"
+        play_complete()
+        if self.voice_on:
+            speak(_pers(lesson.get("on_win", "Nice work.")))
+        self._dev_render()
+        self._dev_advance()
+
+    # -- run-phase command entry -------------------------------------------- #
+
+    def _dev_submit(self):
+        cmd = self._dev_cmd.strip()
+        if not cmd:
+            return
+        lesson = self._dev_lesson()
+        self._dev_history.append(("cmd", (self._dev_prompt(), cmd)))
+        out, err = self._dev_lab.run(cmd)
+        for line in out:
+            if line == "__CLEAR__":
+                self._dev_history = []
+            else:
+                self._dev_history.append(("out", line))
+        for line in err:
+            self._dev_history.append(("err", line))
+        self._dev_cmd = ""
+        if self._dev_correct(lesson, cmd):
+            self._dev_msg = lesson.get("on_win", "Correct!")
+            self._dev_msg_kind = "win"
+            play_complete()
+            if self.voice_on:
+                speak(_pers(lesson.get("on_win", "Correct!")))
+            self._dev_render()
+            self._dev_advance()
+        else:
+            self._dev_attempts += 1
+            self._dev_msg = self._dev_wrong_hint(lesson)
+            self._dev_msg_kind = "hint"
+            play_ghost_error()
+            self._dev_render()
+            self._dev_ghost_blink_again()
+
+    def _dev_wrong_hint(self, lesson):
+        tier = self._dev_attempts
+        if lesson.get("kind") == "challenge":
+            if tier == 0:
+                return "not yet — think about the end state you need"
+            if tier == 1:
+                return "re-read the 'why' — what does the goal describe?"
+            return "the command should produce the state shown in the CLOUD panel"
+        if tier == 0:
+            return "not quite — look at the hint bar above"
+        if tier == 1:
+            return "check the spelling and the flags"
+        return "type exactly what the hint bar shows"
+
+    def _dev_on_key(self, event):
+        if not self._dev_on:
+            return
+        event.stop(); event.prevent_default()
+        key = event.key
+        if self.query_one("#dev-help", Static).has_class("visible"):
+            if key == "escape":
+                self._dev_toggle_help()
+            return
+        if key == "escape":
+            if self._dev_confirm:
+                self._dev_confirm = False
+                self._dev_render()
+                return
+            self._dev_confirm = True
+            self._dev_render()
+            return
+        if self._dev_confirm:
+            ch = (event.character or "").lower()
+            if ch == "y":
+                self._dev_save_checkpoint()
+                self._dev_dismiss()
+            elif ch == "n":
+                self._dev_dismiss()
+            return
+        if self._dev_idx >= len(DEV_LESSONS):
+            return
+        lesson = self._dev_lesson()
+        if lesson["kind"] == "info":
+            if key == "enter":
+                self._dev_next()
+            return
+        if self._dev_phase == "write":
+            self._dev_write_key(event)
+            return
+        if key == "enter":
+            self._dev_submit()
+            return
+        if key == "backspace":
+            if self._dev_cmd:
+                self._dev_cmd = self._dev_cmd[:-1]
+            self._dev_render()
+            return
+        if key == "ctrl+u":
+            self._dev_cmd = ""
+            self._dev_render()
+            return
+        if key == "ctrl+l":
+            self._dev_history = []
+            self._dev_render()
+            return
+        if key == "ctrl+c":
+            return
+        if key in _VIM_MODIFIERS:
+            return
+        ch = event.character
+        if ch:
+            self._dev_cmd += ch
+            self._dev_render()
+
+    def _dev_advance(self):
+        self._dev_render()
+        t = getattr(self, "_dev_adv_timer", None)
+        if t is not None:
+            t.stop()
+        self._dev_adv_timer = self.set_timer(1.1, self._dev_next)
+
+    def _dev_next(self):
+        self._dev_adv_timer = None
+        self._dev_idx += 1
+        self._dev_msg = ""
+        self._dev_msg_kind = ""
+        if self._dev_idx >= len(DEV_LESSONS):
+            self._dev_graduate()
+            return
+        self.p["dev_step"] = self._dev_idx
+        save_progress(self.p)
+        self._dev_attempts = 0
+        self._dev_setup_lesson()
+        self._dev_lesson_speak()
+        self._dev_render()
+        self._dev_ghost_start()
+
+    def _dev_graduate(self):
+        self._dev_ghost_stop_timers()
+        self._dev_ghost = ""
+        self.query_one("#dev-ghost", Static).update(Text(""))
+        self.p["dev_step"] = len(DEV_LESSONS)
+        self.p.pop("dev_checkpoint", None)
+        self.p["xp"] = self.p.get("xp", 0) + 250
+        save_progress(self.p)
+        self._dev_msg = "YOU SHIPPED IT — git, docker, AWS, terraform, ansible, CI. You're an engineer."
+        self._celebrate()
+        if self.voice_on:
+            speak("You did it. You built, packaged, deployed, and automated a full stack. You're a cloud engineer now.")
+        self._dev_render()
+
+    def _dev_save_checkpoint(self):
+        self.p["dev_checkpoint"] = {"idx": self._dev_idx}
+        save_progress(self.p)
+        if self.voice_on:
+            speak("Checkpoint saved. You can pick up right here later.")
+
+    def _dev_dismiss(self):
+        self._dev_on = False
+        self._dev_confirm = False
+        self._dev_ghost_stop_timers()
+        self.query_one("#dev-help", Static).remove_class("visible")
+        t = getattr(self, "_dev_adv_timer", None)
+        if t is not None:
+            t.stop(); self._dev_adv_timer = None
+        self.query_one("#dev", CloudTrainer).remove_class("visible")
+        self._show_menu()
+
+    def _dev_toggle_help(self):
+        hw = self.query_one("#dev-help", Static)
+        if hw.has_class("visible"):
+            hw.remove_class("visible")
+            self.query_one("#dev", CloudTrainer).focus()
+        else:
+            hw.update(self._dev_render_help())
+            hw.add_class("visible")
+
+    def _dev_render_help(self):
+        t = Text()
+        t.append("CLOUD & DEVOPS MANUAL", style="bold cyan")
+        t.append("   ")
+        t.append("click [?] or Esc to close", style="dim")
+        t.append("\n\n")
+        manual = [
+            ("git init", "start a repo", "git init"),
+            ("git add f", "stage a file", "git add app.py"),
+            ("git commit -m", "save a snapshot", 'git commit -m "msg"'),
+            ("git log / status", "history / what changed", "git status"),
+            ("docker build -t", "bake an image", "docker build -t myapp ."),
+            ("docker run -d --name n -p", "run a container", "docker run -d --name web -p 8080:5000 myapp"),
+            ("docker ps / logs n", "list / read logs", "docker logs web"),
+            ("aws s3 mb/ls/cp", "buckets & files", "aws s3 mb s3://name"),
+            ("aws ec2 run-instances", "launch a server", "aws ec2 run-instances --image-id ami-123 --instance-type t3.micro"),
+            ("terraform init/plan/apply", "infra as code", "terraform apply"),
+            ("ansible-playbook f", "run a playbook", "ansible-playbook site.yml"),
+            ("python3 f", "run a script", "python3 upload.py"),
+            ("ci status", "pipeline status", "ci status"),
+        ]
+        for cmd, what, example in manual:
+            t.append(cmd, style="bold #86efac")
+            t.append("   ")
+            t.append(what, style="#d5d5d5")
+            t.append("\n")
+            t.append("     → ")
+            t.append(example, style="#8b949e")
+            t.append("\n")
+        return t
+
+    # -- animated command ghost (run lessons) ------------------------------- #
+
+    def _dev_ghost_start(self):
+        text = ""
+        if self._dev_idx < len(DEV_LESSONS):
+            lesson = self._dev_lesson()
+            if lesson["kind"] == "run":
+                text = lesson["cmd_hint"]
+        self._dev_ghost = text
+        self._dev_ghost_typed = 0
+        self._dev_ghost_on = False
+        self._dev_ghost_stop_timers()
+        self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+        if text:
+            self._dev_ghost_timer = self.set_interval(0.035, self._dev_ghost_tick)
+
+    def _dev_ghost_stop_timers(self):
+        t = getattr(self, "_dev_ghost_timer", None)
+        if t is not None:
+            t.stop(); self._dev_ghost_timer = None
+        b = getattr(self, "_dev_ghost_blink_timer", None)
+        if b is not None:
+            b.stop(); self._dev_ghost_blink_timer = None
+        self._dev_ghost_blink = 0
+
+    def _dev_ghost_tick(self):
+        if not self._dev_on:
+            return
+        if self._dev_ghost_typed < len(self._dev_ghost):
+            self._dev_ghost_typed += 1
+            self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+        else:
+            self._dev_ghost_stop_timers()
+            self._dev_ghost_blink = 4
+            self._dev_ghost_blink_timer = self.set_interval(0.4, self._dev_ghost_blink_tick)
+
+    def _dev_ghost_blink_tick(self):
+        if not self._dev_on:
+            return
+        self._dev_ghost_on = not self._dev_ghost_on
+        if self._dev_ghost_blink > 0:
+            self._dev_ghost_blink -= 1
+        self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+        if self._dev_ghost_blink <= 0:
+            self._dev_ghost_on = False
+            b = getattr(self, "_dev_ghost_blink_timer", None)
+            if b is not None:
+                b.stop(); self._dev_ghost_blink_timer = None
+            self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+
+    def _dev_ghost_blink_again(self):
+        self._dev_ghost_stop_timers()
+        self._dev_ghost_blink = 4
+        self._dev_ghost_blink_timer = self.set_interval(0.4, self._dev_ghost_blink_tick)
+
+    # -- rendering ---------------------------------------------------------- #
+
+    def _dev_render(self):
+        self.query_one("#dev-head", Static).update(self._dev_render_head())
+        self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+        self.query_one("#dev-output", Static).update(self._dev_render_output())
+        self.query_one("#dev-state-tree", Static).update(self._dev_render_state())
+        self.query_one("#dev-foot", Static).update(self._dev_render_foot())
+
+    def _dev_render_head(self):
+        t = Text()
+        if self._dev_idx >= len(DEV_LESSONS):
+            t.append("COURSE COMPLETE", style="bold green")
+            t.append("\n\n")
+            t.append(self._dev_msg or "you built, packaged, deployed, and automated", style="#d5d5d5")
+            t.append("\n\n")
+            t.append("Esc — back to the menu", style="dim")
+            return t
+        lesson = self._dev_lesson()
+        t.append("CLOUD & DEVOPS", style="bold #7dd3fc")
+        t.append(f"  {self._dev_idx + 1}/{len(DEV_LESSONS)}", style="dim")
+        t.append("   ")
+        t.append(lesson["module"].upper(), style="bold cyan")
+        t.append("\n")
+        t.append(lesson["title"], style="bold yellow")
+        t.append("\n")
+        if lesson["kind"] == "info":
+            t.append(lesson["why"], style="#f0f0f5")
+        else:
+            t.append(lesson.get("say", ""), style="#f0f0f5")
+            t.append("\n")
+            t.append(lesson["why"], style="#b0b0b8")
+        return t
+
+    def _dev_render_ghost(self):
+        t = Text()
+        if self._dev_idx >= len(DEV_LESSONS):
+            return t
+        lesson = self._dev_lesson()
+        kind = lesson["kind"]
+        if kind == "challenge":
+            t.append("challenge — no hint this time. you've got this.", style="bold #fbbf24")
+            return t
+        if kind == "info":
+            t.append("read along, then press Enter", style="dim")
+            return t
+        if self._dev_phase == "write":
+            t.append("✎ ", style="bold #7dd3fc")
+            t.append(lesson["file"], style="bold #7dd3fc")
+            t.append("   ")
+            t.append(self._dev_current_line_hint(), style="#d5d5d5")
+            return t
+        typed = self._dev_ghost[:self._dev_ghost_typed]
+        rest = self._dev_ghost[self._dev_ghost_typed:]
+        t.append("→ ", style="bold #22c55e" if self._dev_ghost_on else "dim")
+        t.append(typed, style="bold #f0f0f5")
+        t.append(rest, style="#5a5a5a")
+        return t
+
+    def _dev_render_output(self):
+        if self._dev_phase == "write":
+            return self._dev_render_editor()
+        return self._dev_render_term()
+
+    def _dev_render_term(self):
+        t = Text()
+        w = max(20, self.size.width - 38)
+        if self._dev_idx < len(DEV_LESSONS) and self._dev_lesson().get("kind") == "info":
+            for line in _wrap_words(self._dev_lesson()["why"], w):
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\n")
+            t.append(self._dev_prompt() + " ", style="bold #86efac")
+            t.append("▍", style="bold #22c55e")
+            return _box_lines(_lines_of(t))
+        for kind, text in self._dev_history[-18:]:
+            if kind == "cmd":
+                p, c = text
+                t.append(p, style="bold #86efac")
+                t.append(c, style="#f0f0f5")
+            elif kind == "out":
+                t.append(text, style="#e6e6e6")
+            elif kind == "err":
+                t.append(text, style="bold #f87171")
+            t.append("\n")
+        t.append(self._dev_prompt() + " ", style="bold #86efac")
+        t.append(self._dev_cmd, style="#f0f0f5")
+        t.append("▍", style="bold #22c55e")
+        return _box_lines(_lines_of(t))
+
+    def _dev_render_editor(self):
+        target = self._dev_target
+        pos = min(self._dev_pos, len(target))
+        t = Text()
+        t.append("✎ ", style="bold #7dd3fc")
+        t.append(self._dev_lesson()["file"], style="bold #7dd3fc")
+        t.append("\n\n")
+        offset = 0
+        for line in target.split("\n"):
+            start = offset
+            end = start + len(line)
+            if pos <= start:
+                t.append(line, style="#5a5a5a")
+            elif pos >= end:
+                t.append(line, style="#f0f0f5")
+            else:
+                n = pos - start
+                t.append(line[:n], style="#f0f0f5")
+                nxt = line[n]
+                t.append(nxt, style="reverse bold" if not self._dev_wrong else "bold white on #5b1a1a")
+                t.append(line[n + 1:], style="#5a5a5a")
+            t.append("\n")
+            offset = end + 1
+        return _box_lines(_lines_of(t))
+
+    def _dev_render_state(self):
+        lab = self._dev_lab
+        t = Text()
+        added = False
+
+        def sec(title):
+            nonlocal added
+            added = True
+            t.append(title, style="bold cyan")
+            t.append("\n")
+
+        if lab.git.inited:
+            sec("GIT")
+            t.append(f"  branch {lab.git.branch} · {len(lab.git.commits)} commits", style="#d5d5d5")
+            t.append("\n")
+        if lab.docker.images:
+            sec("DOCKER IMAGES")
+            for name in lab.docker.images:
+                t.append(f"  {name}", style="#d5d5d5")
+                t.append("\n")
+        if lab.docker.containers:
+            sec("CONTAINERS")
+            for name, c in lab.docker.containers.items():
+                st = "up" if c["running"] else "stopped"
+                t.append(f"  {name} ({st})", style="#d5d5d5")
+                t.append("\n")
+        if lab.aws.buckets:
+            sec("S3 BUCKETS")
+            for b in sorted(lab.aws.buckets):
+                n = len(lab.aws.buckets[b])
+                t.append(f"  {b} ({n} files)", style="#d5d5d5")
+                t.append("\n")
+        if lab.aws.instances:
+            sec("EC2 INSTANCES")
+            for iid, inst in lab.aws.instances.items():
+                t.append(f"  {iid} {inst['State']['Name']}", style="#d5d5d5")
+                t.append("\n")
+        if lab.tf.resources:
+            sec("TERRAFORM")
+            for k in sorted(lab.tf.resources):
+                t.append(f"  {k}", style="#d5d5d5")
+                t.append("\n")
+        if lab.ansible.hosts:
+            sec("ANSIBLE HOSTS")
+            for h, st in lab.ansible.hosts.items():
+                pkgs = ", ".join(sorted(st["packages"])) or "—"
+                t.append(f"  {h}: {pkgs}", style="#d5d5d5")
+                t.append("\n")
+        if lab.pipeline.runs:
+            r = lab.pipeline.runs[-1]
+            ok = all(s["status"] == "pass" for s in r["stages"])
+            sec("CI/CD")
+            t.append(f"  #{r['id']} {'green' if ok else 'red'}", style="green" if ok else "red")
+            t.append("\n")
+        if not added:
+            t.append("the cloud is empty —", style="#d5d5d5")
+            t.append("\n")
+            t.append("start typing and watch", style="#d5d5d5")
+            t.append("\n")
+            t.append("it fill up", style="#d5d5d5")
+        return t
+
+    def _dev_render_foot(self):
+        t = Text()
+        if self._dev_confirm:
+            t.append("Save a checkpoint so you can resume here later?", style="bold yellow")
+            t.append("\n")
+            t.append("[y] save & leave", style="bold green")
+            t.append("   ")
+            t.append("[n] leave without saving", style="#f0f0f5")
+            t.append("   ")
+            t.append("[Esc] keep going", style="dim")
+            return t
+        if self._dev_idx >= len(DEV_LESSONS):
+            t.append(self._dev_msg, style="bold green")
+            t.append(" · Esc exits", style="dim")
+            return t
+        lesson = self._dev_lesson()
+        if self._dev_msg:
+            if self._dev_msg_kind == "win":
+                t.append("✓  ", style="bold #22c55e")
+                t.append(self._dev_msg, style="bold #22c55e")
+            else:
+                t.append("→  ", style="bold #fbbf24")
+                t.append(self._dev_msg, style="bold #fbbf24")
+            t.append("\n")
+        if lesson["kind"] == "info":
+            t.append("press Enter to continue · Esc exits · click [?] for the manual", style="dim")
+            return t
+        if self._dev_phase == "write":
+            t.append("type the file (follow the ghost) · Enter when done · Esc exits", style="dim")
             return t
         t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
