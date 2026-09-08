@@ -60,6 +60,11 @@ Uses `aplay` + `paplay` (ALSA / PulseAudio — preinstalled on most desktops) fo
 key sounds and win/fail stings. For mechanical-keypress "thock" sounds, drop
 your own samples in `~/.learning/keypress/keypress-*.wav`.
 
+Press **`F4`** to open a volume bar at the bottom: click the `(♪)`/`(✕)` icon to
+mute everything (sounds + voice) at once, click the meter to jump to a level, or
+nudge with `←`/`→`. It auto-closes after a few seconds, and your level is
+remembered between sessions.
+
 ---
 
 ## The loop (what you do)
@@ -76,7 +81,8 @@ NORMAL   h/j/k/l move · i/a/A/I/o/O insert · x del char · dd del line ·
          yy yank · p paste · u undo · 0/$ edges · gg/G top/bottom
 INSERT   type normally · Esc = NORMAL · Ctrl+Enter = run
 COURSE   Enter dive in · w watch lesson · l listen · e lesson ·
-         F12 quick check · F2 cheat sheet · F7 review · F8 examples · m music
+         F12 quick check · F2 cheat sheet · F7 review · F8 examples ·
+         F4 volume · F6 voice · m music
 ```
 
 ## Why "no AI"

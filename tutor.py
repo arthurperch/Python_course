@@ -25,6 +25,7 @@ Voice: espeak-ng or piper-tts (auto-detected). No AI — fully offline.
 
 from __future__ import annotations
 
+import array
 import ast
 import json
 import math
@@ -2125,7 +2126,10 @@ def speak(text: str, rate: float = 1.0) -> None:
         # lesson captions, so there's only ONE model load per session.
         threading.Thread(target=_speak_synth, args=(clean, gen, rate), daemon=True).start()
     elif engine == "espeak":
-        subprocess.Popen(["espeak-ng", "-s", "150", "-a", "200", clean],
+        amp = int(round(200 * master_volume()))
+        if amp <= 0:
+            return   # muted — keep silent (no point spawning a silent voice)
+        subprocess.Popen(["espeak-ng", "-s", "150", "-a", str(amp), clean],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -2256,6 +2260,10 @@ def play_raw(raw: bytes) -> None:
     already done."""
     global _PIPER_PROCS
     _kill_piper()  # stop any prior sentence's audio before this one starts
+    gain = master_volume()
+    if gain <= 0.0:
+        return   # muted — synthesize (for caption timing) but stay silent
+    raw = _scale_raw(raw, gain)
     try:
         p = subprocess.Popen(["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw"],
                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -2277,13 +2285,62 @@ def play_raw(raw: bytes) -> None:
         pass
 
 
+# ---- master volume + mute (the docked bottom volume bar) ------------------- #
+# One master fader scales EVERYTHING audible — TTS voice, keypress thocks,
+# win/fail music, chimes — and the mute icon silences it all at once.
+_MASTER_VOL = 1.0      # 0.0 .. 1.0 (the slider's remembered level)
+_MASTER_MUTED = False  # True while the mute icon is engaged
+
+
+def master_volume() -> float:
+    """Effective playback gain: 0 when muted, otherwise the slider level."""
+    return 0.0 if _MASTER_MUTED else _MASTER_VOL
+
+
+def set_master_volume(vol: float) -> None:
+    global _MASTER_VOL
+    _MASTER_VOL = max(0.0, min(1.0, vol))
+
+
+def set_master_mute(muted: bool) -> None:
+    global _MASTER_MUTED
+    _MASTER_MUTED = muted
+
+
+def toggle_master_mute() -> bool:
+    global _MASTER_MUTED
+    _MASTER_MUTED = not _MASTER_MUTED
+    return _MASTER_MUTED
+
+
+def _pa_vol(base: int) -> int:
+    """Scale a paplay 0..65536 volume by the master fader."""
+    return int(round(base * master_volume()))
+
+
+def _player_vol(frac: float) -> int:
+    """Scale a 0..1 fraction into a 0..100 ffplay/mpv volume."""
+    return int(round(frac * 100 * master_volume()))
+
+
+def _scale_raw(raw: bytes, gain: float) -> bytes:
+    """Scale 16-bit mono PCM by `gain` (0..1). Fast path when at full volume."""
+    if gain >= 1.0:
+        return raw
+    arr = array.array("h")
+    arr.frombytes(raw)
+    for i in range(len(arr)):
+        arr[i] = int(arr[i] * gain)
+    return arr.tobytes()
+
+
 SUCCESS_SOUND = "/usr/share/sounds/freedesktop/stereo/complete.oga"
 
 
 def play_complete() -> None:
     """Completion chime at full volume."""
     try:
-        subprocess.Popen(["paplay", "--volume=65536", SUCCESS_SOUND],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", SUCCESS_SOUND],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2309,7 +2366,7 @@ def play_streak(streak: int) -> None:
         with wave.open(str(path), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             w.writeframes(bytes(buf))
-        subprocess.Popen(["paplay", "--volume=65536", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2345,7 +2402,7 @@ def play_menu_blip(pitch: int = 0) -> None:
         with wave.open(str(path), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
             w.writeframes(bytes(buf))
-        subprocess.Popen(["paplay", "--volume=65536", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2368,7 +2425,7 @@ def play_output_tick() -> None:
         with wave.open(str(path), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             w.writeframes(bytes(buf))
-        subprocess.Popen(["paplay", "--volume=32768", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(32768)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2399,7 +2456,7 @@ def play_console_result(good: bool) -> None:
     try:
         notes = (659.25, 880.0) if good else (220.0, 164.81)
         path = _sweep(notes, "tutor_good.wav" if good else "tutor_bad.wav")
-        subprocess.Popen(["paplay", "--volume=49152", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(49152)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2409,7 +2466,7 @@ def play_ghost_error() -> None:
     """A comedic 'womp' for a mistyped ghost letter — three quick descending blips."""
     try:
         path = _sweep((392.0, 311.13, 246.94), "tutor_ghost_err.wav", dur=0.16, vol=24000)
-        subprocess.Popen(["paplay", "--volume=49152", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(49152)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2444,7 +2501,7 @@ def play_key() -> None:
             _load_key_pool()
         if _KEY_POOL:
             path = _KEY_POOL.pop()
-            subprocess.Popen(["paplay", "--volume=65536", str(path)],
+            subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", str(path)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
         # no soundpack — keep a quiet synthetic tick so typing still feels alive
@@ -2459,7 +2516,7 @@ def play_key() -> None:
         with wave.open(str(path), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             w.writeframes(bytes(buf))
-        subprocess.Popen(["paplay", "--volume=65536", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -2487,9 +2544,11 @@ def play_file(path: Path, volume: float = 0.7) -> None:
     the celebration/fail sting never drowns out the coach's spoken feedback."""
     if path is None:
         return
+    if master_volume() <= 0.0:
+        return   # muted — no point spawning a silent player
     p = str(path)
-    vol100 = int(round(volume * 100))       # ffplay/mpv use 0..100
-    vol16 = int(round(volume * 65536))      # paplay uses 0..65536
+    vol100 = _player_vol(volume)                  # ffplay/mpv use 0..100
+    vol16 = _pa_vol(int(round(volume * 65536)))   # paplay uses 0..65536
     for cmd in (["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
                  "-volume", str(vol100), p],
                 ["mpv", "--no-video", "--really-quiet", f"--volume={vol100}", p],
@@ -2518,7 +2577,7 @@ def play_video(path: Path, volume: float = 1.0, mute: bool = False):
     if path is None or not path.exists():
         return None
     p = str(path)
-    vol100 = int(round(volume * 100))
+    vol100 = _player_vol(volume)
     m1 = ["mpv", "--fs", "--really-quiet", "--keep-open=no", "--loop=no",
           "--ontop", "--no-border", f"--volume={vol100}", p]
     if mute:
@@ -3516,12 +3575,15 @@ def load_progress() -> dict:
             p.setdefault("ghosted", [])
             p.setdefault("structure_taught", False)
             p.setdefault("topics_taught", [])
+            p.setdefault("volume", 1.0)
+            p.setdefault("muted", False)
             return p
         except Exception:
             pass
     return {"xp": 0, "done": 0, "streak": 0, "best_streak": 0,
             "topics": [], "stats": {}, "last": "", "ghosted": [],
-            "structure_taught": False, "topics_taught": []}
+            "structure_taught": False, "topics_taught": [],
+            "volume": 1.0, "muted": False}
 
 
 def challenge_stat(p: dict, title: str) -> dict:
@@ -4674,6 +4736,55 @@ class VimTrainer(Vertical):
         self.app._vim_on_key(event)
 
 
+class VolumeBar(Static):
+    """Docked bottom volume fader: a mute toggle + a clickable level meter + %.
+
+    Click the `(♪)`/`(✕)` icon to mute/unmute everything, click the meter to jump
+    straight to that level, or nudge with ←/→ (or h/l). The app auto-closes it
+    after a few idle seconds so it never lingers over the editor."""
+
+    can_focus = True
+    METER_W = 22   # meter width in terminal cells
+
+    def _render(self) -> str:
+        vol = _MASTER_VOL
+        muted = _MASTER_MUTED
+        filled = int(round(vol * self.METER_W))
+        bar = ("█" * filled) + ("░" * (self.METER_W - filled))
+        if muted:
+            icon = "[bold red](✕)[/]"
+            bar = f"[dim]{bar}[/]"
+        else:
+            icon = "[bold #7dd3fc](♪)[/]"
+        pct = int(round(vol * 100))
+        hint = "[dim]←/→ nudge · click bar to set · F4 close[/]"
+        return f"{icon} {bar} [bold]{pct:3d}%[/]  {hint}"
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        x = event.x
+        if 0 <= x <= 2:                     # the mute/unmute icon
+            toggle_master_mute()
+        else:
+            i = x - 4                       # meter starts 4 cells in
+            if 0 <= i < self.METER_W:
+                set_master_volume((i + 0.5) / self.METER_W)
+                set_master_mute(False)      # raising the fader unmutes
+        self.app._volume_changed(self)
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("left", "h"):
+            set_master_volume(_MASTER_VOL - 0.05)
+        elif event.key in ("right", "l"):
+            set_master_volume(_MASTER_VOL + 0.05)
+        elif event.key in ("m", "space"):
+            toggle_master_mute()
+        else:
+            return
+        event.stop()
+        self.app._volume_changed(self)
+
+
 class TutorApp(App):
     CSS = """
     Screen { background: #000000; }
@@ -4696,6 +4807,8 @@ class TutorApp(App):
     #task { height: 3; padding: 1 2; background: $accent; color: $text; }
     #cmd { dock: bottom; display: none; }
     #cmd.visible { display: block; }
+    #volume-bar { dock: bottom; height: 1; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
+    #volume-bar.visible { display: block; }
     #cmd.flash { border: tall yellow; background: #4d4000; }
     #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
     #wildmenu.visible { display: block; }
@@ -4767,6 +4880,7 @@ class TutorApp(App):
         Binding("f1", "help", "Keys", show=False),
         Binding("f2", "toggle_cheat", "Cheat", show=False),
         Binding("f3", "demo", "Demo", show=False),
+        Binding("f4", "toggle_volume", "Volume", show=False),
         Binding("ctrl+g", "ghost", "Ghost", show=False),
         Binding("f6", "toggle_voice", "Voice", show=False),
         Binding("f7", "review", "Review", show=False),
@@ -4798,6 +4912,11 @@ class TutorApp(App):
         # every app restart (in-memory-only meant "how python works" each session)
         self._structure_taught = bool(self.p.get("structure_taught", False))
         self._topics_taught = set(self.p.get("topics_taught", []))
+        # master audio fader + mute (the docked bottom volume bar) — restored here
+        set_master_volume(float(self.p.get("volume", 1.0)))
+        set_master_mute(bool(self.p.get("muted", False)))
+        self._vol_open = False         # volume bar starts closed
+        self._vol_timer = None         # auto-close timer handle
         self._warmup_on = False        # post-ghost vim edit warm-up active
         self._warmup_idx = 0
         self.attempts: dict[int, int] = {}
@@ -4981,6 +5100,7 @@ class TutorApp(App):
         yield Static("", id="cat")
         yield Static("", id="quick")
         yield Static("", id="quit")
+        yield VolumeBar(id="volume-bar")
         yield Confetti(id="confetti")
 
     def on_mount(self):
@@ -5230,10 +5350,11 @@ class TutorApp(App):
     def _render_menu_help(self):
         music = "[green]music ON[/]" if self.music_on else "[red]music MUTED[/]"
         voice = "[green]voice ON[/]" if (self.voice_on and self._tts) else "[red]voice OFF[/]"
+        vol = "[bold red](✕) muted[/]" if _MASTER_MUTED else f"[dim]vol[/] [bold]{int(round(_MASTER_VOL * 100))}%[/]"
         nav = ("[dim]j/k move · Enter open series · q quit[/]" if self.menu_level == "series"
                else "[dim]j/k move · Enter start · Esc back to series[/]")
         self.query_one("#menu-help", Static).update(
-            f"{nav}  {music} · {voice}  ·  "
+            f"{nav}  {music} · {voice} · {vol}  ·  "
             f"[dim]·[/] [green]{self.p['done']} done[/] [dim]·[/] streak [yellow]{self.p['streak']}[/]"
         )
 
@@ -6861,10 +6982,11 @@ class TutorApp(App):
             label.update(f"[b]NORMAL[/b]  [dim]{fname}[/]")
             label.remove_class("insert"); label.add_class("normal")
         kc = lambda k: f"[on #3a3a3a]{k}[/]"
+        mute_badge = " [bold red](✕) muted[/]" if _MASTER_MUTED else ""
         self.query_one("#status", Static).update(
             f"{kc('h')}{kc('j')}{kc('k')}{kc('l')} move · {kc('i')} type · "
             f"{kc(':!python3 %')} run+submit · {kc('Ctrl+n')}/{kc('Ctrl+b')} next/prev · "
-            f"{kc('F1')} keys · {kc('q')} quit"
+            f"{kc('F4')} volume · {kc('F1')} keys · {kc('q')} quit{mute_badge}"
         )
 
     def on_mode_changed(self, msg: ModeChanged) -> None:
@@ -6927,6 +7049,57 @@ class TutorApp(App):
                 f"[bold]→ music {'[green]ON[/]' if self.music_on else '[red]MUTED[/]'}[/] — win/fail sounds")
         if self.voice_on:
             speak("music on" if self.music_on else "music muted")
+
+    def action_toggle_volume(self):
+        """Open/close the docked bottom volume bar (F4). Opens focused so the
+        arrow keys nudge the fader; closes on a timer when left idle."""
+        bar = self.query_one("#volume-bar", VolumeBar)
+        if self._vol_open:
+            self._close_volume()
+            return
+        bar.update(bar._render())
+        bar.add_class("visible")
+        bar.focus()
+        self._vol_open = True
+        self._arm_volume_close()
+
+    def _arm_volume_close(self):
+        """(Re)start the idle timer that auto-closes the volume bar."""
+        t = getattr(self, "_vol_timer", None)
+        if t is not None:
+            t.stop()
+        self._vol_timer = self.set_timer(3.5, self._close_volume)
+
+    def _poke_volume(self):
+        """Any interaction on the bar resets its auto-close countdown."""
+        if self._vol_open:
+            self._arm_volume_close()
+
+    def _close_volume(self):
+        t = getattr(self, "_vol_timer", None)
+        if t is not None:
+            t.stop()
+        self._vol_timer = None
+        self._vol_open = False
+        bar = self.query_one("#volume-bar", VolumeBar)
+        bar.remove_class("visible")
+        # hand focus back so typing keeps working (editor) or menu keys (else)
+        try:
+            if self.mode == "challenge":
+                self.query_one("#editor", VimEditor).focus()
+            else:
+                self.set_focus(None)
+        except Exception:
+            pass
+
+    def _volume_changed(self, bar: VolumeBar):
+        """VolumeBar calls this after a click/key; persist + repaint the fader."""
+        self._poke_volume()
+        self.p["volume"] = _MASTER_VOL
+        self.p["muted"] = _MASTER_MUTED
+        save_progress(self.p)
+        bar.update(bar._render())
+        self._update_status()
 
     # ---- run / check / review -------------------------------------------- #
 
@@ -8673,7 +8846,7 @@ class TutorApp(App):
             "  ·  " + " ".join(f"{kc(x)}={y}" for x, y in [("dd","delete line"),("yy","yank"),("p","paste"),("x","del char"),("u","undo")]),
             "### run / test (real nvim)\n" + "  ".join(kc(x) for x in [":w", ":!python3 %", ":submit", ":q"]) +
             "  ·  " + f"{kc('Ctrl+Enter')}=run+submit",
-            "### tutor\n" + " ".join(f"{kc(x)}={y}" for x, y in [("Ctrl+n","next"),("Ctrl+b","prev"),("Enter","dive in"),("w","watch"),("l","listen"),("e","lesson"),("F12","quick check"),("F1","keys"),("F2","cheat"),("F3","demo"),("Ctrl+G","ghost write"),("F6","voice"),("F7","review"),("F8","examples"),("F9","hints"),("F10","wider editor"),("F11","narrower editor"),("m","music"),("Esc","menu"),("q","quit")]),
+            "### tutor\n" + " ".join(f"{kc(x)}={y}" for x, y in [("Ctrl+n","next"),("Ctrl+b","prev"),("Enter","dive in"),("w","watch"),("l","listen"),("e","lesson"),("F12","quick check"),("F1","keys"),("F2","cheat"),("F3","demo"),("F4","volume"),("Ctrl+G","ghost write"),("F6","voice"),("F7","review"),("F8","examples"),("F9","hints"),("F10","wider editor"),("F11","narrower editor"),("m","music"),("Esc","menu"),("q","quit")]),
         ])
 
     # ---- examples panel (F8): static wall of worked examples ------------ #
