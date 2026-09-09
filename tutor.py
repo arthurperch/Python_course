@@ -41,6 +41,7 @@ import tempfile
 import threading
 import wave
 import zlib
+from datetime import date, timedelta
 from pathlib import Path
 
 from rich.console import Console
@@ -10876,6 +10877,11 @@ NET_MODULES.append({"name": "NETWORK LABS", "first": len(NET_TOPICS),
 # come back three more times at random spots, explained differently each time.
 NET_MODULES.append({"name": "EXTRA DRILLS", "first": len(NET_TOPICS),
                     "count": 1})
+# TODAY'S REVIEW: the spaced-repetition queue — every concept you've answered
+# gets a due date (right answers push it days ahead, wrong answers bring it
+# back tomorrow).  This module asks whatever is due today.
+NET_MODULES.append({"name": "TODAY'S REVIEW", "first": len(NET_TOPICS),
+                    "count": 1})
 
 
 def net_checkpoint_label(p: dict) -> str:
@@ -12023,9 +12029,16 @@ class TutorApp(App):
             items.append({"name": "Resume where you left off", "first": m,
                           "resume": True, "count": 0, "done": 0})
         for i, m in enumerate(NET_MODULES):
-            done = self.p.get("net_done", {}).get(m["name"], 0)
-            items.append({"name": m["name"], "first": i, "resume": False,
-                          "count": m["count"], "done": done})
+            if m["name"] == "TODAY'S REVIEW":
+                n_due = len(self._net_due_concepts())
+                items.append({"name": m["name"], "first": i, "resume": False,
+                              "count": m["count"],
+                              "done": 1 if n_due == 0 else 0,
+                              "due": n_due})
+            else:
+                done = self.p.get("net_done", {}).get(m["name"], 0)
+                items.append({"name": m["name"], "first": i, "resume": False,
+                              "count": m["count"], "done": done})
         return items
 
     def _net_enter_module(self):
@@ -12051,12 +12064,24 @@ class TutorApp(App):
                 line.append("⏵ ", style="bold yellow")
                 line.append(it["name"], style="bold yellow" if sel else "#fbbf24")
             else:
-                if it["done"] >= it["count"] and it["count"] > 0:
+                if "due" in it:
+                    if it["due"]:
+                        line.append("⏰ ", style="bold #ffa657")
+                    else:
+                        line.append("✓ ", style="green")
+                elif it["done"] >= it["count"] and it["count"] > 0:
                     line.append("✓ ", style="green")
                 else:
                     line.append("· ", style="dim")
                 line.append(it["name"], style="bold" if sel else "#d5d5d5")
-                line.append(f"   {it['done']}/{it['count']}", style="dim")
+                if "due" in it:
+                    if it["due"]:
+                        line.append(f"   {it['due']} due today",
+                                    style="bold #ffa657")
+                    else:
+                        line.append("   all clear", style="green")
+                else:
+                    line.append(f"   {it['done']}/{it['count']}", style="dim")
             if sel:
                 line.stylize("reverse")
                 sel_line = line_no
@@ -12091,6 +12116,10 @@ class TutorApp(App):
         if label:
             t.append("\n   ")
             t.append(f"⏵ resume: {label}", style="bold yellow")
+        n_due = len(self._net_due_concepts())
+        if n_due:
+            t.append("\n   ")
+            t.append(f"⏰ {n_due} reviews due today", style="bold #ffa657")
         t.append("\n\n")
         # CLOUD & DEVOPS — the noob → engineer path (series_sel == -3)
         sel = self.series_sel == -3
@@ -15525,6 +15554,27 @@ class TutorApp(App):
                     "kind": "drill_quiz", "q": q, "concept": q["concept"],
                     "explain": 0, "asked": []})
             self._net_drill_n = len(self._net_queue) - 1
+        elif module == 5:
+            # TODAY'S REVIEW: the spaced-repetition queue, weakest + oldest
+            # due concepts first, capped at 12 per session
+            due = self._net_due_concepts()
+            self._net_drill_i = 0
+            self._net_drill_right = 0
+            self._net_drill_wrong = 0
+            self._net_drill_weak = set()
+            self._net_queue.append({"kind": "review_intro", "n": len(due)})
+            for ci, concept in enumerate(due[:12]):
+                qs = _net_concept_questions(concept)
+                if not qs:
+                    qs = [q for q in NET_QUESTIONS
+                          if q["concept"].startswith(concept + "-")]
+                if not qs:
+                    qs = _net_pool_by_level(0)
+                q = qs[ci % len(qs)]
+                self._net_queue.append({
+                    "kind": "drill_quiz", "q": q, "concept": concept,
+                    "explain": 0, "asked": [], "review": True})
+            self._net_drill_n = len(self._net_queue) - 1
         else:
             for ti, topic in enumerate(topics):
                 if ti < start_topic:
@@ -15630,13 +15680,28 @@ class TutorApp(App):
     def _net_next(self):
         if not self._net_queue:
             self._net_step = None
-            if self._net_module == 4:
+            if self._net_module >= 4:
                 self._net_drill_finish()
             else:
                 self._net_module_complete()
             return
         step = self._net_queue.pop(0)
-        if step["kind"] == "drill_intro":
+        if step["kind"] == "review_intro":
+            self._net_step = step
+            self._net_msg = ""
+            self._net_msg_kind = ""
+            n = step.get("n", 0)
+            if n == 0:
+                if self.voice_on:
+                    speak("Nothing is due for review today. Your schedule "
+                          "is clear — go hit the extra drills or learn "
+                          "something new.")
+            elif self.voice_on:
+                speak(f"Spaced repetition time. {n} concepts are due today. "
+                      "Right answers push them days into the future; wrong "
+                      "answers bring them back tomorrow. Question one: "
+                      "I'll read it and its answers out loud.")
+        elif step["kind"] == "drill_intro":
             self._net_step = step
             self._net_msg = ""
             self._net_msg_kind = ""
@@ -15755,6 +15820,39 @@ class TutorApp(App):
         return [(q["concept"], q["why"]) for q in pick]
 
     # -- EXTRA DRILLS ------------------------------------------------------ #
+    def _net_update_sched(self, concept: str, ok: bool):
+        """The spaced-repetition schedule (SM-2 style): right answers push a
+        concept's due date days into the future with a growing interval;
+        wrong answers reset it to tomorrow, so it comes back fast."""
+        sched = self.p.setdefault("net_sched", {})
+        s = sched.setdefault(concept, {"rep": 0, "int": 1, "ease": 2.0,
+                                       "due": date.today().isoformat()})
+        if ok:
+            s["rep"] += 1
+            if s["rep"] == 1:
+                s["int"] = 1
+            else:
+                # grow the interval, but cap it at ~6 months — unlimited
+                # exponential growth overflows the calendar
+                s["int"] = min(180, max(1, round(s["int"] * s["ease"])))
+            s["ease"] = min(2.5, s["ease"] + 0.05)
+        else:
+            s["rep"] = 0
+            s["int"] = 1
+            s["ease"] = max(1.3, s["ease"] - 0.2)
+        s["due"] = (date.today() + timedelta(days=s["int"])).isoformat()
+
+    def _net_due_concepts(self) -> list:
+        """Concepts whose spaced-repetition review is due (or overdue).
+        Weak ones come first, then the oldest due dates."""
+        sched = self.p.get("net_sched", {})
+        today = date.today().isoformat()
+        due = [c for c, s in sched.items() if s.get("due", "") <= today]
+        skills = self.p.get("net_skills", {})
+        due.sort(key=lambda c: (not skills.get(c, {}).get("weak"),
+                                sched[c]["due"]))
+        return due
+
     def _net_drill_pool(self) -> list:
         """Everything learned so far: questions from the recap history plus
         every concept with a skill entry.  Falls back to foundations when
@@ -15811,6 +15909,7 @@ class TutorApp(App):
                                   {"right": 0, "wrong": 0, "weak": False})
         if idx == q["ans"]:
             skill["right"] += 1
+            self._net_update_sched(q["concept"], True)
             self._net_drill_right += 1
             if step["explain"] >= 1:
                 skill["weak"] = False   # retraining worked — weakness cleared
@@ -15828,6 +15927,7 @@ class TutorApp(App):
         # noted, and 3 re-asks dropped at random spots later in the session
         skill["wrong"] += 1
         skill["weak"] = True
+        self._net_update_sched(q["concept"], False)
         self._net_drill_wrong += 1
         self._net_drill_weak.add(q["concept"])
         if step["explain"] == 0:
@@ -15846,7 +15946,7 @@ class TutorApp(App):
             speak("Incorrect. " + teach + " I've noted that as a weakness — "
                   "it will come back three more times, each explained a "
                   "little differently.")
-        if step["explain"] == 0:
+        if self._net_module == 4 and step["explain"] == 0:
             self._net_schedule_reasks(q["concept"], q)
         step["done"] = True
         step["reveal"] = True
@@ -15855,25 +15955,31 @@ class TutorApp(App):
         return
 
     def _net_drill_finish(self):
-        """End of the drill session: score + weak subjects, spoken."""
+        """End of the drill/review session: score + weak subjects, spoken."""
         total = self._net_drill_right + self._net_drill_wrong
         weak = sorted(self._net_drill_weak)
-        self._net_msg = (f"🏁 drill complete — {self._net_drill_right}/"
-                         f"{total} right")
+        review = self._net_module == 5
+        what = "review" if review else "drill"
+        self._net_msg = f"🏁 {what} complete — {self._net_drill_right}/" \
+                        f"{total} right"
         if weak:
             self._net_msg += f" · weak subjects: {', '.join(weak)}"
         else:
             self._net_msg += " · no weaknesses left"
         self._net_msg_kind = "win"
         if self.voice_on:
-            if weak:
+            if review:
+                speak(f"Review complete. You got {self._net_drill_right} out "
+                      f"of {total}. Right answers are now scheduled further "
+                      f"into the future — I'll see you when they're due.")
+            elif weak:
                 speak(f"Extra drill complete. You got {self._net_drill_right} "
                       f"out of {total}. Keep drilling these: "
                       f"{', '.join(weak)}.")
             else:
                 speak(f"Extra drill complete. You got {self._net_drill_right} "
                       f"out of {total}. No weaknesses left — nice work.")
-        self.p["net_done"][NET_MODULES[4]["name"]] = 1
+        self.p["net_done"][NET_MODULES[self._net_module]["name"]] = 1
         # the full course counts as done once every learning module is
         # complete (the drill is repeatable, so it doesn't gate anything)
         if all(self.p["net_done"].get(m["name"], 0) >= m["count"]
@@ -15918,6 +16024,7 @@ class TutorApp(App):
         self._net_quiz_n += 1
         if idx == q["ans"]:
             skill["right"] += 1
+            self._net_update_sched(q["concept"], True)
             self._net_history.append((q, True))
             self.p["net_history"] = [(qt.get("q") or "", ok)
                                      for qt, ok in self._net_history[-200:]]
@@ -15943,6 +16050,7 @@ class TutorApp(App):
             self.p["net_history"] = [(qt.get("q") or "", ok)
                                      for qt, ok in self._net_history[-200:]]
             skill["wrong"] += 1
+            self._net_update_sched(q["concept"], False)
             self._net_msg = (f"the answer was: {q['choices'][q['ans']]} — "
                              f"{q['why']}")
             self._net_msg_kind = "retrain"
@@ -15960,6 +16068,7 @@ class TutorApp(App):
         # wrong: teach again, differently and deeper
         step["wrongs"] += 1
         skill["wrong"] += 1
+        self._net_update_sched(q["concept"], False)
         self._net_history.append((q, False))
         self.p["net_history"] = [(qt.get("q") or "", ok)
                                  for qt, ok in self._net_history[-200:]]
@@ -16072,7 +16181,7 @@ class TutorApp(App):
                 self._net_exit()   # module complete screen
             return
         if step["kind"] in ("lesson", "lab_intro", "summary", "lab_summary",
-                            "drill_intro"):
+                            "drill_intro", "review_intro"):
             if k == "enter":
                 self._net_stop_anim()
                 self._net_next()
@@ -16203,11 +16312,17 @@ class TutorApp(App):
                 t.append(topic[2], style="bold #7dd3fc")
             self.query_one("#net-canvas", Static).update(t)
             return
-        if step["kind"] in ("drill_intro", "drill_quiz"):
-            t.append("EXTRA DRILLS", style="bold #ffa657")
+        if step["kind"] in ("drill_intro", "drill_quiz", "review_intro"):
+            review = self._net_module == 5
+            t.append("TODAY'S REVIEW" if review else "EXTRA DRILLS",
+                     style="bold #ffa657")
             t.append("\n\n")
-            t.append("everything you've learned — asked back, out of order",
-                     style="#d5d5d5")
+            if review:
+                t.append("spaced repetition — only what's due today",
+                         style="#d5d5d5")
+            else:
+                t.append("everything you've learned — asked back, out of "
+                         "order", style="#d5d5d5")
             t.append("\n")
             t.append(f"question {self._net_drill_i}/{self._net_drill_n}",
                      style="bold #7dd3fc")
@@ -16223,9 +16338,14 @@ class TutorApp(App):
                     t.append(w, style="#fbbf24")
             else:
                 t.append("\n\nno weaknesses this session — yet", style="dim")
-            t.append("\n\nwrong answers come back 3 more times, at random "
-                     "spots,", style="dim")
-            t.append("\nexplained a little differently each time", style="dim")
+            if review:
+                t.append("\n\nright = scheduled days ahead · wrong = due "
+                         "again tomorrow", style="dim")
+            else:
+                t.append("\n\nwrong answers come back 3 more times, at random "
+                         "spots,", style="dim")
+                t.append("\nexplained a little differently each time",
+                         style="dim")
             self.query_one("#net-canvas", Static).update(t)
             return
         if step["kind"] == "quiz" or step["kind"] == "recap":
@@ -16290,8 +16410,8 @@ class TutorApp(App):
                 title = "LAB"
             elif step["kind"] == "summary":
                 title = "RECAP"
-            elif step["kind"] in ("drill_intro", "drill_quiz"):
-                title = "DRILL"
+            elif step["kind"] in ("drill_intro", "drill_quiz", "review_intro"):
+                title = "REVIEW" if self._net_module == 5 else "DRILL"
         self.query_one("#net-side-title", Static).update(
             Text(title, style="bold #7dd3fc"))
         t = Text()
@@ -16382,6 +16502,29 @@ class TutorApp(App):
                 t.append("\n")
             t.append("\nthat's the real production workflow:\n", style="dim")
             t.append(lab["brief"], style="#d5d5d5")
+        elif step["kind"] == "review_intro":
+            n = step.get("n", 0)
+            t.append("TODAY'S REVIEW", style="bold #ffa657")
+            t.append("\n\n")
+            if n == 0:
+                t.append("Nothing is due today — your schedule is clear.",
+                         style="#f0f0f5")
+                t.append("\n\n")
+                t.append("Go hit EXTRA DRILLS or learn something new. "
+                         "Every answer you give gets a due date.",
+                         style="#d5d5d5")
+            else:
+                t.append(f"{n} concepts are due today.", style="#f0f0f5")
+                t.append("\n\n")
+                t.append("answer right → scheduled days into the future",
+                         style="#22c55e")
+                t.append("\n")
+                t.append("answer wrong → it's due again tomorrow",
+                         style="#f87171")
+                t.append("\n\n")
+                t.append("the intervals grow every time you get it right — "
+                         "that's what locks it into long-term memory.",
+                         style="#d5d5d5")
         elif step["kind"] == "drill_intro":
             t.append("EXTRA DRILLS", style="bold #ffa657")
             t.append("\n\n")
@@ -16456,6 +16599,10 @@ class TutorApp(App):
             t.append("Enter — continue", style="bold #22c55e")
             t.append("   ·   ")
             t.append("recap is spoken aloud — Esc — save & exit", style="dim")
+        elif step["kind"] == "review_intro":
+            t.append("Enter — start today's review", style="bold #ffa657")
+            t.append("   ·   ")
+            t.append("Esc — back to the menu", style="dim")
         elif step["kind"] == "drill_intro":
             t.append("Enter — start the drill", style="bold #ffa657")
             t.append("   ·   ")
