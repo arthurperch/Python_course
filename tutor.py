@@ -8157,6 +8157,7 @@ class TutorApp(App):
         self._dev_ghost_timer = None
         self._dev_ghost_blink_timer = None
         self._dev_attempts = 0
+        self._dev_chal_done = set()   # challenge: toolbox step indices completed
         self._dev_confirm = False
         self._dev_flash = 0
         self._dev_flash_timer = None
@@ -11065,6 +11066,7 @@ class TutorApp(App):
             self._dev_phase = "run"
             return
         lesson = self._dev_lesson()
+        self._dev_chal_done = set()   # reset challenge toolbox progress
         if lesson["kind"] == "write":
             self._dev_phase = "write"
             self._dev_target = lesson["content"]
@@ -11224,6 +11226,35 @@ class TutorApp(App):
 
     # -- run-phase command entry -------------------------------------------- #
 
+    def _dev_tool_tokens(self, tool):
+        """Normalize a toolbox entry to matchable tokens: strip the "..."/'...'
+        placeholders, drop '·' separators."""
+        t = tool
+        t = re.sub(r'"[^"]*"', " ", t)   # strip "..." placeholder content
+        t = re.sub(r"'[^']*'", " ", t)   # strip '...' placeholder content
+        t = t.replace("·", " ")
+        return [w for w in t.split()]
+
+    def _dev_cmd_tokens(self, cmd):
+        c = re.sub(r'"[^"]*"', " ", cmd)
+        c = re.sub(r"'[^']*'", " ", c)
+        return [w for w in c.lower().split()]
+
+    def _dev_tool_matches(self, tool, cmd):
+        """True if the toolbox entry is satisfied by the typed command: every
+        token of the tool appears contiguously, in order, within the command.
+        So 'docker stop' matches 'docker stop web', and one 'ansible-playbook
+        db.yml' satisfies both the 'ansible-playbook' and 'db.yml' fragments."""
+        toks = [w.lower() for w in self._dev_tool_tokens(tool)]
+        if not toks:
+            return False
+        c = self._dev_cmd_tokens(cmd)
+        n = len(toks)
+        for i in range(len(c) - n + 1):
+            if c[i:i + n] == toks:
+                return True
+        return False
+
     def _dev_submit(self):
         cmd = self._dev_cmd.strip()
         if not cmd:
@@ -11245,13 +11276,30 @@ class TutorApp(App):
             play_console_result(True)
             self._speak_win_then(_pers(lesson.get("on_win", "Correct!")),
                                  self._dev_next, self._dev_render, "_dev_adv_timer")
-        else:
-            self._dev_attempts += 1
-            self._dev_msg = self._dev_wrong_hint(lesson)
-            self._dev_msg_kind = "hint"
-            play_ghost_error()
-            self._dev_render()
-            self._dev_ghost_blink_again()
+            return
+        if lesson.get("kind") == "challenge":
+            # multi-step challenge: mark off any toolbox step this command hits,
+            # so the phased highlight advances to the next thing to write.
+            tools = lesson.get("tools", [])
+            newly = [i for i, tool in enumerate(tools)
+                     if i not in self._dev_chal_done and self._dev_tool_matches(tool, cmd)]
+            if newly:
+                for i in newly:
+                    self._dev_chal_done.add(i)
+                done_n = len(self._dev_chal_done)
+                if done_n >= len(tools):
+                    self._dev_msg = "✓ every tool used — now finish it"
+                else:
+                    self._dev_msg = f"✓ {done_n}/{len(tools)} tools — next one is highlighted"
+                self._dev_msg_kind = "win"
+                self._dev_render()
+                return
+        self._dev_attempts += 1
+        self._dev_msg = self._dev_wrong_hint(lesson)
+        self._dev_msg_kind = "hint"
+        play_ghost_error()
+        self._dev_render()
+        self._dev_ghost_blink_again()
 
     def _dev_wrong_hint(self, lesson):
         tier = self._dev_attempts
@@ -11512,10 +11560,23 @@ class TutorApp(App):
         if kind == "challenge":
             tools = lesson.get("tools", [])
             if tools:
+                done = getattr(self, "_dev_chal_done", set())
+                focus = next((i for i in range(len(tools)) if i not in done), None)
                 t.append("TOOLBOX  ", style="bold #fbbf24")
-                t.append("  ·  ".join(tools), style="#f0f0f5")
-                t.append("   ", style="dim")
-                t.append("→ assemble them in the right order", style="dim")
+                for i, tool in enumerate(tools):
+                    if i:
+                        t.append("  ·  ", style="dim")
+                    if i in done:
+                        t.append("✓ ", style="bold #4ade80")
+                        t.append(tool, style="#4ade80")
+                    elif i == focus:
+                        # the step to write now — bold + vibrant, the eye lands here
+                        t.append("▸ ", style="bold #fbbf24")
+                        t.append(tool, style="bold #fbbf24")
+                    else:
+                        t.append(tool, style="#6b7280")
+                t.append("   ")
+                t.append("→ write the highlighted one, then continue", style="dim")
             else:
                 t.append("challenge — you've got this.", style="bold #fbbf24")
             return t
