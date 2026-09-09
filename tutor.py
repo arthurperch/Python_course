@@ -9380,8 +9380,433 @@ def _net_frame(title: str, lines: list, hi: int = -1) -> Text:
     return t
 
 
+# ---- the rich, animated diagram scenes ------------------------------------ #
+# A shared palette + tiny helpers, then one scene per topic: real boxes,
+# colored parts, and a packet token that actually moves across the wires.
+
+_NET_HOST = "#7dd3fc"
+_NET_SW = "#fbbf24"
+_NET_RT = "#22c55e"
+_NET_WIRE = "#6b7280"
+_NET_PKT = "#fb923c"
+_NET_BAD = "#f87171"
+_NET_DIM = "#8b8b95"
+_NET_TXT = "#d5d5d5"
+
+
+def _net_row(parts, pad=2):
+    """One diagram row built from (text, style) parts, left-padded."""
+    t = Text()
+    t.append(" " * pad)
+    for text, style in parts:
+        if text:
+            t.append(text, style=style or _NET_TXT)
+    return t
+
+
+def _net_wire(pos, length):
+    """A link line with the packet token `pos` cells along it."""
+    pos = max(0, min(pos, length - 1))
+    return _net_row([("─" * pos, _NET_WIRE), ("●", "bold " + _NET_PKT),
+                     ("─" * (length - pos - 1), _NET_WIRE)])
+
+
+def _net_scene(title, rows, hi=None, foot=None):
+    """One frame: title, rows (Text), an optional ▸ highlight row, a footer."""
+    t = Text()
+    t.append(title, style="bold #7dd3fc")
+    t.append("\n\n")
+    for i, r in enumerate(rows):
+        if i == hi:
+            t.append("▸ ", style="bold #fbbf24")
+        else:
+            t.append("  ")
+        t.append_text(r)
+        t.append("\n")
+    if foot:
+        t.append("\n")
+        t.append("  ")
+        t.append(foot, style=_NET_DIM)
+    return t
+
+
 def _net_anim(kind: str) -> list:
-    """All frames for an animation kind; None for a static single frame."""
+    """Animated scenes for the big topics — real topology drawings with a
+    moving packet token.  Falls back to the simpler highlight scenes."""
+    if kind == "lan":
+        top = [
+            _net_row([("┌──────┐", _NET_HOST), ("   ", None), ("┌────────┐", _NET_SW), ("   ", None), ("┌──────┐", _NET_HOST)]),
+            _net_row([("│ PC-1 │", _NET_HOST), ("   ", None), ("│ switch │", _NET_SW), ("   ", None), ("│ PC-2 │", _NET_HOST)]),
+            _net_row([("│ .1.10│", _NET_HOST), ("   ", None), ("│ learns │", _NET_SW), ("   ", None), ("│ .1.20│", _NET_HOST)]),
+            _net_row([("└──────┘", _NET_HOST), ("   ", None), ("└────────┘", _NET_SW), ("   ", None), ("└──────┘", _NET_HOST)]),
+        ]
+        frames = []
+        for pos in range(0, 21, 3):
+            frames.append(_net_scene(
+                "a frame crosses the LAN", top + [_net_wire(pos, 21)],
+                foot="the MAC address carries it one hop at a time"))
+        frames.append(_net_scene(
+            "a frame crosses the LAN", top + [_net_wire(20, 21)], hi=1,
+            foot="delivered — and the switch learned PC-1's port from the "
+                 "source address"))
+        return frames
+    if kind == "osi":
+        layers = [
+            ("7  Application   HTTP · SMTP · DNS", "#f9a8d4"),
+            ("6  Presentation  TLS encryption · compression", "#f0abfc"),
+            ("5  Session       dialogs · RPC", "#c4b5fd"),
+            ("4  Transport     TCP/UDP · ports", "#93c5fd"),
+            ("3  Network       IP · routing", "#67e8f9"),
+            ("2  Data Link     MAC · frames", "#86efac"),
+            ("1  Physical      cables · bits · radio", "#fde047"),
+        ]
+        rows = [_net_row([("│ ", _NET_DIM), (txt, col), (" │", _NET_DIM)])
+                for txt, col in layers]
+        frames = []
+        for i in range(len(rows)):                 # sending: down the stack
+            frames.append(_net_scene(
+                "the OSI model — data flows DOWN to send", rows, hi=i,
+                foot="each layer wraps the data in its own header"))
+        for i in range(len(rows) - 2, -1, -1):     # receiving: back up
+            frames.append(_net_scene(
+                "…and flows UP to receive", rows, hi=i,
+                foot="each layer unwraps only its own part"))
+        return frames
+    if kind == "subnet":
+        bar = _net_row([("192.168.1.0/24", "bold #f0f0f5"),
+                        ("   256 addresses — one big LAN", _NET_TXT)])
+        chunks = [
+            ("├─ .0/26     .1 – .62     64 addresses", _NET_HOST),
+            ("├─ .64/26    .65 – .126   64 addresses", _NET_SW),
+            ("├─ .128/26   .129 – .190  64 addresses", _NET_RT),
+            ("└─ .192/26   .193 – .254  64 addresses", "#f9a8d4"),
+        ]
+        frames = [_net_scene("slicing a /24 into four /26s", [bar], hi=0,
+                             foot="borrow 2 host bits → 4 subnets of 64")]
+        shown = [bar]
+        for i, (txt, col) in enumerate(chunks):
+            shown = shown + [_net_row([(txt, col)])]
+            frames.append(_net_scene("slicing a /24 into four /26s", shown,
+                                     hi=i + 1,
+                                     foot="each /26 = 64 addresses — 62 usable, "
+                                          "2 reserved"))
+        frames.append(_net_scene("slicing a /24 into four /26s", shown,
+                                 foot="network + broadcast are reserved in "
+                                      "every slice — the math never moves"))
+        return frames
+    if kind == "ports":
+        server = [
+            _net_row([("┌──────────────────────┐", _NET_HOST)]),
+            _net_row([("│  server 203.0.113.7  │", "bold " + _NET_HOST)]),
+            _net_row([("└──────────────────────┘", _NET_HOST)]),
+        ]
+        doors = [
+            ("├─ :22    sshd    → the admin door", _NET_RT),
+            ("├─ :80    nginx   → the website", _NET_SW),
+            ("├─ :443   nginx   → the website, encrypted", "#f9a8d4"),
+            ("└─ :3306  mysql   → the database", "#c4b5fd"),
+        ]
+        frames = [_net_scene("one IP, many doors — the port picks the door",
+                             server,
+                             foot="the IP gets you to the machine — the port "
+                                  "picks the program")]
+        rows = server[:]
+        for i, (txt, col) in enumerate(doors):
+            rows = rows + [_net_row([(txt, col)])]
+            frames.append(_net_scene("one IP, many doors — the port picks "
+                                     "the door", rows, hi=i + 3,
+                                     foot="each door is one program listening "
+                                          "on its own number"))
+        return frames
+    if kind == "dns":
+        chain = [
+            ("you ── dig example.com ─────────▶ resolver 1.1.1.1", _NET_HOST),
+            ("      resolver ──▶ root server    (where is .com?)", _NET_SW),
+            ("      resolver ──▶ .com server    (where is example.com?)", _NET_SW),
+            ("      resolver ──▶ example.com    (what is its IP?)", _NET_RT),
+            ("      answer: 93.184.216.34      (cached everywhere now)", _NET_RT),
+        ]
+        rows = [_net_row([(txt, col)]) for txt, col in chain]
+        frames = []
+        for i in range(len(rows)):
+            frames.append(_net_scene("DNS — the phone book lookup", rows, hi=i,
+                                     foot="the resolver walks the chain, one "
+                                          "question at a time"))
+        frames.append(_net_scene("DNS — the phone book lookup", rows,
+                                 foot="answered and cached — next time it "
+                                      "never leaves the resolver"))
+        return frames
+    if kind == "dhcp":
+        boxes = [
+            _net_row([("┌─────────────┐", _NET_HOST), ("        ", None), ("┌─────────────┐", _NET_RT)]),
+            _net_row([("│ client      │", _NET_HOST), ("        ", None), ("│ DHCP server │", _NET_RT)]),
+            _net_row([("└─────────────┘", _NET_HOST), ("        ", None), ("└─────────────┘", _NET_RT)]),
+        ]
+        dora = [
+            ("client ───── Discover ──────────▶   'any DHCP server out there?'", _NET_HOST),
+            ("client ◀──── Offer ──────────────   'take 192.168.1.42'", _NET_RT),
+            ("client ───── Request ───────────▶   'yes, I want .42'", _NET_HOST),
+            ("client ◀──── Ack ────────────────   'done — yours for 12 hours'", _NET_RT),
+        ]
+        feet = ["D = Discover — the shout into the dark",
+                "O = Offer — the server proposes a lease",
+                "R = Request — the client accepts that offer",
+                "A = Ack — confirmed, the timer starts"]
+        frames = []
+        for i, (txt, col) in enumerate(dora):
+            frames.append(_net_scene("DHCP — the DORA dance",
+                                     boxes + [_net_row([(txt, col)])], hi=3,
+                                     foot=feet[i]))
+        frames.append(_net_scene("DHCP — the DORA dance",
+                                 boxes + [_net_row([(dora[3][0], _NET_RT)])],
+                                 foot="DORA = Discover · Offer · Request · Ack"))
+        return frames
+    if kind == "tcp":
+        rows = [
+            _net_row([("client ─── SYN      seq=100 ──────────▶ server", _NET_HOST)]),
+            _net_row([("client ◀── SYN-ACK  seq=300 ack=101 ──── server", _NET_RT)]),
+            _net_row([("client ─── ACK      ack=301 ──────────▶ server", _NET_HOST)]),
+        ]
+        feet = ["SYN: can we talk? I'll number my bytes from 100",
+                "SYN-ACK: yes — I start at 300, and I got your 100",
+                "ACK: connection UP — every byte after this is numbered"]
+        frames = []
+        for i in range(3):
+            frames.append(_net_scene("the TCP three-way handshake", rows, hi=i,
+                                     foot=feet[i]))
+        frames.append(_net_scene("the TCP three-way handshake", rows,
+                                 foot="three packets, then the stream flows — "
+                                      "acked and re-sent as needed"))
+        return frames
+    if kind == "arp":
+        rows = [
+            _net_row([("PC-1 ── 'who has 192.168.1.20?' ──▶ broadcast", "bold " + _NET_PKT)]),
+            _net_row([("   ┌─ PC-2 ─ 'that's me! aa:bb:cc:00:00:14' ──▶ PC-1", _NET_RT)]),
+            _net_row([("   ├─ PC-3 ─ not me, staying quiet", _NET_DIM)]),
+            _net_row([("   └─ PC-4 ─ not me either", _NET_DIM)]),
+            _net_row([("PC-1 caches:  192.168.1.20 → aa:bb:cc:00:00:14", _NET_RT)]),
+        ]
+        frames = []
+        for i in range(len(rows)):
+            frames.append(_net_scene(
+                "ARP — turning an IP into a MAC", rows, hi=i,
+                foot="one shout to everyone, one answer back" if i == 0
+                else "the answer is cached — no need to ask again"))
+        return frames
+    if kind == "routing":
+        top = [
+            _net_row([("┌──────┐", _NET_HOST), ("   ", None), ("┌────────┐", _NET_RT), ("   ", None), ("┌────────┐", _NET_HOST)]),
+            _net_row([("│ PC-1 │", _NET_HOST), ("──▶", "bold " + _NET_PKT), ("│ router │", _NET_RT), ("──▶", "bold " + _NET_PKT), ("│ PC-2   │", _NET_HOST)]),
+            _net_row([("│ .1.10│", _NET_HOST), ("   ", None), ("│ table  │", _NET_RT), ("   ", None), ("│10.0.0.7│", _NET_HOST)]),
+            _net_row([("└──────┘", _NET_HOST), ("   ", None), ("└────────┘", _NET_RT), ("   ", None), ("└────────┘", _NET_HOST)]),
+        ]
+        table = [
+            ("10.0.0.0/24     via eth1        ← most specific wins", _NET_RT),
+            ("192.168.1.0/24  via eth0        ← connected", _NET_SW),
+            ("0.0.0.0/0       via 192.168.1.1 ← default (catch-all)", _NET_DIM),
+        ]
+        frames = []
+        for i, (txt, col) in enumerate(table):
+            frames.append(_net_scene(
+                "how routing works — the table decides",
+                top + [_net_row([(txt, col)])], hi=4,
+                foot="destination 10.0.0.7 matches all three rows — the "
+                     "LONGEST prefix wins"))
+        frames.append(_net_scene(
+            "how routing works — the table decides",
+            top + [_net_row([(table[0][0], _NET_RT)])],
+            foot="no match and no default → 'Network is unreachable'"))
+        return frames
+    if kind == "vlan":
+        top = [_net_row([("one switch ── three LANs ── zero extra hardware",
+                          "bold " + _NET_SW)])]
+        zones = [
+            ("  ports 1-6    ~~~~ VLAN 10 sales  ~~~~ 192.168.10.0/24", _NET_HOST),
+            ("  ports 7-14   ~~~~ VLAN 20 eng    ~~~~ 192.168.20.0/24", _NET_RT),
+            ("  ports 15-22  ~~~~ VLAN 30 guests ~~~~ 192.168.30.0/24", "#f9a8d4"),
+            ("  port 23  ──── trunk ──▶ 802.1Q tags carry all three", _NET_PKT),
+        ]
+        frames = []
+        shown = top[:]
+        for i, (txt, col) in enumerate(zones):
+            shown = shown + [_net_row([(txt, col)])]
+            frames.append(_net_scene(
+                "VLANs — one box, many LANs", shown, hi=i + 1,
+                foot="access port = one VLAN · trunk port = all of them, "
+                     "tagged"))
+        return frames
+    if kind == "nat":
+        top = [
+            _net_row([("┌────────────┐", _NET_HOST), ("  ", None), ("┌─────────┐", _NET_SW), ("  ", None), ("┌────────────┐", _NET_DIM)]),
+            _net_row([("│ 192.168.1.10 │", _NET_HOST), ("─▶", "bold " + _NET_PKT), ("│  NAT    │", _NET_SW), ("─▶", "bold " + _NET_PKT), ("│  internet  │", _NET_DIM)]),
+            _net_row([("│ 192.168.1.11 │", _NET_HOST), ("  ", None), ("│ table:  │", _NET_SW), ("  ", None), ("│ sees one   │", _NET_DIM)]),
+            _net_row([("│ 192.168.1.12 │", _NET_HOST), ("  ", None), ("└─────────┘", _NET_SW), ("  ", None), ("│ 203.0.113.7│", _NET_DIM)]),
+            _net_row([("└────────────┘", _NET_HOST), ("  ", None), ("          ", None), ("  ", None), ("└────────────┘", _NET_DIM)]),
+        ]
+        flows = [
+            ("   .10:40000   ↔   .7:40000", _NET_RT),
+            ("   .11:40001   ↔   .7:40001", _NET_RT),
+            ("   .12:40002   ↔   .7:40002", _NET_RT),
+        ]
+        frames = []
+        for i, (txt, col) in enumerate(flows):
+            frames.append(_net_scene(
+                "NAT — one public IP, a whole private LAN",
+                top + [_net_row([(txt, col)])], hi=5,
+                foot="private in, public out — the port numbers keep the "
+                     "flows apart"))
+        frames.append(_net_scene(
+            "NAT — one public IP, a whole private LAN",
+            top + [_net_row([(flows[0][0], _NET_RT)])],
+            foot="replies come home through the same table entry"))
+        return frames
+    if kind == "firewall":
+        wall = [
+            _net_row([("┌───────────┐", _NET_SW), ("  ", None), ("┌───────────────┐", _NET_HOST)]),
+            _net_row([("│ 6.6.6.6   │", _NET_DIM), ("─▶", "bold " + _NET_PKT), ("│  server :22   │", _NET_HOST)]),
+            _net_row([("└───────────┘", _NET_SW), ("  ", None), ("└───────────────┘", _NET_HOST)]),
+        ]
+        rules = [
+            ("  rule 1  allow tcp dport 22     ✓ let it through", _NET_RT),
+            ("  rule 2  drop  tcp dport 23     ✗ blocked", _NET_BAD),
+            ("  rule 3  allow established      ✓ replies pass free", _NET_RT),
+        ]
+        frames = []
+        for i, (txt, col) in enumerate(rules):
+            frames.append(_net_scene("the firewall checks every packet",
+                                     wall + [_net_row([(txt, col)])], hi=3,
+                                     foot="first match wins — the ORDER of "
+                                          "the rules matters"))
+        frames.append(_net_scene(
+            "the firewall checks every packet",
+            wall + [_net_row([(rules[1][0], _NET_BAD)])],
+            foot="stateful = it remembers your connections, so replies need "
+                 "no extra rule"))
+        return frames
+    if kind == "stp":
+        rows = [
+            _net_row([("          ┌─sw1─┐     ← root bridge", _NET_SW)]),
+            _net_row([("          │  ▣  │     (lowest bridge ID)", _NET_SW)]),
+            _net_row([("          └─┬─┬─┘", _NET_SW)]),
+            _net_row([("      ┌─────┘ └─────┐", _NET_WIRE)]),
+            _net_row([("  ┌─sw2─┐         ┌─sw3─┐", _NET_HOST)]),
+            _net_row([("  │  ", None), ("✗", "bold " + _NET_BAD),
+                      ("  │         │  ", None), ("✓", "bold " + _NET_RT),
+                      ("  │", None)]),
+            _net_row([("  └─────┘         └─────┘", _NET_HOST)]),
+        ]
+        frames = []
+        for i, foot in [(0, "the problem: redundant links = frames circling "
+                           "forever"),
+                        (1, "elect the root — lowest bridge ID wins"),
+                        (4, "every switch keeps its best path to the root"),
+                        (5, "the duplicate path gets BLOCKED — loop dead, "
+                           "backup kept")]:
+            frames.append(_net_scene("spanning tree — kill the loop, keep the "
+                                     "backup", rows, hi=i, foot=foot))
+        return frames
+    if kind == "ospf":
+        rows = [
+            _net_row([("        ┌───── area 0 · backbone ─────┐", _NET_SW)]),
+            _net_row([("        │  R1 ◀──── cost 10 ────▶ R2  │", _NET_SW)]),
+            _net_row([("        └───────┬──────────────┬──────┘", _NET_SW)]),
+            _net_row([("       area 1   │              │    area 2", _NET_DIM)]),
+            _net_row([("       R3 ──────┘              └────── R4", _NET_HOST)]),
+            _net_row([("   stub area:  only a default route comes in", _NET_DIM)]),
+        ]
+        frames = []
+        for i, foot in [(0, "hello packets find neighbors first — then the "
+                           "map is built"),
+                        (1, "every router runs shortest-path-first on the "
+                           "SAME map"),
+                        (3, "area 0 is the backbone — every other area "
+                           "touches it"),
+                        (4, "cost = 100 Mbps ÷ link bandwidth — lower is "
+                           "better")]:
+            frames.append(_net_scene("OSPF — areas around a backbone", rows,
+                                     hi=i, foot=foot))
+        return frames
+    if kind == "bgp":
+        rows = [
+            _net_row([("AS 64500 ─────────▶ AS 64501 ─────────▶ AS 64502", _NET_HOST)]),
+            _net_row([("   ┌──────┐          ┌──────┐          ┌──────┐", _NET_DIM)]),
+            _net_row([("   │ eBGP │          │ iBGP │          │ eBGP │", _NET_DIM)]),
+            _net_row([("   └──────┘          └──────┘          └──────┘", _NET_DIM)]),
+            _net_row([("route for 203.0.113.0/24 arrives with the path:", _NET_TXT)]),
+            _net_row([("   64502 64501 64500", _NET_PKT)]),
+            _net_row([("decision order:  weight → local-pref → AS-path → MED", _NET_SW)]),
+        ]
+        frames = []
+        for i, foot in [(0, "eBGP between ASes, iBGP inside one AS"),
+                        (4, "the AS path lists every network the route "
+                           "crossed"),
+                        (5, "see your own AS in the path? drop it — loop "
+                           "guard"),
+                        (6, "a fixed attribute order decides which path "
+                           "wins")]:
+            frames.append(_net_scene("BGP — the internet's glue", rows, hi=i,
+                                     foot=foot))
+        return frames
+    if kind == "qos":
+        rows = [
+            _net_row([("the link is full — who goes first?", "bold " + _NET_PKT)]),
+            _net_row([("  queue 1  voice  EF      ▸▸▸▸ served FIRST   (DSCP 46)", _NET_RT)]),
+            _net_row([("  queue 2  video  AF41    ▸▸ next", _NET_SW)]),
+            _net_row([("  queue 3  web    best-effort ▸ whatever's left", _NET_DIM)]),
+            _net_row([("DSCP marks the class at the edge of the network", _NET_TXT)]),
+            _net_row([("policing drops excess · shaping buffers it", _NET_TXT)]),
+        ]
+        frames = []
+        for i, foot in [(0, "congestion happens — QoS decides the order"),
+                        (1, "EF = expedited forwarding — the voice lane, "
+                           "lowest delay"),
+                        (2, "AF classes drop the big files first, never the "
+                           "calls"),
+                        (3, "everything else waits politely")]:
+            frames.append(_net_scene("QoS — the important packets jump the "
+                                     "queue", rows, hi=i, foot=foot))
+        return frames
+    if kind == "ipsec":
+        rows = [
+            _net_row([("site A  10.0.0.0/24          site B  10.1.0.0/24", _NET_HOST)]),
+            _net_row([("   ┌────┐                          ┌────┐", _NET_RT)]),
+            _net_row([("   └─┬──┘                          └──┬─┘", _NET_RT)]),
+            _net_row([("     └──── IKE: negotiate keys ─────┘", _NET_SW)]),
+            _net_row([("     └──── ESP: encrypt + auth ─────┘", _NET_PKT)]),
+            _net_row([("   [outer IP][ESP][inner IP][encrypted payload]", _NET_TXT)]),
+        ]
+        frames = []
+        for i, foot in [(3, "IKE agrees the keys first — the control channel"),
+                        (4, "ESP carries the encrypted data — the tunnel "
+                           "itself"),
+                        (5, "tunnel mode: a whole new outer header wraps the "
+                           "packet"),
+                        (5, "sniffers see the addresses — never the data")]:
+            frames.append(_net_scene("IPsec — the encrypted tunnel", rows,
+                                     hi=i, foot=foot))
+        return frames
+    if kind == "switching":
+        rows = [
+            _net_row([("frame: PC-1 (src aa:bb:01) → arrives on port 1", "bold " + _NET_PKT)]),
+            _net_row([("switch notes:  aa:bb:01 lives on port 1", _NET_SW)]),
+            _net_row([("  MAC table:", _NET_DIM)]),
+            _net_row([("  aa:bb:01 ─ port 1     ← just learned", _NET_RT)]),
+            _net_row([("next frame to aa:bb:01?  → straight to port 1", _NET_HOST)]),
+            _net_row([("next frame to an unknown?  → flood every port", _NET_SW)]),
+        ]
+        frames = []
+        for i, foot in [(0, "the source address teaches the table"),
+                        (1, "learning = reading source MACs, nothing else"),
+                        (3, "known destination = one port only"),
+                        (4, "unknown destination = flood, until it answers")]:
+            frames.append(_net_scene("how a switch learns", rows, hi=i,
+                                     foot=foot))
+        return frames
+    return _net_anim_old(kind)
+
+
+def _net_anim_old(kind: str) -> list:
+    """The simpler highlight scenes (kept as fallback for list-style topics)."""
     if kind == "lan":
         base = ["┌────────┐        ┌────────┐        ┌────────┐",
                 "│  PC-1  │        │ switch │        │  PC-2  │",
