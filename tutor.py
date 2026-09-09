@@ -10239,6 +10239,161 @@ NET_TOPICS = [
      "stays clear while downloads queue.", "qos"),
 ]
 
+# ---- memory hooks ---------------------------------------------------------- #
+# Per topic: a mnemonic + a real-world story.  Shown in the lesson, spoken in
+# the 'lock it in' summary, and re-spoken during retraining — the recall trick
+# a person actually uses when the exam question arrives.
+
+NET_TRICKS = {
+    "network-basics": (
+        "a network is just devices talking — links carry the talk, rules "
+        "keep it polite",
+        "Think of a LAN as a kitchen: everyone can hear everyone. The "
+        "internet is the phone call out of the kitchen — routers are the "
+        "phones."),
+    "osi-model": (
+        "Please Do Not Throw Sausage Pizza Away  →  Physical, Data Link, "
+        "Network, Transport, Session, Presentation, Application",
+        "Writing a letter: you compose it (Application), seal it "
+        "(Presentation), choose when to send (Session), hand it to the "
+        "courier (Transport), write the address (Network), load the truck "
+        "(Data Link) — and the road is the wire (Physical)."),
+    "mac-vs-ip": (
+        "MAC = the house you live in · IP = the hotel room you're in right "
+        "now",
+        "Your MAC is painted on your house at the factory and never moves. "
+        "Your IP is like a hotel room number — it changes every time you "
+        "check into a new network."),
+    "ports": (
+        "IP = the building · port = the apartment number",
+        "One street address, many apartments. The mail (packet) has both: "
+        "the street gets it to the building, the apartment number gets it "
+        "to the right door."),
+    "ipv4": (
+        "4 octets × 8 bits = 32 · every number lives between 0 and 255",
+        "An IPv4 address is a phone number: country code + area code + "
+        "local number + extension. The mask just says how many digits are "
+        "the area code."),
+    "dns": (
+        "DNS = the phone book — names for humans, numbers for machines",
+        "You don't memorize phone numbers; you look them up. The resolver "
+        "is the librarian who walks the aisles for you and remembers the "
+        "answer for next time."),
+    "dhcp": (
+        "DORA — Discover, Offer, Request, Ack",
+        "Hotel check-in: you shout for a room (Discover), the desk offers "
+        "312 (Offer), you say yes (Request), they hand you the key for 12 "
+        "hours (Ack)."),
+    "devices": (
+        "switch = the office · router = the doorway · firewall = the "
+        "bouncer · AP = the interpreter",
+        "The switch sorts mail by name plate inside the office. The router "
+        "is the front door to the street. The firewall checks ID at that "
+        "door. The AP translates for wireless visitors."),
+    "cabling": (
+        "copper = electricity ⚡ · fiber = light ✨ · Wi-Fi = radio 📻",
+        "Copper shouts down a pipe, fiber beams a flashlight for miles, "
+        "Wi-Fi is a walkie-talkie on crowded air — and the bigger the "
+        "category number on the cable, the faster the shout."),
+    "switching": (
+        "learn the source · flood the unknown · forward the known",
+        "A receptionist who writes down which desk everyone sits at. First "
+        "visit they page the whole office; after that they walk you "
+        "straight there."),
+    "subnetting": (
+        "borrow bits → double the networks, halve the hosts",
+        "One pizza, more slices: same pie, smaller slices. A /24 becomes "
+        "two /25s, then four /26s — every slice keeps two addresses for "
+        "the crust (network + broadcast)."),
+    "arp": (
+        "ARP = Who has? — shout the IP, get the MAC",
+        "Roll call: the teacher shouts a name, only the owner answers — "
+        "and now the teacher remembers the face, so next time no shouting."),
+    "tcp-udp": (
+        "TCP = track & confirm · UDP = unleash & hope",
+        "TCP is registered mail — signed, numbered, re-sent if lost. UDP "
+        "is a confetti cannon: fast and fun, and nobody asks what didn't "
+        "land."),
+    "routing": (
+        "most specific wins — the router picks the longest match",
+        "Addressing a letter: 'Earth → USA → California' — the more parts "
+        "of the address that match, the closer you are. The router's "
+        "table works the same way."),
+    "vlans": (
+        "one switch pretending to be many",
+        "One building, three locked hallways: the switch is the building, "
+        "VLANs are the hallways, and the trunk is the shared elevator "
+        "carrying everyone — with floor tags on every passenger."),
+    "nat": (
+        "NAT = one public phone number for the whole office",
+        "The office has ONE outside line. Every call leaves 'from' it, and "
+        "the receptionist's log (the NAT table) knows which extension to "
+        "ring when the reply comes back."),
+    "firewall": (
+        "first match wins — order rules from specific to general",
+        "The bouncer checks lists top-down: VIP list? in. Ban list? gone. "
+        "The FIRST list that mentions you is the verdict — order matters."),
+    "dns-records": (
+        "A = Address · AAAA = Address×4 (IPv6) · MX = Mail eXchange · NS = "
+        "Name Server",
+        "The zone file is a filing cabinet — one drawer per record type. "
+        "dig asks the clerk to open one specific drawer."),
+    "wifi-sec": (
+        "WEP = wet paper · WPA = tape · WPA2 = deadbolt · WPA3 = smart lock",
+        "The lock upgrades: WEP was a twist-tie, WPA was tape, WPA2 is a "
+        "deadbolt, and WPA3 changes its combination every single time."),
+    "troubleshooting": (
+        "bottom-up: link → address → gateway → internet → DNS → app",
+        "No water? Check the tap, then the pipe, then the street main, "
+        "then the city. The ladder means you never skip the tap — the "
+        "problem is almost always one rung down from where you're "
+        "looking."),
+    "ospf": (
+        "hello first · same map everywhere · area 0 in the middle",
+        "Every router reads the same city map and picks its own fastest "
+        "route — that's shortest-path-first. Area 0 is the town square "
+        "every neighborhood has to touch."),
+    "bgp": (
+        "We Love Oranges As Oranges Mean Pure Refreshment — Weight, "
+        "Local-pref, Origin, AS-path, Origin code, MED, Peer, Router-ID",
+        "BGP is diplomacy between nations: every route carries a passport "
+        "stamped by each country (AS) it crossed, and border rules decide "
+        "which passport wins."),
+    "stp": (
+        "STP = Stop The Puddle — one blocked port, no loop",
+        "Two entrances to one roundabout means traffic circles forever. "
+        "STP barricades the extra entrance — and keeps it as the "
+        "emergency exit if the main one collapses."),
+    "ipv6": (
+        "8 groups of 4 hex = 128 bits of forever · :: replaces one run of "
+        "zeros",
+        "IPv4 was a 32-room hotel that sold out. IPv6 is a city with a "
+        "room for every grain of sand on Earth — and '::' is just the "
+        "shorthand for a long hallway of empty rooms."),
+    "vpn-ipsec": (
+        "IKE = the secret handshake · ESP = the armored car",
+        "Two offices agree on a secret handshake (IKE), then every "
+        "delivery rides in an armored car (ESP). Anyone watching sees the "
+        "truck and its route — never the contents."),
+    "design": (
+        "access = desks · distribution = managers · core = express "
+        "elevators",
+        "An office tower: people sit at desks (access), floor managers "
+        "enforce rules (distribution), and the express elevator bank just "
+        "moves — no decisions, only speed (core)."),
+    "qos": (
+        "QoS = the ambulance lane — EF first, downloads last",
+        "Rush hour: the ambulance gets sirens-and-lights, the mail truck "
+        "waits. DSCP is the siren painted on the packet at the edge of "
+        "the network."),
+}
+
+
+def _net_trick(concept: str):
+    """The (mnemonic, story) pair for a topic, or None."""
+    return NET_TRICKS.get(concept)
+
+
 # ---- the Linux network simulation ----------------------------------------- #
 # A deterministic simulated device: interfaces, ARP/neighbor table, routing
 # table, forwarding flag and a firewall.  Commands mutate state exactly like
@@ -15444,12 +15599,16 @@ class TutorApp(App):
                 self.p["net_topic"] = self._net_topic_i
                 save_progress(self.p)
             self._net_start_anim(topic[4])
+            trick = _net_trick(topic[1])
             if self.voice_on:
+                tail = ""
+                if trick:
+                    tail = f" Here's a memory hook: {trick[0]}"
                 if step.get("retrain"):
                     speak("Let's rebuild that one from scratch — deeper this "
-                          "time. " + topic[3])
+                          "time. " + topic[3] + tail)
                 else:
-                    speak(topic[3])
+                    speak(topic[3] + tail)
         elif step["kind"] == "recap":
             self._net_step = step
             q = step["q"]
@@ -15482,7 +15641,13 @@ class TutorApp(App):
             self._net_start_anim(topic[4])
             if self.voice_on:
                 bits = "; ".join(b[1] for b in self._net_sum_bullets)
-                speak(f"Let's lock that in. {topic[3]} The key points: {bits}")
+                trick = _net_trick(topic[1])
+                tail = ""
+                if trick:
+                    tail = (f" And here's the trick to lock it in: "
+                            f"{trick[0]}. {trick[1]}")
+                speak(f"Let's lock that in. {topic[3]} The key points: "
+                      f"{bits}.{tail}")
         elif step["kind"] == "lab_summary":
             self._net_step = step
             lab = NET_LABS[step["lab"]]
@@ -16044,6 +16209,11 @@ class TutorApp(App):
             if step.get("retrain"):
                 t.append("\n\nretraining — same idea, deeper this time",
                          style="bold #fbbf24")
+            trick = _net_trick(topic[1])
+            if trick:
+                t.append("\n\n")
+                t.append("🧠 remember: ", style="bold #cba6f7")
+                t.append(trick[0], style="#cba6f7")
         elif step["kind"] == "lab_intro":
             lab = NET_LABS[step["lab"]]
             t.append(lab["title"], style="bold white")
@@ -16091,6 +16261,14 @@ class TutorApp(App):
             for _concept, why in getattr(self, "_net_sum_bullets", []):
                 t.append("▸ ", style="bold #22c55e")
                 t.append(why, style="#f0f0f5")
+                t.append("\n")
+            trick = _net_trick(topic[1])
+            if trick:
+                t.append("\n")
+                t.append("🧠 MEMORY HOOK\n", style="bold #cba6f7")
+                t.append(trick[0], style="#cba6f7")
+                t.append("\n")
+                t.append(trick[1], style="#9f8bc2")
                 t.append("\n")
             t.append("\n")
             t.append("the whole topic in one breath — spoken, so it settles in",
