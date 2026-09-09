@@ -2419,6 +2419,11 @@ def _scale_raw(raw: bytes, gain: float) -> bytes:
 
 SUCCESS_SOUND = "/usr/share/sounds/freedesktop/stereo/complete.oga"
 
+# Vibrant color wheel the command-showcase ghost flashes through (always BOLD),
+# so the "what to write" bar visibly vibrates through bright hues instead of
+# sitting dim and grey once it finishes typing out.
+_GHOST_FLASH = ["#fbbf24", "#f97316", "#fb7185", "#c084fc", "#22d3ee"]
+
 
 def play_complete() -> None:
     """Completion chime at full volume."""
@@ -8128,7 +8133,6 @@ class TutorApp(App):
         self._shell_ghost_on = False    # blink highlight on/off
         self._shell_ghost_timer = None  # typewriter timer
         self._shell_ghost_blink_timer = None
-        self._shell_ghost_blink = 0     # blink pulses remaining
         self._shell_attempts = 0        # wrong answers this lesson (varied hints)
         self._shell_confirm = False    # "save checkpoint? Y/N" popup is showing
         self._shell_flash = 0          # >0 → flash the just-made entry in the tree
@@ -8152,7 +8156,6 @@ class TutorApp(App):
         self._dev_ghost_on = False
         self._dev_ghost_timer = None
         self._dev_ghost_blink_timer = None
-        self._dev_ghost_blink = 0
         self._dev_attempts = 0
         self._dev_confirm = False
         self._dev_flash = 0
@@ -10614,6 +10617,44 @@ class TutorApp(App):
             self._shell_cmd += ch
             self._shell_render()
 
+    # -- shared: speak the win line FULLY, then advance ---------------------- #
+    # The old flow spoke the win line and advanced on a fixed ~1.1s timer. That
+    # timer was SHORTER than the win audio, so the next lesson's intro speak()
+    # killed the win speech mid-sentence (the "TTS cuts out after Enter" bug).
+    # This waits for the actual audio to finish before advancing.
+    def _speak_win_then(self, text, advance_fn, render_fn, timer_attr):
+        render_fn()
+        t = getattr(self, timer_attr, None)
+        if t is not None:
+            t.stop()          # never let a stale advance timer stack up
+        if not self.voice_on:
+            setattr(self, timer_attr, self.set_timer(0.5, advance_fn))
+            return
+        gen = getattr(self, "_win_gen", 0) + 1
+        self._win_gen = gen
+
+        def _synth():
+            raw = synthesize(text, TEACH_RATE)
+            if gen != getattr(self, "_win_gen", 0):
+                return
+            self.call_from_thread(self._on_win_ready, text, raw, gen,
+                                  advance_fn, timer_attr)
+
+        threading.Thread(target=_synth, daemon=True).start()
+
+    def _on_win_ready(self, text, raw, gen, advance_fn, timer_attr):
+        if gen != getattr(self, "_win_gen", 0):
+            return
+        if raw:
+            play_raw(raw)
+            dur = max(0.1, len(raw) / 2 / 22050.0)
+            lead = self.AUDIO_LEAD
+        else:
+            speak(text)                      # espeak fallback (piper handled above)
+            dur = self._estimate_dur(text)
+            lead = 0.0
+        setattr(self, timer_attr, self.set_timer(lead + dur + 0.55, advance_fn))
+
     def _shell_submit(self):
         typed = self._shell_cmd
         cmd = typed.strip()
@@ -10640,9 +10681,8 @@ class TutorApp(App):
             self._shell_msg = lesson["on_win"]
             self._shell_msg_kind = "win"
             self._shell_flash_start()
-            if self.voice_on:
-                speak(_pers(lesson["on_win"]))
-            self._shell_advance()
+            self._speak_win_then(_pers(lesson["on_win"]), self._shell_next,
+                                 self._shell_render, "_shell_adv_timer")
         else:
             play_ghost_error()
             self._shell_attempts += 1
@@ -10767,6 +10807,7 @@ class TutorApp(App):
         self._shell_ghost = text
         self._shell_ghost_typed = 0
         self._shell_ghost_on = False
+        self._shell_ghost_color = 0
         self._shell_ghost_stop_timers()
         self.query_one("#shell-ghost", Static).update(self._shell_render_ghost())
         if text:
@@ -10779,7 +10820,6 @@ class TutorApp(App):
         b = getattr(self, "_shell_ghost_blink_timer", None)
         if b is not None:
             b.stop(); self._shell_ghost_blink_timer = None
-        self._shell_ghost_blink = 0
 
     def _shell_ghost_tick(self):
         if not self._shell_on:
@@ -10792,13 +10832,12 @@ class TutorApp(App):
             self._shell_ghost_typed += 1
             bar.update(self._shell_render_ghost())
             return
-        # fully typed — stop the typewriter and blink a few times
+        # fully typed — stop the typewriter and start the continuous bold flash
         if self._shell_ghost_timer is not None:
             self._shell_ghost_timer.stop(); self._shell_ghost_timer = None
         self._shell_ghost_on = True
-        self._shell_ghost_blink = 5
         if self._shell_ghost_blink_timer is None:
-            self._shell_ghost_blink_timer = self.set_interval(0.18, self._shell_ghost_blink_tick)
+            self._shell_ghost_blink_timer = self.set_interval(0.4, self._shell_ghost_blink_tick)
 
     def _shell_ghost_blink_tick(self):
         if not self._shell_on:
@@ -10808,23 +10847,17 @@ class TutorApp(App):
         except Exception:
             return
         self._shell_ghost_on = not self._shell_ghost_on
-        self._shell_ghost_blink -= 1
+        self._shell_ghost_color = (getattr(self, "_shell_ghost_color", 0) + 1) % len(_GHOST_FLASH)
         bar.update(self._shell_render_ghost())
-        if self._shell_ghost_blink <= 0:
-            if self._shell_ghost_blink_timer is not None:
-                self._shell_ghost_blink_timer.stop(); self._shell_ghost_blink_timer = None
-            self._shell_ghost_on = False
-            bar.update(self._shell_render_ghost())
 
     def _shell_ghost_blink_again(self):
         """Re-flash the (already typed) ghost after a wrong answer — no re-typing."""
         self._shell_ghost_typed = len(self._shell_ghost)
         if self._shell_ghost_timer is not None:
             self._shell_ghost_timer.stop(); self._shell_ghost_timer = None
-        self._shell_ghost_blink = 5
         self._shell_ghost_on = True
         if self._shell_ghost_blink_timer is None:
-            self._shell_ghost_blink_timer = self.set_interval(0.18, self._shell_ghost_blink_tick)
+            self._shell_ghost_blink_timer = self.set_interval(0.4, self._shell_ghost_blink_tick)
         self.query_one("#shell-ghost", Static).update(self._shell_render_ghost())
 
     def _shell_render_ghost(self):
@@ -10845,10 +10878,15 @@ class TutorApp(App):
         t = Text()
         t.append("   ⌁  type:  ", style="bold cyan")
         shown = self._shell_ghost[:self._shell_ghost_typed]
-        style = "bold #fbbf24" if self._shell_ghost_on else "bold #c9d1d9"
-        t.append(shown, style=style)
         if self._shell_ghost_typed < len(self._shell_ghost):
+            # still typing out — bold + vibrant amber as it streams in
+            t.append(shown, style="bold #fbbf24")
             t.append("▍", style="bold #22c55e")
+        else:
+            # fully typed — bold flashing through the vibrant color wheel
+            color = (_GHOST_FLASH[getattr(self, "_shell_ghost_color", 0) % len(_GHOST_FLASH)]
+                     if self._shell_ghost_on else "#fbbf24")
+            t.append(shown, style="bold " + color)
         return t
 
     def _shell_wrong_hint(self, lesson):
@@ -11181,10 +11219,8 @@ class TutorApp(App):
         self._dev_msg = f"saved {lesson['file']} ✓"
         self._dev_msg_kind = "win"
         play_console_result(True)
-        if self.voice_on:
-            speak(_pers(lesson.get("on_win", "Nice work.")))
-        self._dev_render()
-        self._dev_advance()
+        self._speak_win_then(_pers(lesson.get("on_win", "Nice work.")),
+                             self._dev_next, self._dev_render, "_dev_adv_timer")
 
     # -- run-phase command entry -------------------------------------------- #
 
@@ -11207,10 +11243,8 @@ class TutorApp(App):
             self._dev_msg = lesson.get("on_win", "Correct!")
             self._dev_msg_kind = "win"
             play_console_result(True)
-            if self.voice_on:
-                speak(_pers(lesson.get("on_win", "Correct!")))
-            self._dev_render()
-            self._dev_advance()
+            self._speak_win_then(_pers(lesson.get("on_win", "Correct!")),
+                                 self._dev_next, self._dev_render, "_dev_adv_timer")
         else:
             self._dev_attempts += 1
             self._dev_msg = self._dev_wrong_hint(lesson)
@@ -11398,6 +11432,7 @@ class TutorApp(App):
         self._dev_ghost = text
         self._dev_ghost_typed = 0
         self._dev_ghost_on = False
+        self._dev_ghost_color = 0
         self._dev_ghost_stop_timers()
         self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
         if text:
@@ -11410,7 +11445,6 @@ class TutorApp(App):
         b = getattr(self, "_dev_ghost_blink_timer", None)
         if b is not None:
             b.stop(); self._dev_ghost_blink_timer = None
-        self._dev_ghost_blink = 0
 
     def _dev_ghost_tick(self):
         if not self._dev_on:
@@ -11420,26 +11454,19 @@ class TutorApp(App):
             self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
         else:
             self._dev_ghost_stop_timers()
-            self._dev_ghost_blink = 4
+            self._dev_ghost_on = True
             self._dev_ghost_blink_timer = self.set_interval(0.4, self._dev_ghost_blink_tick)
 
     def _dev_ghost_blink_tick(self):
         if not self._dev_on:
             return
         self._dev_ghost_on = not self._dev_ghost_on
-        if self._dev_ghost_blink > 0:
-            self._dev_ghost_blink -= 1
+        self._dev_ghost_color = (getattr(self, "_dev_ghost_color", 0) + 1) % len(_GHOST_FLASH)
         self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
-        if self._dev_ghost_blink <= 0:
-            self._dev_ghost_on = False
-            b = getattr(self, "_dev_ghost_blink_timer", None)
-            if b is not None:
-                b.stop(); self._dev_ghost_blink_timer = None
-            self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
 
     def _dev_ghost_blink_again(self):
         self._dev_ghost_stop_timers()
-        self._dev_ghost_blink = 4
+        self._dev_ghost_on = True
         self._dev_ghost_blink_timer = self.set_interval(0.4, self._dev_ghost_blink_tick)
 
     # -- rendering ---------------------------------------------------------- #
@@ -11503,9 +11530,17 @@ class TutorApp(App):
             return t
         typed = self._dev_ghost[:self._dev_ghost_typed]
         rest = self._dev_ghost[self._dev_ghost_typed:]
-        t.append("→ ", style="bold #22c55e" if self._dev_ghost_on else "dim")
-        t.append(typed, style="bold #f0f0f5")
-        t.append(rest, style="#5a5a5a")
+        if self._dev_ghost_typed < len(self._dev_ghost):
+            # typing out — the written part is bold + vibrant amber, rest dim ghost
+            t.append("→ ", style="bold #22c55e")
+            t.append(typed, style="bold #fbbf24")
+            t.append(rest, style="#5a5a5a")
+        else:
+            # fully typed — bold flashing through the vibrant color wheel
+            color = (_GHOST_FLASH[getattr(self, "_dev_ghost_color", 0) % len(_GHOST_FLASH)]
+                     if self._dev_ghost_on else "#fbbf24")
+            t.append("→ ", style="bold " + color)
+            t.append(typed, style="bold " + color)
         return t
 
     def _dev_render_output(self):
