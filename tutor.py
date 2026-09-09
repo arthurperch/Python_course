@@ -10654,7 +10654,7 @@ class TutorApp(App):
             speak(text)                      # espeak fallback (piper handled above)
             dur = self._estimate_dur(text)
             lead = 0.0
-        setattr(self, timer_attr, self.set_timer(lead + dur + 0.55, advance_fn))
+        setattr(self, timer_attr, self.set_timer(lead + dur + 0.2, advance_fn))
 
     def _shell_submit(self):
         typed = self._shell_cmd
@@ -11122,7 +11122,11 @@ class TutorApp(App):
         lesson = self._dev_lesson()
         tier = self._dev_hand_hold()
         if lesson["kind"] == "info":
-            speak(_pers(lesson.get("say", lesson.get("why", ""))))
+            # pure narration: read it aloud, then flow straight into the next
+            # lesson — no "press Enter to continue" dead-end. (Voice-off keeps
+            # the manual Enter so the learner can read at their own pace.)
+            self._speak_win_then(_pers(lesson.get("say", lesson.get("why", ""))),
+                                 self._dev_next, self._dev_render, "_dev_adv_timer")
             return
         say = lesson.get("say", "")
         why = lesson.get("why", "")
@@ -11397,7 +11401,12 @@ class TutorApp(App):
         self._dev_adv_timer = self.set_timer(1.1, self._dev_next)
 
     def _dev_next(self):
+        t = getattr(self, "_dev_adv_timer", None)
+        if t is not None:
+            t.stop()          # a manual Enter skip must cancel the pending auto-advance
         self._dev_adv_timer = None
+        # invalidate any in-flight win/info speech so a skip can't double-advance
+        self._win_gen = getattr(self, "_win_gen", 0) + 1
         self._dev_idx += 1
         self._dev_msg = ""
         self._dev_msg_kind = ""
@@ -11595,7 +11604,10 @@ class TutorApp(App):
                 t.append("challenge — you've got this.", style="bold #fbbf24")
             return t
         if kind == "info":
-            t.append("read along, then press Enter", style="dim")
+            if self.voice_on:
+                t.append("listening · Enter to skip ahead", style="dim")
+            else:
+                t.append("read along, then press Enter", style="dim")
             return t
         if self._dev_phase == "write":
             t.append("✎ ", style="bold #7dd3fc")
