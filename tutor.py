@@ -2425,6 +2425,94 @@ SUCCESS_SOUND = "/usr/share/sounds/freedesktop/stereo/complete.oga"
 _GHOST_FLASH = ["#fbbf24", "#f97316", "#fb7185", "#c084fc", "#22d3ee"]
 
 
+# ---- realistic bash command coloring ------------------------------------- #
+# Colors a typed command the way a real fish/zsh prompt does, so the terminal
+# reads like an actual shell instead of a flat white line: green command, yellow
+# flags, orange strings, blue numbers, light arguments.
+def _colorize_command(cmd: str) -> Text:
+    t = Text()
+    for i, w in enumerate(cmd.split()):
+        if i:
+            t.append(" ")
+        if i == 0:
+            t.append(w, style="bold #7ee787")        # command name — green
+        elif w.startswith("-"):
+            t.append(w, style="#ffd866")             # flag / option — yellow
+        elif '"' in w or "'" in w:
+            t.append(w, style="#ffa657")             # (part of a) string — orange
+        elif w.isdigit():
+            t.append(w, style="#79c0ff")             # number — blue
+        else:
+            t.append(w, style="#e6edf3")             # argument — light
+    return t
+
+
+# ---- command anatomy: a beginner one-liner for each piece you type -------- #
+# Spoken (and shown) as the learner types, so "docker stop web" gets decoded:
+# what docker is, what stop does, what the name means. Same for git/aws/etc.
+_CMD_MEANING = {
+    "docker": "docker packages your app into a box called a container and runs it.",
+    "git": "git saves snapshots of your code so you can rewind.",
+    "aws": "the aws command talks to Amazon's cloud from your terminal.",
+    "terraform": "terraform builds cloud resources from files, like a blueprint.",
+    "ansible-playbook": "ansible-playbook runs a playbook that configures servers.",
+    "ls": "ls lists what is in this folder.",
+    "cd": "cd changes the folder you are standing in.",
+    "mkdir": "mkdir makes a new folder.",
+    "touch": "touch creates an empty file.",
+    "cat": "cat prints a file's contents to the screen.",
+    "echo": "echo prints whatever words you give it.",
+    "rm": "rm deletes a file.",
+    "pwd": "pwd prints the folder you are currently in.",
+    "grep": "grep searches inside text for a pattern.",
+    "wc": "wc counts the lines, words and characters in a file.",
+    "chmod": "chmod changes who is allowed to read or run a file.",
+    "head": "head shows the first lines of a file.",
+    "tail": "tail shows the last lines of a file.",
+    "clear": "clear wipes the screen clean.",
+}
+
+_PIECE_MEANING = {
+    # docker
+    ("docker", "build"): "docker build reads the Dockerfile and bakes it into an image.",
+    ("docker", "run"): "docker run starts a brand new container from an image.",
+    ("docker", "ps"): "docker ps lists the containers running right now.",
+    ("docker", "images"): "docker images lists the images you have built.",
+    ("docker", "logs"): "docker logs prints what a container has been saying.",
+    ("docker", "stop"): "docker stop powers down a running container. It only wants the container's name — no extra flags.",
+    ("docker", "rm"): "docker rm deletes a container that is already stopped.",
+    ("docker", "-t"): "dash t tags your image with a name.",
+    ("docker", "-d"): "dash d runs the container in the background, detached.",
+    ("docker", "--name"): "dash dash name gives the container a name you can refer to later.",
+    ("docker", "-p"): "dash p maps a port from your machine into the container.",
+    # git
+    ("git", "init"): "git init turns this folder into a git repository.",
+    ("git", "add"): "git add stages a file, telling git to include it in the next snapshot.",
+    ("git", "commit"): "git commit saves a permanent snapshot of everything staged.",
+    ("git", "log"): "git log lists your saved snapshots, newest first.",
+    ("git", "-m"): "dash m is the commit message describing what changed.",
+    # aws
+    ("aws", "s3"): "s3 is Amazon's file storage service.",
+    ("aws", "mb"): "mb means make bucket — create a new s3 bucket.",
+    ("aws", "ec2"): "ec2 is Amazon's virtual servers.",
+    # terraform
+    ("terraform", "plan"): "terraform plan shows what would change, without doing it yet.",
+    ("terraform", "apply"): "terraform apply actually builds the resources.",
+    ("terraform", "destroy"): "terraform destroy removes everything it built.",
+    # common shell flags
+    ("ls", "-a"): "dash a lists hidden files too — the ones starting with a dot.",
+    ("ls", "-l"): "dash l shows one file per line with extra detail.",
+    ("mkdir", "-p"): "dash p makes parent folders as needed in one go.",
+    ("rm", "-r"): "dash r removes a folder and everything inside it.",
+    ("grep", "-n"): "dash n shows the line number of each match.",
+}
+
+
+def _piece_explain(cmd0, tok):
+    """Beginner one-liner for a subcommand/flag under a command, or None."""
+    return _PIECE_MEANING.get((cmd0, tok))
+
+
 def play_complete() -> None:
     """Completion chime at full volume."""
     try:
@@ -8151,6 +8239,7 @@ class TutorApp(App):
         self._dev_pos = 0             # write: chars typed so far
         self._dev_explained = set()   # write: line substrings already spoken
         self._dev_errors = {}         # write: abs pos -> the wrong char typed (red)
+        self._dev_explained_tokens = set()   # command pieces already spoken this lesson
         self._dev_ghost = ""          # run: the command hint (typewriter)
         self._dev_ghost_typed = 0
         self._dev_ghost_on = False
@@ -10952,14 +11041,14 @@ class TutorApp(App):
             if kind == "cmd":
                 p, c = text
                 t.append(p, style="bold #86efac")
-                t.append(c, style="#f0f0f5")
+                t.append_text(_colorize_command(c))
             elif kind == "out":
                 t.append(text, style="#e6e6e6")
             elif kind == "err":
                 t.append(text, style="bold #f87171")
             t.append("\n")
         t.append(self._shell_prompt() + " ", style="bold #86efac")
-        t.append(self._shell_cmd, style="#f0f0f5")
+        t.append_text(_colorize_command(self._shell_cmd))
         t.append("▍", style="bold #22c55e")
         return _box_lines(_lines_of(t))
 
@@ -11067,6 +11156,7 @@ class TutorApp(App):
             return
         lesson = self._dev_lesson()
         self._dev_chal_done = set()   # reset challenge toolbox progress
+        self._dev_explained_tokens = set()   # re-explain command pieces each lesson
         if lesson["kind"] == "write":
             self._dev_phase = "write"
             self._dev_target = lesson["content"]
@@ -11244,6 +11334,34 @@ class TutorApp(App):
 
     # -- run-phase command entry -------------------------------------------- #
 
+    def _dev_explain_command_piece(self):
+        """As the learner types a command, speak (and show) a beginner one-liner
+        for each finished piece — the command name, then each subcommand/flag —
+        once per lesson. Decodes 'what am I actually writing here?'."""
+        if not self.voice_on:
+            return
+        parts = self._dev_cmd.split()
+        if not parts:
+            return
+        explained = getattr(self, "_dev_explained_tokens", set())
+
+        def _speak_if_new(key, expl):
+            if key in explained or not expl:
+                return False
+            explained.add(key)
+            self._dev_msg = expl
+            self._dev_msg_kind = "say"
+            speak(_pers(expl))
+            return True
+
+        # the command name first — explain it the moment it's recognizable
+        if not _speak_if_new(parts[0], _CMD_MEANING.get(parts[0])):
+            finished = parts[:-1] if not self._dev_cmd.endswith(" ") else parts
+            for tok in finished[1:]:
+                if _speak_if_new(tok, _piece_explain(parts[0], tok)):
+                    break
+        self._dev_explained_tokens = explained
+
     def _dev_tool_tokens(self, tool):
         """Normalize a toolbox entry to matchable tokens: strip the "..."/'...'
         placeholders, drop '·' separators."""
@@ -11313,15 +11431,19 @@ class TutorApp(App):
                 self._dev_render()
                 return
         self._dev_attempts += 1
-        self._dev_msg = self._dev_wrong_hint(lesson)
+        self._dev_msg = self._dev_wrong_hint(lesson, cmd)
         self._dev_msg_kind = "hint"
         play_ghost_error()
         self._dev_render()
         self._dev_ghost_blink_again()
 
-    def _dev_wrong_hint(self, lesson):
+    def _dev_wrong_hint(self, lesson, cmd=""):
         tier = self._dev_attempts
         if lesson.get("kind") == "challenge":
+            # specific: docker stop/rm only take a container name — no flags
+            if cmd.lower().startswith("docker") and any(t.startswith("-") for t in cmd.split()):
+                return ("docker stop and docker rm only want the container's name — no flags. "
+                        "Those dash flags belong to docker run, not stop. Just type 'docker stop web'.")
             if tier == 0:
                 return "not yet — look at the toolbox: which command comes first?"
             if tier == 1:
@@ -11391,6 +11513,7 @@ class TutorApp(App):
         ch = event.character
         if ch:
             self._dev_cmd += ch
+            self._dev_explain_command_piece()
             self._dev_render()
 
     def _dev_advance(self):
@@ -11655,14 +11778,14 @@ class TutorApp(App):
             if kind == "cmd":
                 p, c = text
                 t.append(p, style="bold #86efac")
-                t.append(c, style="#f0f0f5")
+                t.append_text(_colorize_command(c))
             elif kind == "out":
                 t.append(text, style="#e6e6e6")
             elif kind == "err":
                 t.append(text, style="bold #f87171")
             t.append("\n")
         t.append(self._dev_prompt() + " ", style="bold #86efac")
-        t.append(self._dev_cmd, style="#f0f0f5")
+        t.append_text(_colorize_command(self._dev_cmd))
         t.append("▍", style="bold #22c55e")
         return _box_lines(_lines_of(t), max_width=term_w)
 
@@ -11797,6 +11920,9 @@ class TutorApp(App):
             if self._dev_msg_kind == "win":
                 t.append("✓  ", style="bold #22c55e")
                 t.append(self._dev_msg, style="bold #22c55e")
+            elif self._dev_msg_kind == "say":
+                t.append("💬  ", style="bold #7dd3fc")
+                t.append(self._dev_msg, style="#7dd3fc")
             else:
                 t.append("→  ", style="bold #fbbf24")
                 t.append(self._dev_msg, style="bold #fbbf24")
