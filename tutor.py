@@ -7746,15 +7746,13 @@ def _gen_net_questions() -> list:
         for item in stuff:
             qs.append(_mk_q(
                 f"{item} lives at which OSI layer?",
-                ["Transport", "Network", "Application",
-                 f"{name}"][:3] + [f"{name}"],
+                [x for x in ("Transport", "Network", "Data Link", "Session",
+                             "Application") if x != name][:3] + [f"{name}"],
                 None, f"osi-{name}", 0,
                 f"{item} lives at layer {layer} ({name}).",
                 f"{item} is handled at layer {layer} — {name}.",
                 None))
-            qs[-1]["choices"] = (["Transport", "Network", "Application"] +
-                                 [name])
-            qs[-1]["ans"] = 3
+            qs[-1]["ans"] = qs[-1]["choices"].index(name)
         break  # layer7 items only (keep the bank tight)
 
     # subnet masks: prefix -> mask, mask -> prefix, pick the mask
@@ -7850,8 +7848,10 @@ def _gen_net_questions() -> list:
             None))
         qs[-1]["ans"] = qs[-1]["choices"].index(desc)
     for std, mbps in _NET_SPEEDS:
-        others = [m for _, m in _NET_SPEEDS if m != mbps]
-        others = others[(_slot(std) * 2) % 3:][:3]
+        # dedupe: two standards share 100 Mbps, so the wrongs pool needs
+        # unique values or the choices would repeat themselves.  With 4
+        # unique speeds there are exactly 3 wrongs — always use all 3.
+        others = sorted({m for _, m in _NET_SPEEDS if m != mbps})
         c, i = _place(others, _slot(f"s{std}"), mbps)
         qs.append(_mk_q(
             f"What speed is {std}?",
@@ -9017,7 +9017,7 @@ def _gen_net_questions2() -> list:
             qs[-1]["ans"] = 3
             qs.append(_mk_q(
                 f"On {base_ip}.0/{prefix}, the last usable host is…",
-                [_int_to_ip(base + size - 1), last, _int_to_ip(base + 2),
+                [_int_to_ip(base + size - 1), last, _int_to_ip(base + 1),
                  _int_to_ip(base + size)],
                 None, "valid-range", 1,
                 f"Last usable host = {last}.",
@@ -9456,24 +9456,38 @@ def _net_anim(kind: str) -> list:
         return frames
     if kind == "osi":
         layers = [
-            ("7  Application   HTTP · SMTP · DNS", "#f9a8d4"),
-            ("6  Presentation  TLS encryption · compression", "#f0abfc"),
-            ("5  Session       dialogs · RPC", "#c4b5fd"),
-            ("4  Transport     TCP/UDP · ports", "#93c5fd"),
-            ("3  Network       IP · routing", "#67e8f9"),
-            ("2  Data Link     MAC · frames", "#86efac"),
-            ("1  Physical      cables · bits · radio", "#fde047"),
+            (7, "Application", "HTTP · SMTP · DNS", "#f9a8d4"),
+            (6, "Presentation", "TLS encryption", "#f0abfc"),
+            (5, "Session", "dialogs · RPC", "#c4b5fd"),
+            (4, "Transport", "TCP/UDP · ports", "#93c5fd"),
+            (3, "Network", "IP · routing", "#67e8f9"),
+            (2, "Data Link", "MAC · frames", "#86efac"),
+            (1, "Physical", "cables · bits · radio", "#fde047"),
         ]
-        rows = [_net_row([("│ ", _NET_DIM), (txt, col), (" │", _NET_DIM)])
-                for txt, col in layers]
+        # one solid box, fixed inner width — every border lines up
+        inner = 44
+        name_w = 15
+        rows = [_net_row([("┌" + "─" * inner + "┐", _NET_DIM)])]
+        for n, name, desc, col in layers:
+            pad_to = inner - (2 + 2 + 2 + name_w + 1) - len(desc)
+            rows.append(_net_row([
+                ("│ ", _NET_DIM),
+                (f"{n:>2}  ", col),
+                (f"{name:<{name_w}} ", "bold " + col),
+                (desc, _NET_TXT),
+                (" " * max(pad_to, 1), None),
+                (" │", _NET_DIM)]))
+            rows.append(_net_row([("├" + "─" * inner + "┤", _NET_DIM)]))
+        rows[-1] = _net_row([("└" + "─" * inner + "┘", _NET_DIM)])
         frames = []
-        for i in range(len(rows)):                 # sending: down the stack
+        for layer_i in range(7):                  # sending: down the stack
             frames.append(_net_scene(
-                "the OSI model — data flows DOWN to send", rows, hi=i,
+                "the OSI model — data flows DOWN to send", rows,
+                hi=1 + 2 * layer_i,
                 foot="each layer wraps the data in its own header"))
-        for i in range(len(rows) - 2, -1, -1):     # receiving: back up
+        for layer_i in range(5, -1, -1):          # receiving: back up
             frames.append(_net_scene(
-                "…and flows UP to receive", rows, hi=i,
+                "…and flows UP to receive", rows, hi=1 + 2 * layer_i,
                 foot="each layer unwraps only its own part"))
         return frames
     if kind == "subnet":
@@ -15563,10 +15577,8 @@ class TutorApp(App):
                 skill["weak"] = False   # retraining worked — weakness cleared
             self._net_msg = f"✓ correct — {q['why']}"
             self._net_msg_kind = "win"
-            win, _ = self._sounds_for("netdrill")
-            play_file(win, self._fx_volume())
             if self.voice_on:
-                speak(q["say"])
+                speak(f"Correct. {q['say']}")
             step["done"] = True
             self._net_render()
             return
@@ -15587,7 +15599,7 @@ class TutorApp(App):
                          f"differently each time")
         self._net_msg_kind = "retrain"
         if self.voice_on:
-            speak("Not quite. " + teach + " I've noted that as a weakness — "
+            speak("Incorrect. " + teach + " I've noted that as a weakness — "
                   "it will come back three more times, each explained a "
                   "little differently.")
         if step["explain"] == 0:
@@ -15666,10 +15678,8 @@ class TutorApp(App):
                                      for qt, ok in self._net_history[-200:]]
             self._net_msg = f"✓ correct — {q['why']}"
             self._net_msg_kind = "win"
-            win, _ = self._sounds_for("netplus")
-            play_file(win, self._fx_volume())
             if self.voice_on:
-                speak(q["say"])
+                speak(f"Correct. {q['say']}")
             if step["kind"] == "quiz" and step["wrongs"] >= 2:
                 # failed at least twice before getting it — retrain it
                 skill["weak"] = True
@@ -15691,8 +15701,8 @@ class TutorApp(App):
                              f"{q['why']}")
             self._net_msg_kind = "retrain"
             if self.voice_on:
-                speak("The answer was " + q["choices"][q["ans"]] + ". " +
-                      q["why"])
+                speak("Incorrect. The answer was " + q["choices"][q["ans"]] +
+                      ". " + q["why"])
             step["done"] = True
             self._net_step = None
             self._net_asked += 1
@@ -15710,23 +15720,22 @@ class TutorApp(App):
             self._net_msg = f"✗ not quite. {q['again']}"
             self._net_msg_kind = "retrain"
             if self.voice_on:
-                speak(q["again"])
+                speak(f"Incorrect. {q['again']}")
         elif step["wrongs"] == 2:
             self._net_msg = f"✗ still off — let's go deeper. {q['deeper']}"
             self._net_msg_kind = "retrain"
             if self.voice_on:
-                speak(q["deeper"])
+                speak(f"Incorrect. {q['deeper']}")
         else:
             skill["weak"] = True
             self._net_retrain.append(step["topic"])
             self._net_msg = (f"the answer is: {q['choices'][q['ans']]} — "
                              f"{q['why']}  (topic flagged for retraining)")
             self._net_msg_kind = "retrain"
-            fail, _ = self._sounds_for("netplus")
-            play_file(fail, self._fx_volume())
             if self.voice_on:
-                speak("The answer is " + q["choices"][q["ans"]] + ". " +
-                      q["why"] + " I'm flagging this topic for retraining.")
+                speak("Incorrect. The answer is " + q["choices"][q["ans"]] +
+                      ". " + q["why"] + " I'm flagging this topic for "
+                      "retraining.")
             self._net_queue_retrain(step["topic"], step["wrongs"])
             step["done"] = True
             step["reveal"] = idx
@@ -15783,9 +15792,9 @@ class TutorApp(App):
             self._net_msg = "🏁 lab complete — Enter to continue"
             self._net_msg_kind = "win"
             self._net_step["done"] = True
-            win, _ = self._sounds_for("netlab")
-            play_file(win, self._fx_volume())
             self._celebrate()
+            if self.voice_on:
+                speak("Lab complete.")
         self._net_render()
 
     # -- NETWORK+ input --------------------------------------------------- #
