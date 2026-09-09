@@ -11623,6 +11623,8 @@ class TutorApp(App):
         self._net_drill_right = 0
         self._net_drill_wrong = 0
         self._net_drill_weak = set()  # concepts marked weak this session
+        self._net_adv_timer = None    # brief feedback pause before the next q
+        self._net_pause_action = None  # "next" or ("reask", step)
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -12367,8 +12369,13 @@ class TutorApp(App):
             self._menu_anim_timer = None
 
     def _menu_anim_tick(self):
+        if not self.is_mounted:
+            return
         self._menu_frame = (self._menu_frame + 1) % len(CAT_FRAMES)
-        self.query_one("#menu-banner", Static).update(self._banner_text())
+        try:
+            self.query_one("#menu-banner", Static).update(self._banner_text())
+        except Exception:
+            return
 
     def _render_menu_help(self):
         music = "[green]music ON[/]" if self.music_on else "[red]music MUTED[/]"
@@ -15536,6 +15543,8 @@ class TutorApp(App):
         self._net_msg_kind = ""
         self.query_one("#net", NetTrainer).add_class("visible")
         self.query_one("#net", NetTrainer).focus()
+        self._net_stop_pause()
+        self._stop_menu_anim()   # the menu cat isn't visible behind the overlay
         self._net_next()
 
     def _net_skill_score(self) -> int:
@@ -15552,6 +15561,71 @@ class TutorApp(App):
         if not self.voice_on:
             return
         speak(q["q"])
+
+    def _net_stop_pause(self):
+        t = getattr(self, "_net_adv_timer", None)
+        if t is not None:
+            t.stop()
+            self._net_adv_timer = None
+        self._net_pause_action = None
+        self._net_gen += 1
+
+    def _net_schedule_pause(self, delay: float, action):
+        """A short beat so the spoken Correct/Incorrect feedback and the
+        quick good/bad sound actually land before anything else talks.
+        Any keypress skips the pause immediately."""
+        self._net_stop_pause()
+        self._net_pause_action = action
+        self._net_gen += 1
+        gen = self._net_gen
+        self._net_adv_timer = self.set_timer(delay, lambda: self._net_pause_done(gen))
+
+    def _net_pause_done(self, gen):
+        if gen != self._net_gen or not self._net_on:
+            return
+        self._net_adv_timer = None
+        action = self._net_pause_action
+        self._net_pause_action = None
+        if action == "next":
+            self._net_count_asked()
+            self._net_step = None
+            self._net_next()
+        elif action and action[0] == "reask":
+            step = action[1]
+            step["q"] = step.pop("pending_q", step["q"])
+            if self.voice_on:
+                speak(step["q"]["q"])
+            self._net_render()
+
+    def _net_count_asked(self):
+        """On advancing out of a completed quiz step: count it (recap
+        cadence) and maybe inject a recap question."""
+        step = self._net_step
+        if step is not None and step.get("count_asked"):
+            self._net_asked += 1
+            self._net_maybe_recap()
+
+    def _net_pause_skip(self) -> bool:
+        """Any keypress during a pause advances/continues right now."""
+        t = getattr(self, "_net_adv_timer", None)
+        if t is None:
+            return False
+        self._net_adv_timer = None
+        t.stop()
+        action = self._net_pause_action
+        self._net_pause_action = None
+        self._net_gen += 1
+        if action == "next":
+            self._net_count_asked()
+            self._net_step = None
+            self._net_next()
+        elif action and action[0] == "reask":
+            step = action[1]
+            step["q"] = step.pop("pending_q", step["q"])
+            if self.voice_on:
+                speak(step["q"]["q"])
+            self._net_render()
+        return True
 
     def _net_next(self):
         if not self._net_queue:
@@ -15742,9 +15816,12 @@ class TutorApp(App):
                 skill["weak"] = False   # retraining worked — weakness cleared
             self._net_msg = f"✓ correct — {q['why']}"
             self._net_msg_kind = "win"
+            win, _ = self._sounds_for("netdrill")
+            play_file(win, self._fx_volume())
             if self.voice_on:
                 speak(f"Correct. {q['say']}")
             step["done"] = True
+            self._net_schedule_pause(1.4, "next")
             self._net_render()
             return
         # wrong → retrained immediately (feedback stays on screen), weakness
@@ -15763,6 +15840,8 @@ class TutorApp(App):
                          f"this comes back 3 more times, explained a little "
                          f"differently each time")
         self._net_msg_kind = "retrain"
+        _, fail = self._sounds_for("netdrill")
+        play_file(fail, self._fx_volume())
         if self.voice_on:
             speak("Incorrect. " + teach + " I've noted that as a weakness — "
                   "it will come back three more times, each explained a "
@@ -15771,6 +15850,7 @@ class TutorApp(App):
             self._net_schedule_reasks(q["concept"], q)
         step["done"] = True
         step["reveal"] = True
+        self._net_schedule_pause(2.0, "next")
         self._net_render()
         return
 
@@ -15843,6 +15923,8 @@ class TutorApp(App):
                                      for qt, ok in self._net_history[-200:]]
             self._net_msg = f"✓ correct — {q['why']}"
             self._net_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
             if self.voice_on:
                 speak(f"Correct. {q['say']}")
             if step["kind"] == "quiz" and step["wrongs"] >= 2:
@@ -15851,10 +15933,9 @@ class TutorApp(App):
                 self._net_retrain.append(step["topic"])
                 self._net_queue_retrain(step["topic"], step["wrongs"])
             step["done"] = True
-            self._net_step = None
-            self._net_asked += 1
-            self._net_maybe_recap()
-            self._net_next()
+            step["count_asked"] = True
+            self._net_schedule_pause(1.6, "next")
+            self._net_render()
             return
         # recap: a memory check — show the answer and move on
         if step["kind"] == "recap":
@@ -15865,14 +15946,16 @@ class TutorApp(App):
             self._net_msg = (f"the answer was: {q['choices'][q['ans']]} — "
                              f"{q['why']}")
             self._net_msg_kind = "retrain"
+            _, fail = self._sounds_for("netplus")
+            play_file(fail, self._fx_volume())
             if self.voice_on:
                 speak("Incorrect. The answer was " + q["choices"][q["ans"]] +
                       ". " + q["why"])
             step["done"] = True
-            self._net_step = None
-            self._net_asked += 1
-            self._net_maybe_recap()
-            self._net_next()
+            step["reveal"] = idx
+            step["count_asked"] = True
+            self._net_schedule_pause(1.8, "next")
+            self._net_render()
             return
         # wrong: teach again, differently and deeper
         step["wrongs"] += 1
@@ -15881,21 +15964,39 @@ class TutorApp(App):
         self.p["net_history"] = [(qt.get("q") or "", ok)
                                  for qt, ok in self._net_history[-200:]]
         step["asked"].append(q)
+        # the quick memory reminder for THIS topic (what it is, in one line)
+        reminder = ""
+        if step.get("topic"):
+            trick = _net_trick(step["topic"][1])
+            if trick:
+                reminder = f"   🧠 remember: {trick[0]}"
+        _, fail = self._sounds_for("netplus")
+        play_file(fail, self._fx_volume())
         if step["wrongs"] == 1:
-            self._net_msg = f"✗ not quite. {q['again']}"
+            self._net_msg = f"✗ not quite. {q['again']}{reminder}"
             self._net_msg_kind = "retrain"
             if self.voice_on:
                 speak(f"Incorrect. {q['again']}")
+            # after a beat, re-ask a DIFFERENT question on the same concept
+            step["pending_q"] = _net_alt_question(q, step["asked"])
+            self._net_schedule_pause(1.6, ("reask", step))
+            self._net_render()
+            return
         elif step["wrongs"] == 2:
-            self._net_msg = f"✗ still off — let's go deeper. {q['deeper']}"
+            self._net_msg = f"✗ still off — let's go deeper. {q['deeper']}{reminder}"
             self._net_msg_kind = "retrain"
             if self.voice_on:
                 speak(f"Incorrect. {q['deeper']}")
+            step["pending_q"] = _net_alt_question(q, step["asked"])
+            self._net_schedule_pause(1.6, ("reask", step))
+            self._net_render()
+            return
         else:
             skill["weak"] = True
             self._net_retrain.append(step["topic"])
             self._net_msg = (f"the answer is: {q['choices'][q['ans']]} — "
-                             f"{q['why']}  (topic flagged for retraining)")
+                             f"{q['why']}  (topic flagged for "
+                             f"retraining){reminder}")
             self._net_msg_kind = "retrain"
             if self.voice_on:
                 speak("Incorrect. The answer is " + q["choices"][q["ans"]] +
@@ -15904,16 +16005,10 @@ class TutorApp(App):
             self._net_queue_retrain(step["topic"], step["wrongs"])
             step["done"] = True
             step["reveal"] = idx
-            self._net_step = None
-            self._net_asked += 1
-            self._net_maybe_recap()
-            self._net_next()
+            step["count_asked"] = True
+            self._net_schedule_pause(2.2, "next")
+            self._net_render()
             return
-        # re-ask a DIFFERENT question about the same concept
-        step["q"] = _net_alt_question(q, step["asked"])
-        if self.voice_on:
-            speak(step["q"]["q"])
-        self._net_render()
 
     def _net_module_complete(self):
         """End of a module: record it, then either next module or course
@@ -15968,6 +16063,9 @@ class TutorApp(App):
         if k == "escape":
             self._net_exit()
             return
+        # any key during the feedback pause skips straight to the next step
+        if self._net_pause_skip():
+            return
         step = self._net_step
         if step is None:
             if k == "enter":
@@ -15981,7 +16079,6 @@ class TutorApp(App):
             return
         if step["kind"] == "drill_quiz":
             if step.get("done"):
-                # feedback is on screen — any key moves to the next question
                 self._net_step = None
                 self._net_next()
                 return
@@ -16009,6 +16106,7 @@ class TutorApp(App):
                 self._net_render()
 
     def _net_exit(self):
+        self._net_stop_pause()
         self._net_stop_anim()
         save_progress(self.p)
         self._net_on = False
@@ -16364,7 +16462,8 @@ class TutorApp(App):
             t.append("Esc — back to the menu", style="dim")
         elif step["kind"] == "drill_quiz":
             if step.get("done"):
-                t.append("press any key — next question", style="bold #22c55e")
+                t.append("next question in a moment — any key to skip",
+                         style="bold #22c55e")
             else:
                 t.append("press 1-4 to answer", style="bold #7dd3fc")
                 t.append("   ·   ")
@@ -16372,12 +16471,16 @@ class TutorApp(App):
                 t.append("   ·   ")
                 t.append("wrong = retrained now + 3 random re-asks", style="#fbbf24")
         elif step["kind"] in ("quiz", "recap"):
-            t.append("press 1-4 to answer", style="bold #7dd3fc")
-            t.append("   ·   ")
-            t.append("wrong? you'll get it again, taught a different way",
-                     style="dim")
-            t.append("   ·   ")
-            t.append("Esc — save & exit", style="dim")
+            if step.get("done"):
+                t.append("next question in a moment — any key to skip",
+                         style="bold #22c55e")
+            else:
+                t.append("press 1-4 to answer", style="bold #7dd3fc")
+                t.append("   ·   ")
+                t.append("wrong? you'll get it again, taught a different way",
+                         style="dim")
+                t.append("   ·   ")
+                t.append("Esc — save & exit", style="dim")
         elif step["kind"] == "lab":
             if step.get("done"):
                 t.append("Enter — continue", style="bold green")
