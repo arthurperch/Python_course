@@ -9349,16 +9349,20 @@ def _net_topic_qs(concept: str) -> list:
 def _net_alt_question(q: dict, asked: list) -> dict:
     """A DIFFERENT question about the same concept (the retrain re-ask).  If
     the concept only has one question, fall back to a same-family concept,
-    then to any other question of the same level."""
-    same = [x for x in _net_concept_questions(q["concept"]) if x is not q]
+    then to any other question of the same level.  Every question already in
+    `asked` is excluded, so re-asks never cycle back to something seen."""
+    same = [x for x in _net_concept_questions(q["concept"])
+            if x is not q and all(x is not a for a in asked)]
     if same:
         return same[len(asked) % len(same)]
     fam = [x for x in NET_QUESTIONS
            if x["concept"].split("-")[0] == q["concept"].split("-")[0]
-           and x is not q and x not in asked]
+           and x is not q
+           and all(x is not a for a in asked)]
     if fam:
         return fam[len(asked) % len(fam)]
-    level_pool = [x for x in _net_pool_by_level(q["level"]) if x is not q]
+    level_pool = [x for x in _net_pool_by_level(q["level"])
+                  if x is not q and all(x is not a for a in asked)]
     return level_pool[len(asked) % len(level_pool)]
 
 
@@ -10698,6 +10702,11 @@ for _ni, _nt in enumerate(NET_TOPICS):
 # the labs sit at the end of the course, one per level
 NET_MODULES.append({"name": "NETWORK LABS", "first": len(NET_TOPICS),
                     "count": len(NET_LABS)})
+# EXTRA DRILLS: a repeatable session that re-asks everything you've learned —
+# TTS reads question AND answers, wrong answers are retrained instantly and
+# come back three more times at random spots, explained differently each time.
+NET_MODULES.append({"name": "EXTRA DRILLS", "first": len(NET_TOPICS),
+                    "count": 1})
 
 
 def net_checkpoint_label(p: dict) -> str:
@@ -10708,6 +10717,8 @@ def net_checkpoint_label(p: dict) -> str:
     if not isinstance(m, int) or not (0 <= m < len(NET_MODULES)):
         return ""
     name = NET_MODULES[m]["name"]
+    if m >= 4:
+        return f"NETWORK+ · {name}"
     ti = p.get("net_topic", 0)
     if m < 3:
         topics = [t for t in NET_TOPICS if t[0] == m]
@@ -11438,6 +11449,11 @@ class TutorApp(App):
         self._net_gen = 0             # timer generation counter
         self._net_retrain: list = []  # topics flagged weak this module
         self._net_sum_bullets: list = []  # (concept, why) for the summary step
+        self._net_drill_i = 0         # EXTRA DRILLS: question counter
+        self._net_drill_n = 0         # EXTRA DRILLS: session size
+        self._net_drill_right = 0
+        self._net_drill_wrong = 0
+        self._net_drill_weak = set()  # concepts marked weak this session
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -15315,6 +15331,24 @@ class TutorApp(App):
                 self._net_queue.append({"kind": "lab_intro", "lab": li})
                 self._net_queue.append({"kind": "lab", "lab": li})
                 self._net_queue.append({"kind": "lab_summary", "lab": li})
+        elif module == 4:
+            # EXTRA DRILLS: re-ask everything learned, weak concepts first
+            pool = self._net_drill_pool()
+            self._net_drill_i = 0
+            self._net_drill_right = 0
+            self._net_drill_wrong = 0
+            self._net_drill_weak = set()
+            self._net_queue.append({"kind": "drill_intro"})
+            used = set()
+            for _ in range(min(15, len(pool))):
+                q = self._net_drill_pick(pool, used)
+                if q is None:
+                    break
+                used.add(q["q"])
+                self._net_queue.append({
+                    "kind": "drill_quiz", "q": q, "concept": q["concept"],
+                    "explain": 0, "asked": []})
+            self._net_drill_n = len(self._net_queue) - 1
         else:
             for ti, topic in enumerate(topics):
                 if ti < start_topic:
@@ -15353,10 +15387,30 @@ class TutorApp(App):
     def _net_next(self):
         if not self._net_queue:
             self._net_step = None
-            self._net_module_complete()
+            if self._net_module == 4:
+                self._net_drill_finish()
+            else:
+                self._net_module_complete()
             return
         step = self._net_queue.pop(0)
-        if step["kind"] == "quiz":
+        if step["kind"] == "drill_intro":
+            self._net_step = step
+            self._net_msg = ""
+            self._net_msg_kind = ""
+            if self.voice_on:
+                speak("Extra drills. I'll read every question and its "
+                      "answers out loud. Press one to four to answer. If "
+                      "you're wrong, I'll retrain you on the spot, note the "
+                      "weakness, and that question will come back three more "
+                      "times later in this session — explained a little "
+                      "differently each time.")
+        elif step["kind"] == "drill_quiz":
+            self._net_step = step
+            self._net_drill_i += 1
+            self._net_msg = ""
+            self._net_msg_kind = ""
+            self._net_speak_drill(step["q"])
+        elif step["kind"] == "quiz":
             if step.get("q") is None:
                 pool = _net_topic_qs(step["topic"][1])
                 step["q"] = pool[self._net_quiz_n % len(pool)]
@@ -15446,6 +15500,132 @@ class TutorApp(App):
                 seen.append(q)
         pick = (missed + seen + pool)[:3]
         return [(q["concept"], q["why"]) for q in pick]
+
+    # -- EXTRA DRILLS ------------------------------------------------------ #
+    def _net_drill_pool(self) -> list:
+        """Everything learned so far: questions from the recap history plus
+        every concept with a skill entry.  Falls back to foundations when
+        the learner hasn't covered enough yet."""
+        hist = self.p.get("net_history", [])
+        seen_texts = {qt for qt, _ in hist}
+        pool = [q for q in NET_QUESTIONS if q["q"] in seen_texts]
+        have = {x["q"] for x in pool}
+        seen_concepts = {c for c, s in self.p.get("net_skills", {}).items()
+                         if s["right"] + s["wrong"] > 0}
+        pool += [q for q in NET_QUESTIONS
+                 if q["concept"] in seen_concepts and q["q"] not in have]
+        if len(pool) < 8:
+            pool = list(_net_pool_by_level(0))
+        return pool
+
+    def _net_drill_pick(self, pool, used):
+        """Weak concepts are asked FIRST — the noted weakness forces them
+        back in front of the learner."""
+        skills = self.p.get("net_skills", {})
+        weak = [q for q in pool if q["q"] not in used
+                and skills.get(q["concept"], {}).get("weak")]
+        cand = weak or [q for q in pool if q["q"] not in used]
+        return random.choice(cand) if cand else None
+
+    def _net_schedule_reasks(self, concept, base_q, n=3):
+        """A wrong answer gets retrained instantly AND comes back `n` more
+        times, dropped at RANDOM spots later in the session, each time with
+        a different question and an escalated explanation."""
+        asked = [base_q]
+        for k in range(n):
+            alt = _net_alt_question(asked[-1], asked)
+            asked.append(alt)
+            pos = random.randint(1, max(1, len(self._net_queue)))
+            self._net_queue.insert(pos, {
+                "kind": "drill_quiz", "q": alt, "concept": concept,
+                "explain": k + 1, "asked": []})
+
+    def _net_speak_drill(self, q):
+        """TTS reads the question AND every answer option aloud."""
+        if not self.voice_on:
+            return
+        opts = "; ".join(f"Option {i + 1}: {c}"
+                         for i, c in enumerate(q["choices"]))
+        speak(f"Question: {q['q']}.  {opts}.")
+
+    def _net_drill_answer(self, idx):
+        step = self._net_step
+        if step is None or step["kind"] != "drill_quiz" or step.get("done"):
+            return
+        q = step["q"]
+        skills = self.p["net_skills"]
+        skill = skills.setdefault(q["concept"],
+                                  {"right": 0, "wrong": 0, "weak": False})
+        if idx == q["ans"]:
+            skill["right"] += 1
+            self._net_drill_right += 1
+            if step["explain"] >= 1:
+                skill["weak"] = False   # retraining worked — weakness cleared
+            self._net_msg = f"✓ correct — {q['why']}"
+            self._net_msg_kind = "win"
+            win, _ = self._sounds_for("netdrill")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(q["say"])
+            step["done"] = True
+            self._net_render()
+            return
+        # wrong → retrained immediately (feedback stays on screen), weakness
+        # noted, and 3 re-asks dropped at random spots later in the session
+        skill["wrong"] += 1
+        skill["weak"] = True
+        self._net_drill_wrong += 1
+        self._net_drill_weak.add(q["concept"])
+        if step["explain"] == 0:
+            teach = q["again"]
+        elif step["explain"] == 1:
+            teach = q["deeper"]
+        else:
+            teach = f"the answer is {q['choices'][q['ans']]} — {q['why']}"
+        self._net_msg = (f"✗ retraining now: {teach}   —   weakness noted: "
+                         f"this comes back 3 more times, explained a little "
+                         f"differently each time")
+        self._net_msg_kind = "retrain"
+        if self.voice_on:
+            speak("Not quite. " + teach + " I've noted that as a weakness — "
+                  "it will come back three more times, each explained a "
+                  "little differently.")
+        if step["explain"] == 0:
+            self._net_schedule_reasks(q["concept"], q)
+        step["done"] = True
+        step["reveal"] = True
+        self._net_render()
+        return
+
+    def _net_drill_finish(self):
+        """End of the drill session: score + weak subjects, spoken."""
+        total = self._net_drill_right + self._net_drill_wrong
+        weak = sorted(self._net_drill_weak)
+        self._net_msg = (f"🏁 drill complete — {self._net_drill_right}/"
+                         f"{total} right")
+        if weak:
+            self._net_msg += f" · weak subjects: {', '.join(weak)}"
+        else:
+            self._net_msg += " · no weaknesses left"
+        self._net_msg_kind = "win"
+        if self.voice_on:
+            if weak:
+                speak(f"Extra drill complete. You got {self._net_drill_right} "
+                      f"out of {total}. Keep drilling these: "
+                      f"{', '.join(weak)}.")
+            else:
+                speak(f"Extra drill complete. You got {self._net_drill_right} "
+                      f"out of {total}. No weaknesses left — nice work.")
+        self.p["net_done"][NET_MODULES[4]["name"]] = 1
+        # the full course counts as done once every learning module is
+        # complete (the drill is repeatable, so it doesn't gate anything)
+        if all(self.p["net_done"].get(m["name"], 0) >= m["count"]
+               for m in NET_MODULES[:4]):
+            self.p["net_course_done"] = True
+        save_progress(self.p)
+        self._net_stop_anim()
+        self._celebrate()
+        self._net_render()
 
     def _net_queue_retrain(self, topic, drills):
         """Re-teach a weak topic at the end of the module; more fails → more
@@ -15619,10 +15799,20 @@ class TutorApp(App):
             if k == "enter":
                 self._net_exit()   # module complete screen
             return
-        if step["kind"] in ("lesson", "lab_intro", "summary", "lab_summary"):
+        if step["kind"] in ("lesson", "lab_intro", "summary", "lab_summary",
+                            "drill_intro"):
             if k == "enter":
                 self._net_stop_anim()
                 self._net_next()
+            return
+        if step["kind"] == "drill_quiz":
+            if step.get("done"):
+                # feedback is on screen — any key moves to the next question
+                self._net_step = None
+                self._net_next()
+                return
+            if k in ("1", "2", "3", "4"):
+                self._net_drill_answer(int(k) - 1)
             return
         if step["kind"] == "quiz" or step["kind"] == "recap":
             if k in ("1", "2", "3", "4"):
@@ -15702,6 +15892,9 @@ class TutorApp(App):
             t.append("· retraining", style="bold #fbbf24")
         if step is not None and step["kind"] in ("summary", "lab_summary"):
             t.append("· recap", style="bold #22c55e")
+        if step is not None and step["kind"] in ("drill_intro", "drill_quiz"):
+            t.append(f"· q {self._net_drill_i}/{self._net_drill_n} ",
+                     style="bold #7dd3fc")
         self.query_one("#net-head", Static).update(t)
 
     def _net_render_canvas(self):
@@ -15736,6 +15929,31 @@ class TutorApp(App):
             else:
                 topic = step["topic"]
                 t.append(topic[2], style="bold #7dd3fc")
+            self.query_one("#net-canvas", Static).update(t)
+            return
+        if step["kind"] in ("drill_intro", "drill_quiz"):
+            t.append("EXTRA DRILLS", style="bold #ffa657")
+            t.append("\n\n")
+            t.append("everything you've learned — asked back, out of order",
+                     style="#d5d5d5")
+            t.append("\n")
+            t.append(f"question {self._net_drill_i}/{self._net_drill_n}",
+                     style="bold #7dd3fc")
+            t.append("\n\n")
+            t.append(f"right   {self._net_drill_right}", style="#22c55e")
+            t.append("\n")
+            t.append(f"wrong   {self._net_drill_wrong}", style="#f87171")
+            weak = sorted(self._net_drill_weak)
+            if weak:
+                t.append("\n\nweak subjects being retrained:", style="bold #fbbf24")
+                for w in weak[:6]:
+                    t.append("\n  ✗ ", style="#f87171")
+                    t.append(w, style="#fbbf24")
+            else:
+                t.append("\n\nno weaknesses this session — yet", style="dim")
+            t.append("\n\nwrong answers come back 3 more times, at random "
+                     "spots,", style="dim")
+            t.append("\nexplained a little differently each time", style="dim")
             self.query_one("#net-canvas", Static).update(t)
             return
         if step["kind"] == "quiz" or step["kind"] == "recap":
@@ -15800,6 +16018,8 @@ class TutorApp(App):
                 title = "LAB"
             elif step["kind"] == "summary":
                 title = "RECAP"
+            elif step["kind"] in ("drill_intro", "drill_quiz"):
+                title = "DRILL"
         self.query_one("#net-side-title", Static).update(
             Text(title, style="bold #7dd3fc"))
         t = Text()
@@ -15877,6 +16097,41 @@ class TutorApp(App):
                 t.append("\n")
             t.append("\nthat's the real production workflow:\n", style="dim")
             t.append(lab["brief"], style="#d5d5d5")
+        elif step["kind"] == "drill_intro":
+            t.append("EXTRA DRILLS", style="bold #ffa657")
+            t.append("\n\n")
+            t.append("I'll read every question AND its answers out loud. "
+                     "Answer with 1-4.", style="#f0f0f5")
+            t.append("\n\n")
+            t.append("wrong answer → retrained on the spot, weakness noted",
+                     style="#fbbf24")
+            t.append("\n")
+            t.append("→ the same subject comes back 3 more times, at random "
+                     "spots", style="#fbbf24")
+            t.append("\n")
+            t.append("→ each time explained a little differently",
+                     style="#fbbf24")
+        elif step["kind"] == "drill_quiz":
+            q = step["q"]
+            if step["explain"]:
+                t.append(f"retrain #{step['explain']} of 3 — same subject, "
+                         "different question", style="bold #fbbf24")
+                t.append("\n\n")
+            t.append(q["q"], style="#f0f0f5")
+            t.append("\n\n")
+            for i, c in enumerate(q["choices"]):
+                num = f"{i + 1}. "
+                if step.get("reveal") and i == q["ans"]:
+                    t.append(num, style="bold green")
+                    t.append(c, style="bold green")
+                else:
+                    t.append(num, style="bold #7dd3fc")
+                    t.append(c, style="#d5d5d5")
+                t.append("\n")
+            if self._net_msg:
+                color = {"win": "#22c55e"}.get(self._net_msg_kind, "#fbbf24")
+                t.append("\n")
+                t.append(self._net_msg, style=f"bold {color}")
         elif step["kind"] == "quiz" or step["kind"] == "recap":
             q = step["q"]
             if step["kind"] == "recap":
@@ -15916,6 +16171,19 @@ class TutorApp(App):
             t.append("Enter — continue", style="bold #22c55e")
             t.append("   ·   ")
             t.append("recap is spoken aloud — Esc — save & exit", style="dim")
+        elif step["kind"] == "drill_intro":
+            t.append("Enter — start the drill", style="bold #ffa657")
+            t.append("   ·   ")
+            t.append("Esc — back to the menu", style="dim")
+        elif step["kind"] == "drill_quiz":
+            if step.get("done"):
+                t.append("press any key — next question", style="bold #22c55e")
+            else:
+                t.append("press 1-4 to answer", style="bold #7dd3fc")
+                t.append("   ·   ")
+                t.append("the question AND answers are spoken", style="dim")
+                t.append("   ·   ")
+                t.append("wrong = retrained now + 3 random re-asks", style="#fbbf24")
         elif step["kind"] in ("quiz", "recap"):
             t.append("press 1-4 to answer", style="bold #7dd3fc")
             t.append("   ·   ")
