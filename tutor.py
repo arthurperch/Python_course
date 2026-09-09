@@ -8150,7 +8150,7 @@ class TutorApp(App):
         self._dev_target = ""         # write: the file content being typed
         self._dev_pos = 0             # write: chars typed so far
         self._dev_explained = set()   # write: line substrings already spoken
-        self._dev_wrong = False       # write: just hit a wrong char
+        self._dev_errors = {}         # write: abs pos -> the wrong char typed (red)
         self._dev_ghost = ""          # run: the command hint (typewriter)
         self._dev_ghost_typed = 0
         self._dev_ghost_on = False
@@ -11072,7 +11072,7 @@ class TutorApp(App):
             self._dev_target = lesson["content"]
             self._dev_pos = 0
             self._dev_explained = set()
-            self._dev_wrong = False
+            self._dev_errors = {}
         else:
             self._dev_phase = "run"
             self._dev_target = ""
@@ -11179,7 +11179,13 @@ class TutorApp(App):
         target = self._dev_target
         if key == "enter":
             if self._dev_pos >= len(target):
-                self._dev_write_done()
+                if self._dev_errors:
+                    self._dev_msg = "almost — fix the red letters, then Enter"
+                    self._dev_msg_kind = "hint"
+                    play_ghost_error()
+                    self._dev_render()
+                else:
+                    self._dev_write_done()
             else:
                 self._dev_msg = "keep going — finish the file, then Enter"
                 self._dev_msg_kind = "hint"
@@ -11191,25 +11197,33 @@ class TutorApp(App):
                 self._dev_pos -= 1
                 while self._dev_pos > 0 and self._dev_structural(self._dev_pos):
                     self._dev_pos -= 1
-            self._dev_wrong = False
+            # step back onto a char, clear any red error there so it's retyped
+            self._dev_errors.pop(self._dev_pos, None)
             self._dev_render()
             return
         ch = event.character
-        if not ch or self._dev_pos >= len(target):
+        if not ch:
+            return
+        if self._dev_pos >= len(target):
+            # typed to the end but red letters remain — nothing new to type
+            self._dev_msg = "fix the red letters, then Enter"
+            self._dev_msg_kind = "hint"
+            self._dev_render()
             return
         if ch == target[self._dev_pos]:
             self._dev_pos += 1
-            self._dev_wrong = False
             self._dev_explain_line()
             self._dev_skip_ws()
-            if self._dev_pos >= len(target):
+            if self._dev_pos >= len(target) and not self._dev_errors:
                 self._dev_write_done()
                 return
             self._dev_render()
         else:
-            self._dev_wrong = True
-            self._dev_msg = "not quite — follow the ghost exactly"
-            self._dev_msg_kind = "hint"
+            # wrong char is COMMITTED and flagged red — keep typing, fix it later
+            # (the old behaviour froze you here with a "not quite" dead-end)
+            self._dev_errors[self._dev_pos] = ch
+            self._dev_pos += 1
+            self._dev_skip_ws()   # don't leave the cursor parked on a newline/indent
             play_ghost_error()
             self._dev_render()
 
@@ -11643,6 +11657,7 @@ class TutorApp(App):
     def _dev_render_editor(self):
         target = self._dev_target
         pos = min(self._dev_pos, len(target))
+        errors = getattr(self, "_dev_errors", {})
         t = Text()
         t.append("✎ ", style="bold #7dd3fc")
         t.append(self._dev_lesson()["file"], style="bold #7dd3fc")
@@ -11651,16 +11666,21 @@ class TutorApp(App):
         for line in target.split("\n"):
             start = offset
             end = start + len(line)
-            if pos <= start:
+            if pos < start:
+                # cursor hasn't reached this line yet — whole line is a dim ghost
                 t.append(line, style="#5a5a5a")
-            elif pos >= end:
-                t.append(line, style="#f0f0f5")
             else:
-                n = pos - start
-                t.append(line[:n], style="#f0f0f5")
-                nxt = line[n]
-                t.append(nxt, style="reverse bold" if not self._dev_wrong else "bold white on #5b1a1a")
-                t.append(line[n + 1:], style="#5a5a5a")
+                # committed chars, with any wrong ones flagged red + underlined
+                upto = min(pos, end)
+                for j in range(start, upto):
+                    if j in errors:
+                        t.append(errors[j], style="bold underline #ff5555")
+                    else:
+                        t.append(target[j], style="#f0f0f5")
+                if pos < end:
+                    # the cursor sits on this line — show the next char to type
+                    t.append(target[pos], style="reverse bold")
+                    t.append(target[pos + 1:end], style="#5a5a5a")
             t.append("\n")
             offset = end + 1
         return _box_lines(_lines_of(t), max_width=self._dev_term_width())
