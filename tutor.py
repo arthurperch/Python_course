@@ -9446,6 +9446,233 @@ def _net_anim(kind: str) -> list:
         return [_net_frame("the TCP three-way handshake", base, hi)
                 for hi in range(3)] + \
                [_net_frame("the TCP three-way handshake", base, 5)]
+    if kind == "mac-ip":
+        base = ["MAC  aa:bb:cc:11:22:33    48 bits, burned in at the factory",
+                "     ▸ moves frames on ONE LAN — changes every hop",
+                "",
+                "IP   192.168.1.10           32 bits, assigned by the network",
+                "     ▸ carries packets END TO END — stays the same",
+                "",
+                "the envelope (MAC) vs the address on the letter (IP)"]
+        return [_net_frame("MAC vs IP — two addresses, two jobs", base, hi)
+                for hi in (0, 1, 3, 4, 5)]
+    if kind == "ipv4":
+        base = ["192 . 168 . 1 . 20     dotted decimal",
+                " │     │    │   └─ host bits      (the '20')",
+                " │     │    └───── subnet bits",
+                " │     └────────── network bits   192.168",
+                " └──────────────── class A range",
+                "",
+                "each number = 8 bits = 0..255",
+                "the mask draws the line between network and host"]
+        return [_net_frame("IPv4 — 32 bits in four octets", base, hi)
+                for hi in (0, 4, 6, 7)]
+    if kind == "devices":
+        base = ["hub      ✗ repeats everything to everyone — dead tech",
+                "switch   ✓ learns MACs, delivers per port — inside the LAN",
+                "router   ✓ connects different networks — LAN ↔ internet",
+                "AP       ✓ bridges Wi-Fi clients onto the wired LAN",
+                "firewall ✓ filters by rules — the LAN's front door",
+                "",
+                "each box has ONE job"]
+        return [_net_frame("the devices — one job each", base, hi)
+                for hi in range(6)]
+    if kind == "cabling":
+        base = ["copper   Cat5e 1 Gbps · Cat6 10 Gbps — electricity, ~100 m",
+                "fiber    light pulses — kilometers, immune to noise",
+                "Wi-Fi    radio on 2.4 and 5 GHz (6 GHz in Wi-Fi 6E)",
+                "",
+                "2.4 GHz = long range, slow, crowded",
+                "5 GHz   = fast, short range, more channels",
+                "6 GHz   = fastest, shortest, freshest air",
+                "",
+                "the category number on the cable = the speed ceiling"]
+        return [_net_frame("cables and Wi-Fi — what carries what", base, hi)
+                for hi in (0, 1, 2, 3, 4, 5, 6)]
+    if kind == "switching":
+        base = ["frame from PC-1 (src aa:bb:01) → port 1",
+                "switch notes:  aa:bb:01 lives on port 1",
+                "frame to aa:bb:01?      → straight to port 1",
+                "frame to an unknown MAC? → flood every port",
+                "",
+                "MAC table = the switch's memory",
+                "empty at boot · fills from every source address"]
+        return [_net_frame("how a switch learns", base, hi)
+                for hi in range(5)]
+    if kind == "arp":
+        base = ["PC-1 ── 'who has 192.168.1.20?' ──▶ broadcast (everyone)",
+                "PC-2 ◀─ 'that's me!  aa:bb:cc:00:00:14' ─ PC-1",
+                "PC-1 caches:  192.168.1.20 → aa:bb:cc:00:00:14",
+                "",
+                "IP is the question, MAC is the answer",
+                "one broadcast, one unicast reply — then cached"]
+        return [_net_frame("ARP — turning an IP into a MAC", base, hi)
+                for hi in (0, 1, 2, 4)]
+    if kind == "tcpudp":
+        base = ["TCP  handshake · numbered bytes · acks · retransmit",
+                "     slower, reliable — web, email, files",
+                "UDP  one shot, no connection, no retry",
+                "     fast, fire-and-forget — video calls, DNS, games",
+                "",
+                "TCP = the careful courier   UDP = the paper plane"]
+        return [_net_frame("TCP vs UDP — careful vs fast", base, hi)
+                for hi in (0, 2, 5)]
+    if kind == "routing":
+        base = ["PC 192.168.1.10 ──▶ router ──▶ 10.0.0.7",
+                "routing table:",
+                "  10.0.0.0/24   via eth1      ← most specific wins",
+                "  192.168.1.0/24 via eth0    ← connected",
+                "  0.0.0.0/0     via 192.168.1.1  ← default (catch-all)",
+                "",
+                "longest prefix match picks the path",
+                "no match, no default = Network is unreachable"]
+        return [_net_frame("how routing works — the table decides", base, hi)
+                for hi in (0, 1, 2, 4, 6)]
+    if kind == "vlan":
+        base = ["one switch, three LANs, zero extra hardware",
+                "  port 1-6  ~~~~ VLAN 10  (sales)    ~~~~ 192.168.10.0/24",
+                "  port 7-14 ~~~~ VLAN 20  (eng)     ~~~~ 192.168.20.0/24",
+                "  port 15-22 ~~~ VLAN 30  (guests)  ~~~ 192.168.30.0/24",
+                "  port 23   ──── trunk ──▶ carries 10+20+30, 802.1Q tags",
+                "",
+                "access port = one VLAN · trunk port = all of them"]
+        return [_net_frame("VLANs — one box, many LANs", base, hi)
+                for hi in (0, 1, 3, 4, 5)]
+    if kind == "nat":
+        base = ["inside                      │  outside",
+                "192.168.1.10 ─┐            │",
+                "192.168.1.11 ─┼──▶ NAT ────▶ 203.0.113.7  (the ONE public IP)",
+                "192.168.1.12 ─┘  table:    │",
+                "                 .10:40000 ↔ .7:40000",
+                "                 .11:40001 ↔ .7:40001",
+                "",
+                "private in, public out — replies find their way home",
+                "port numbers keep the connections apart"]
+        return [_net_frame("NAT — one public IP, whole private LAN", base, hi)
+                for hi in (0, 2, 4, 7)]
+    if kind == "firewall":
+        base = ["incoming packet:  src 6.6.6.6 → dst :22 (SSH)",
+                "rule 1:  allow tcp dport 22     ✓ let it through",
+                "next:    src 9.9.9.9 → dst :23 (telnet)",
+                "rule 2:  drop  tcp dport 23     ✗ blocked",
+                "",
+                "stateful = it remembers your outbound connection",
+                "so the reply comes back without a new rule"]
+        return [_net_frame("the firewall checks every packet", base, hi)
+                for hi in (0, 1, 2, 3, 5)]
+    if kind == "dnsrec":
+        base = ["example.com.  3600  IN  A     93.184.216.34",
+                "www           300   IN  CNAME example.com.",
+                "example.com.  3600  IN  MX    10 mail.example.com.",
+                "example.com.  3600  IN  NS    ns1.example.com.",
+                "",
+                "A = IPv4 · AAAA = IPv6 · CNAME = alias",
+                "MX = mail · NS = nameserver · TXT = notes"]
+        return [_net_frame("DNS records — the zone file drawers", base, hi)
+                for hi in (0, 1, 2, 3, 5)]
+    if kind == "wifi":
+        base = ["client ── 4-way handshake ──▶ AP",
+                "WEP      ✗ cracked in minutes — never use",
+                "WPA-TKIP ✗ stopgap, also broken — avoid",
+                "WPA2-AES ✓ the workhorse — still fine",
+                "WPA3     ✓ current floor: SAE handshake, forward secrecy",
+                "",
+                "the handshake proves both sides know the key"]
+        return [_net_frame("Wi-Fi security — the handshake ladder", base, hi)
+                for hi in (0, 1, 3, 4, 5)]
+    if kind == "tshoot":
+        base = ["bottom-up — check the cable before the app",
+                "1  link up?            ip link",
+                "2  address?            ip addr",
+                "3  gateway reachable?  ping 192.168.1.1",
+                "4  internet?           ping 8.8.8.8",
+                "5  names?              dig example.com",
+                "6  service listening?  ss -tulpn",
+                "",
+                "every answer tells you which rung you're on"]
+        return [_net_frame("troubleshooting — the OSI ladder", base, hi)
+                for hi in (1, 2, 3, 4, 5, 6, 7)]
+    if kind == "ospf":
+        base = ["        ┌──────── area 0 (backbone) ────────┐",
+                "        │   R1 ◀───cost 10───▶ R2          │",
+                "        └───────┬──────────────┬───────────┘",
+                "        area 1  │              │  area 2",
+                "        R3 ─────┘              └───── R4",
+                "",
+                "hello packets find neighbors first",
+                "then shortest-path-first builds the same map everywhere",
+                "area 0 is the backbone — every area touches it"]
+        return [_net_frame("OSPF — areas around a backbone", base, hi)
+                for hi in (0, 5, 7)]
+    if kind == "bgp":
+        base = ["AS 64500 ──▶ AS 64501 ──▶ AS 64502",
+                "route for 203.0.113.0/24 arrives with the path:",
+                "    64502 64501 64500",
+                "",
+                "decision order: weight → local-pref → AS-path → MED",
+                "AS-path acts as a loop guard: seeing your own AS = drop",
+                "iBGP inside the AS, eBGP between ASes"]
+        return [_net_frame("BGP — routes hop between ASes", base, hi)
+                for hi in (0, 1, 3, 4)]
+    if kind == "stp":
+        base = ["   ┌──sw1──┐     the loop: frames circle forever",
+                "   │  ✗   ✗  │",
+                "sw2 ────── sw3",
+                "   └──▣──┘     STP elects sw1 as root",
+                "   │  ✗   ▣  │   the duplicate path to the root",
+                "sw2 ────── sw3   gets BLOCKED",
+                "",
+                "one blocked port kills the loop, keeps the backup",
+                "link dies? the blocked port unblocks — self-healing"]
+        return [_net_frame("spanning tree — kill the loop, keep the backup",
+                           base, hi) for hi in (0, 3, 5, 7)]
+    if kind == "ipv6":
+        base = ["2001:0db8:0000:0000:0000:0000:0000:0001   ← 128 bits",
+                "  8 groups × 4 hex digits = 8 × 16 bits",
+                "",
+                "2001:db8::1          ← leading zeros dropped, '::'",
+                "                         replaces ONE zero run",
+                "fe80::/10 = link-local · SLAAC builds addresses itself",
+                "NDP replaces ARP · ::1 is the loopback",
+                "",
+                "2^128 ≈ 340 undecillion — every grain of sand"]
+        return [_net_frame("IPv6 — 128 bits, written in hex", base, hi)
+                for hi in (0, 1, 3, 5, 7)]
+    if kind == "ipsec":
+        base = ["site A  10.0.0.0/24            site B  10.1.0.0/24",
+                "   └─────────── IKE: negotiate keys ───────────┘",
+                "   └───────── ESP: encrypt + auth ─────────────┘",
+                "",
+                "tunnel mode = a NEW outer header wraps the packet",
+                "  [outer IP][ESP][inner IP][encrypted payload]",
+                "",
+                "sniffers see addresses, never the data"]
+        return [_net_frame("IPsec — the encrypted tunnel", base, hi)
+                for hi in (1, 2, 4, 6)]
+    if kind == "design":
+        base = ["        core          ┌────┐ ┌────┐      fast, no policy",
+                "        distribution  │ L3 │ │ L3 │      VLANs + rules live here",
+                "        access        └─┬──┘ └──┬─┘      hosts plug in here",
+                "                       ├─sw───┤",
+                "                       │  │   │",
+                "                    [pc][pc] [ap]",
+                "",
+                "redundancy: HSRP gateways · LACP bundles · STP",
+                "three tiers = one design that scales"]
+        return [_net_frame("enterprise design — three tiers", base, hi)
+                for hi in (0, 1, 2, 7)]
+    if kind == "qos":
+        base = ["link is full ──▶ who goes first?",
+                "  queue 1  voice  EF      ▸▸ served FIRST  (46)",
+                "  queue 2  video  AF41    ▸▸ next",
+                "  queue 3  web    best-effort ▸▸ whatever's left",
+                "",
+                "DSCP marks the class at the edge",
+                "policing drops excess · shaping buffers it",
+                "",
+                "voice stays clear while downloads queue"]
+        return [_net_frame("QoS — the important packets jump the queue", base, hi)
+                for hi in (1, 2, 3, 6)]
     return [_net_frame("", [])]
 
 
@@ -9467,7 +9694,7 @@ NET_TOPICS = [
     (0, "mac-vs-ip", "MAC vs IP",
      "Every network card has a MAC address burned in at the factory. Every "
      "interface gets an IP address for routing. MACs move frames on one "
-     "LAN; IPs carry packets end to end.", "lan"),
+     "LAN; IPs carry packets end to end.", "mac-ip"),
     (0, "ports", "ports and services",
      "An IP gets you to the right machine. A port gets you to the right "
      "program on that machine. SSH is twenty two, HTTP is eighty, HTTPS is "
@@ -9475,7 +9702,7 @@ NET_TOPICS = [
     (0, "ipv4", "IPv4 addresses",
      "IPv4 is thirty two bits, written as four numbers like 192.168.1.20. "
      "Part of the address names the network, part names the host. The mask "
-     "says where the split is.", "subnet"),
+     "says where the split is.", "ipv4"),
     (0, "dns", "DNS — the phone book",
      "Humans remember names, machines route numbers. DNS translates "
      "example.com into an IP, by asking resolvers and name servers up the "
@@ -9487,16 +9714,16 @@ NET_TOPICS = [
     (0, "devices", "the devices",
      "Switches connect devices inside a LAN. Routers connect LANs "
      "together. Firewalls filter. Access points bridge Wi-Fi. Every box "
-     "has one job and you can name it.", "lan"),
+     "has one job and you can name it.", "devices"),
     (0, "cabling", "cables and Wi-Fi",
      "Copper twisted pair carries electricity. Fiber carries light. Wi-Fi "
      "carries radio. Each has speed limits and distance limits, and the "
-     "category number on the cable tells you the speed.", "lan"),
+     "category number on the cable tells you the speed.", "cabling"),
     (0, "switching", "how a switch learns",
      "A switch reads the source MAC of every frame and remembers which "
      "port it came from. Unknown destinations get flooded, known ones go "
      "straight to their port. After seconds, the switch knows the whole "
-     "LAN.", "lan"),
+     "LAN.", "switching"),
     (1, "subnetting", "subnetting",
      "A network can be sliced into smaller networks by moving the split "
      "between network and host bits. A slash twenty four becomes two slash "
@@ -9504,69 +9731,69 @@ NET_TOPICS = [
      "broadcast address, which no host may use.", "subnet"),
     (1, "arp", "ARP — IP to MAC",
      "On one LAN, delivery is by MAC. ARP broadcasts who has this IP, the "
-     "owner answers with its MAC, and the sender caches it.", "lan"),
+     "owner answers with its MAC, and the sender caches it.", "arp"),
     (1, "tcp-udp", "TCP vs UDP",
      "TCP is the careful courier: connection, ordering, retransmission. "
      "UDP is the fire-and-forget one: fast but no guarantees. The web uses "
-     "TCP; video calls and DNS prefer UDP.", "tcp"),
+     "TCP; video calls and DNS prefer UDP.", "tcpudp"),
     (1, "routing", "how routing works",
      "A router compares the destination IP against its routing table and "
      "picks the most specific match. The default route catches everything "
-     "else. Traceroute shows the path, hop by hop.", "lan"),
+     "else. Traceroute shows the path, hop by hop.", "routing"),
     (1, "vlans", "VLANs and trunks",
      "One switch can carry several separate LANs using VLANs. Access ports "
      "belong to one VLAN; trunk ports carry them all, tagged with eight oh "
-     "two one Q.", "subnet"),
+     "two one Q.", "vlan"),
     (1, "nat", "NAT and private addresses",
      "Private addresses cannot travel the internet. NAT rewrites them to "
      "the one public address at the edge, and remembers how to route the "
-     "replies home.", "lan"),
+     "replies home.", "nat"),
     (1, "firewall", "firewalls",
      "A firewall enforces rules: who may talk to what, on which ports. "
      "Stateful firewalls remember connections so replies need no extra "
-     "rule.", "lan"),
+     "rule.", "firewall"),
     (1, "dns-records", "DNS records",
      "DNS stores more than addresses: A records for IPv4, AAAA for IPv6, "
      "CNAME aliases, MX for mail, NS for name servers. Dig shows you the "
-     "raw answers.", "dns"),
+     "raw answers.", "dnsrec"),
     (1, "wifi-sec", "Wi-Fi security",
      "WEP was broken years ago. WPA with TKIP was the stopgap. WPA2 with "
      "AES is the standard, and WPA3 is the new floor, with forward secrecy.",
-     "lan"),
+     "wifi"),
     (1, "troubleshooting", "troubleshooting tools",
      "Ping tests reachability, traceroute maps the path, ss shows "
      "listening ports, ip route shows the routing table, dig checks DNS. "
      "Bottom up is the discipline: cable, then address, then service.",
-     "lan"),
+     "tshoot"),
     (2, "ospf", "OSPF — the interior protocol",
      "OSPF shares routes inside one organization. It builds a map of the "
      "area and runs shortest-path-first across it. Area zero is the "
-     "backbone; every other area touches it.", "lan"),
+     "backbone; every other area touches it.", "ospf"),
     (2, "bgp", "BGP — the internet's glue",
      "BGP stitches autonomous systems into the internet. Routes carry the "
      "list of ASes they crossed, and a fixed order of attributes decides "
-     "which path wins.", "lan"),
+     "which path wins.", "bgp"),
     (2, "stp", "Spanning tree",
      "Redundant links are good; loops are fatal. Spanning tree elects a "
      "root bridge and blocks every port that would create a cycle, then "
-     "unblocks one if a link dies.", "lan"),
+     "unblocks one if a link dies.", "stp"),
     (2, "ipv6", "IPv6",
      "IPv6 is one hundred twenty eight bits — enough forever. Hosts build "
      "their own addresses from router advertisements, and NDP replaces "
-     "ARP.", "subnet"),
+     "ARP.", "ipv6"),
     (2, "vpn-ipsec", "VPNs and IPsec",
      "A VPN is an encrypted tunnel. IPsec negotiates keys with IKE, then "
      "ESP encrypts the payload — in tunnel mode, even the original header.",
-     "lan"),
+     "ipsec"),
     (2, "design", "enterprise design",
      "Big networks are built in tiers: access where hosts plug in, "
      "distribution where policy lives, core where speed matters. "
      "Redundancy everywhere: HSRP gateways, LACP bundles, spanning tree.",
-     "lan"),
+     "design"),
     (2, "qos", "QoS",
      "When a link is full, someone must wait. QoS marks packets with DSCP "
      "classes and the router serves the important queue first, so voice "
-     "stays clear while downloads queue.", "lan"),
+     "stays clear while downloads queue.", "qos"),
 ]
 
 # ---- the Linux network simulation ----------------------------------------- #
@@ -10785,6 +11012,7 @@ class TutorApp(App):
         self._net_anim_timer = None
         self._net_gen = 0             # timer generation counter
         self._net_retrain: list = []  # topics flagged weak this module
+        self._net_sum_bullets: list = []  # (concept, why) for the summary step
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -14661,6 +14889,7 @@ class TutorApp(App):
             for li in range(len(NET_LABS)):
                 self._net_queue.append({"kind": "lab_intro", "lab": li})
                 self._net_queue.append({"kind": "lab", "lab": li})
+                self._net_queue.append({"kind": "lab_summary", "lab": li})
         else:
             for ti, topic in enumerate(topics):
                 if ti < start_topic:
@@ -14670,6 +14899,7 @@ class TutorApp(App):
                     self._net_queue.append({"kind": "quiz", "topic": topic,
                                             "asked": [], "wrongs": 0,
                                             "q": None})
+                self._net_queue.append({"kind": "summary", "topic": topic})
         self._net_lab_i = -1
         self._net_cmd = ""
         self._net_out = []
@@ -14697,6 +14927,7 @@ class TutorApp(App):
 
     def _net_next(self):
         if not self._net_queue:
+            self._net_step = None
             self._net_module_complete()
             return
         step = self._net_queue.pop(0)
@@ -14749,7 +14980,47 @@ class TutorApp(App):
             self._net_msg = ""
             self._net_msg_kind = ""
             self._net_stop_anim()
+        elif step["kind"] == "summary":
+            # the 'lock it in' recap: replay the visual and re-clarify the
+            # key points — missed concepts spoken first
+            self._net_step = step
+            topic = step["topic"]
+            self._net_sum_bullets = self._net_summary_bullets(topic)
+            self._net_start_anim(topic[4])
+            if self.voice_on:
+                bits = "; ".join(b[1] for b in self._net_sum_bullets)
+                speak(f"Let's lock that in. {topic[3]} The key points: {bits}")
+        elif step["kind"] == "lab_summary":
+            self._net_step = step
+            lab = NET_LABS[step["lab"]]
+            self._net_lab_i = step["lab"]   # keep the final device state on
+            self._net_stop_anim()           # screen while we recap
+            self._net_msg = ""
+            self._net_msg_kind = ""
+            if self.voice_on:
+                speak(f"Nice work — you just {lab['title']}. That is the real "
+                      f"production workflow: {lab['brief']}")
         self._net_render()
+
+    def _net_summary_bullets(self, topic) -> list:
+        """Up to three key-point lines drawn from the topic's own questions.
+        Concepts the user missed come FIRST — the clarifying re-explanation
+        of exactly what didn't stick."""
+        pool = _net_topic_qs(topic[1])
+        skills = self.p.get("net_skills", {})
+        missed, seen, used = [], [], set()
+        for q in pool:
+            c = q["concept"]
+            if c in used:
+                continue
+            used.add(c)
+            s = skills.get(c)
+            if s and s.get("wrong"):
+                missed.append(q)
+            elif s:
+                seen.append(q)
+        pick = (missed + seen + pool)[:3]
+        return [(q["concept"], q["why"]) for q in pick]
 
     def _net_queue_retrain(self, topic, drills):
         """Re-teach a weak topic at the end of the module; more fails → more
@@ -14923,7 +15194,7 @@ class TutorApp(App):
             if k == "enter":
                 self._net_exit()   # module complete screen
             return
-        if step["kind"] == "lesson" or step["kind"] == "lab_intro":
+        if step["kind"] in ("lesson", "lab_intro", "summary", "lab_summary"):
             if k == "enter":
                 self._net_stop_anim()
                 self._net_next()
@@ -15004,6 +15275,8 @@ class TutorApp(App):
             t.append(f"·  {step['topic'][2]} ", style="dim")
         if step is not None and step.get("retrain"):
             t.append("· retraining", style="bold #fbbf24")
+        if step is not None and step["kind"] in ("summary", "lab_summary"):
+            t.append("· recap", style="bold #22c55e")
         self.query_one("#net-head", Static).update(t)
 
     def _net_render_canvas(self):
@@ -15015,7 +15288,8 @@ class TutorApp(App):
             t.append(self._net_msg, style="bold #22c55e")
             self.query_one("#net-canvas", Static).update(t)
             return
-        if step["kind"] == "lab" or step["kind"] == "lab_intro":
+        if step["kind"] == "lab" or step["kind"] == "lab_intro" \
+                or step["kind"] == "lab_summary":
             if self._net_dev is None:
                 lab = NET_LABS[step["lab"]]
                 t.append("NEXT LAB", style="bold #7dd3fc")
@@ -15028,6 +15302,15 @@ class TutorApp(App):
                          style="dim")
             else:
                 t.append_text(self._net_lab_canvas())
+            self.query_one("#net-canvas", Static).update(t)
+            return
+        if step["kind"] == "summary":
+            # replay the topic's visual while the recap voice talks
+            if self._net_anim_frames:
+                t.append_text(self._net_anim_frames[self._net_anim_i])
+            else:
+                topic = step["topic"]
+                t.append(topic[2], style="bold #7dd3fc")
             self.query_one("#net-canvas", Static).update(t)
             return
         if step["kind"] == "quiz" or step["kind"] == "recap":
@@ -15084,10 +15367,16 @@ class TutorApp(App):
 
     def _net_render_side(self):
         step = self._net_step
+        title = "LESSON"
+        if step:
+            if step["kind"] in ("quiz", "recap"):
+                title = "QUIZ"
+            elif step["kind"] in ("lab", "lab_intro", "lab_summary"):
+                title = "LAB"
+            elif step["kind"] == "summary":
+                title = "RECAP"
         self.query_one("#net-side-title", Static).update(
-            Text("QUIZ" if step and step["kind"] in ("quiz", "recap")
-                 else "LAB" if step and step["kind"] in ("lab", "lab_intro")
-                 else "LESSON", style="bold #7dd3fc"))
+            Text(title, style="bold #7dd3fc"))
         t = Text()
         if step is None:
             t.append(self._net_msg, style="bold #22c55e")
@@ -15141,6 +15430,28 @@ class TutorApp(App):
                     if hint:
                         t.append("\n\nhint: ", style="dim")
                         t.append(hint, style="#7dd3fc")
+        elif step["kind"] == "summary":
+            topic = step["topic"]
+            t.append("LET'S LOCK THAT IN", style="bold #22c55e")
+            t.append(f" — {topic[2]}\n\n", style="bold white")
+            for _concept, why in getattr(self, "_net_sum_bullets", []):
+                t.append("▸ ", style="bold #22c55e")
+                t.append(why, style="#f0f0f5")
+                t.append("\n")
+            t.append("\n")
+            t.append("the whole topic in one breath — spoken, so it settles in",
+                     style="dim")
+        elif step["kind"] == "lab_summary":
+            lab = NET_LABS[step["lab"]]
+            t.append("LAB DONE", style="bold #22c55e")
+            t.append(f" — {lab['title']}\n\n", style="bold white")
+            t.append("what you just did:\n", style="dim")
+            for _ex, desc, _v in lab["checks"]:
+                t.append("  ✓ ", style="green")
+                t.append(desc, style="#f0f0f5")
+                t.append("\n")
+            t.append("\nthat's the real production workflow:\n", style="dim")
+            t.append(lab["brief"], style="#d5d5d5")
         elif step["kind"] == "quiz" or step["kind"] == "recap":
             q = step["q"]
             if step["kind"] == "recap":
@@ -15176,6 +15487,10 @@ class TutorApp(App):
             t.append("Enter — continue", style="dim")
             t.append("   ·   ")
             t.append("Esc — save & exit to menu", style="dim")
+        elif step["kind"] in ("summary", "lab_summary"):
+            t.append("Enter — continue", style="bold #22c55e")
+            t.append("   ·   ")
+            t.append("recap is spoken aloud — Esc — save & exit", style="dim")
         elif step["kind"] in ("quiz", "recap"):
             t.append("press 1-4 to answer", style="bold #7dd3fc")
             t.append("   ·   ")
