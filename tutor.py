@@ -40,6 +40,7 @@ import subprocess
 import tempfile
 import threading
 import wave
+import zlib
 from pathlib import Path
 
 from rich.console import Console
@@ -7573,6 +7574,2496 @@ for _di, _dl in enumerate(DEV_LESSONS):
     DEV_MODULES[-1]["count"] += 1
 
 
+# =========================================================================== #
+# NETWORK+ — the noob → engineer networking track.
+#
+# Animated visual lessons (OSI stack, packet hops, DHCP DORA, TCP handshake,
+# subnet slicing) -> multiple-choice quizzes -> a RETRAIN LOOP: a wrong answer
+# re-teaches the concept a DIFFERENT way (deeper each time) and then re-asks a
+# DIFFERENT question about the same concept.  Miss twice and the topic is
+# flagged weak and re-drilled later; the worse the skill score, the more
+# drills.  Previously asked questions come back as recaps ("through and
+# through"), missed ones first.  Finally: Linux-config labs where you build a
+# network on a simulated device (ip / route / iptables / dnsmasq ...).
+#
+# Everything is offline + deterministic: the generator pools are seeded, not
+# random, so the same course replays identically.
+# =========================================================================== #
+
+NET_LEVELS = ["FOUNDATIONS", "INTERMEDIATE", "ADVANCED"]
+
+
+def _ip_to_int(ip: str) -> int:
+    parts = ip.strip().split(".")
+    return sum(int(p) << (8 * (3 - i)) for i, p in enumerate(parts))
+
+
+def _int_to_ip(n: int) -> str:
+    return ".".join(str((n >> s) & 0xFF) for s in (24, 16, 8, 0))
+
+
+def _prefix_to_mask(prefix: int) -> str:
+    return _int_to_ip((0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF)
+
+
+def _slot(seed: str) -> int:
+    """Stable 0..3 slot for the right answer, so replays are identical."""
+    return zlib.crc32(seed.encode()) % 4
+
+
+def _mk_q(q, choices, ans, concept, level, why, say, again, deeper=None):
+    """One quiz question. `again`/`deeper` are the alternative explanations the
+    retrain loop speaks after a wrong answer — each deeper than the last."""
+    return {"q": q, "choices": choices, "ans": ans, "concept": concept,
+            "level": level, "why": why, "say": say, "again": again,
+            "deeper": deeper or again}
+
+
+def _place(choices, slot, correct):
+    out = list(choices)
+    out.insert(slot, correct)
+    return out, slot
+
+
+# ---- generator pools (deterministic — no randomness in the course) ------- #
+_NET_PORTS = [
+    ("SSH", 22), ("HTTP", 80), ("HTTPS", 443), ("DNS", 53), ("DHCP", 67),
+    ("FTP", 21), ("SMTP", 25), ("POP3", 110), ("IMAP", 143), ("Telnet", 23),
+    ("RDP", 3389), ("NTP", 123), ("SNMP", 161), ("SMB", 445), ("LDAP", 389),
+    ("LDAPS", 636), ("MySQL", 3306), ("PostgreSQL", 5432), ("Redis", 6379),
+    ("TFTP", 69), ("syslog", 514), ("Kerberos", 88), ("VNC", 5900),
+    ("SQL Server", 1433), ("NetBIOS", 139),
+]
+_NET_PORT_BANK = sorted({p for _, p in _NET_PORTS})
+
+_NET_OSI = [
+    (7, "Application", ["HTTP", "SMTP", "FTP", "DNS names"]),
+    (6, "Presentation", ["encryption", "compression", "character encoding"]),
+    (5, "Session", ["connection dialogs", "RPC", "NetBIOS sessions"]),
+    (4, "Transport", ["TCP", "UDP", "port numbers"]),
+    (3, "Network", ["IP addresses", "routing", "packets"]),
+    (2, "Data Link", ["MAC addresses", "frames", "switches"]),
+    (1, "Physical", ["cables", "hubs", "bit signals"]),
+]
+
+_NET_CABLES = [
+    ("Cat 5e", "1 Gbps"), ("Cat 6", "1 Gbps (10 Gbps short runs)"),
+    ("Cat 6a", "10 Gbps"), ("Cat 7", "10 Gbps+"),
+    ("single-mode fiber", "very long distances"), ("multimode fiber",
+     "shorter building runs"), ("coax", "cable broadband"),
+]
+
+_NET_WIFI = [
+    ("802.11a", "5 GHz", "54 Mbps"), ("802.11b", "2.4 GHz", "11 Mbps"),
+    ("802.11g", "2.4 GHz", "54 Mbps"), ("802.11n", "2.4/5 GHz", "600 Mbps"),
+    ("802.11ac", "5 GHz", "multi-Gbps"), ("802.11ax", "2.4/5/6 GHz",
+     "multi-Gbps, high density"),
+]
+
+_NET_DEVICES = [
+    ("switch", "forwards frames by MAC address inside one LAN"),
+    ("router", "routes packets between different networks"),
+    ("firewall", "filters traffic by rules"),
+    ("access point", "bridges wireless clients onto the LAN"),
+    ("modem", "converts between the ISP line and Ethernet"),
+    ("load balancer", "spreads requests across servers"),
+]
+
+_NET_TOPOLOGIES = [
+    ("star", "every host plugs into one central switch"),
+    ("bus", "one shared cable everyone taps"),
+    ("ring", "each host connects to exactly two neighbours"),
+    ("mesh", "every node links to every other node"),
+]
+
+_NET_SPEEDS = [
+    ("10BASE-T", 10), ("100BASE-TX", 100), ("1000BASE-T", 1000),
+    ("10GBASE-T", 10000), ("100BASE-FX", 100),
+]
+
+_NET_BINARY_OCTETS = [192, 168, 10, 1, 255, 128, 64, 32, 16, 8, 4, 2, 254,
+                      172, 100, 20, 224, 240, 248, 252, 127, 0]
+
+
+def _mask_for(prefix: int) -> str:
+    bits = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+    return ".".join(str((bits >> s) & 0xFF) for s in (24, 16, 8, 0))
+
+
+def _gen_net_questions() -> list:
+    """Build the generated portion of the bank.  Fully deterministic."""
+    qs = []
+
+    # -- FOUNDATIONS ------------------------------------------------------- #
+    # ports: service -> port, and port -> service
+    for name, port in _NET_PORTS:
+        wrongs = [p for p in _NET_PORT_BANK if p != port]
+        wrongs = wrongs[(_slot(name) * 3) % (len(wrongs) - 2):][:3]
+        c, i = _place(wrongs, _slot(name), port)
+        qs.append(_mk_q(
+            f"Which port does {name} use by default?",
+            [str(x) for x in c], i, f"port-{name}", 0,
+            f"{name} listens on {port}.",
+            f"{name} uses port {port}.",
+            f"Think of ports as apartment numbers: {name}'s apartment is {port}. "
+            f"Your client doesn't deliver to the whole building — it rings the "
+            f"exact door number of the service it wants."))
+        svcs = [n for n, p in _NET_PORTS if p != port]
+        svcs = svcs[(_slot(name) * 5) % (len(svcs) - 2):][:3]
+        c, i = _place(svcs, _slot(f"{name}r"), name)
+        qs.append(_mk_q(
+            f"Port {port} is the default for which service?",
+            c, i, f"port-{name}", 0,
+            f"Port {port} belongs to {name}.",
+            f"That's {name}, port {port}.",
+            f"Ports 0-1023 are the well-known range — reserved for the classic "
+            f"services. {port} is registered to {name}; every device on the "
+            f"internet agrees on this, which is why a browser can find it."))
+
+    # OSI layers: layer -> name, name -> layer, and "where does X live"
+    for layer, name, stuff in _NET_OSI:
+        others = [n for _, n, _ in _NET_OSI if n != name]
+        others = others[(_slot(name) * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"{name}-l"), name)
+        qs.append(_mk_q(
+            f"OSI layer {layer} is called…",
+            c, i, f"osi-{name}", 0,
+            f"Layer {layer} is {name}.",
+            f"Layer {layer} is the {name} layer.",
+            f"Please Do Not Throw Sausage Pizza Away — the seven layers from "
+            f"the bottom are Physical, Data Link, Network, Transport, Session, "
+            f"Presentation, Application. Layer {layer} is {name}."))
+        qs.append(_mk_q(
+            f"Which OSI layer is '{name}'?",
+            [str(l) for l in [1, 2, 3, 4, 5, 6, 7] if l != layer]
+            [(_slot(f"{name}-n") * 2) % 6:][:3] + [str(layer)],
+            None, f"osi-{name}", 0,
+            f"{name} is layer {layer}.",
+            f"{name} sits at layer {layer}.",
+            None))
+        # fix the ans index for the layer-number question
+        qs[-1]["ans"] = qs[-1]["choices"].index(str(layer))
+        for item in stuff:
+            qs.append(_mk_q(
+                f"{item} lives at which OSI layer?",
+                ["Transport", "Network", "Application",
+                 f"{name}"][:3] + [f"{name}"],
+                None, f"osi-{name}", 0,
+                f"{item} lives at layer {layer} ({name}).",
+                f"{item} is handled at layer {layer} — {name}.",
+                None))
+            qs[-1]["choices"] = (["Transport", "Network", "Application"] +
+                                 [name])
+            qs[-1]["ans"] = 3
+        break  # layer7 items only (keep the bank tight)
+
+    # subnet masks: prefix -> mask, mask -> prefix, pick the mask
+    for prefix in range(8, 31):
+        mask = _mask_for(prefix)
+        others = [_mask_for(p) for p in (16, 24, 28, 30, 8, 20, 26)
+                  if p != prefix][:3]
+        c, i = _place(others, _slot(f"m{prefix}"), mask)
+        qs.append(_mk_q(
+            f"A /{prefix} network uses which subnet mask?",
+            c, i, "masks", 0,
+            f"/{prefix} is {mask}.",
+            f"/{prefix} = {mask}.",
+            f"The prefix counts the 1-bits from the left. /{prefix} = the first "
+            f"{prefix} bits set, which is {mask}. Eight 1-bits make a 255."))
+        qs.append(_mk_q(
+            f"Which prefix length is the mask {mask}?",
+            [f"/{p}" for p in (16, 24, 30, 8, 20, 26) if p != prefix][:3]
+            + [f"/{prefix}"],
+            None, "masks", 0,
+            f"{mask} is /{prefix}.",
+            f"{mask} = /{prefix}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(f"/{prefix}")
+
+    # binary <-> decimal octets
+    for octet in _NET_BINARY_OCTETS:
+        bin_s = f"{octet:08b}"
+        wrong_b = [f"{x:08b}" for x in (128, 64, 32, 16, 8, 4, 2, 1, 254, 255,
+                                        127, 0) if x != octet]
+        wrong_b = wrong_b[(_slot(f"b{octet}") * 3) % 4:][:3]
+        c, i = _place(wrong_b, _slot(f"b{octet}"), bin_s)
+        qs.append(_mk_q(
+            f"The decimal number {octet} in binary is…",
+            c, i, "binary", 0,
+            f"{octet} = {bin_s}.",
+            f"{octet} in binary is {bin_s}.",
+            f"Each bit position is a power of two: 128, 64, 32, 16, 8, 4, 2, 1. "
+            f"Add the set bits: {octet} = {bin_s}."))
+        wrong_d = [x for x in (128, 64, 32, 16, 8, 4, 2, 1, 254, 255, 127, 0)
+                   if x != octet]
+        wrong_d = wrong_d[(_slot(f"d{octet}") * 3) % 4:][:3]
+        c, i = _place(wrong_d, _slot(f"d{octet}"), octet)
+        qs.append(_mk_q(
+            f"The binary byte {bin_s} in decimal is…",
+            [str(x) for x in c], i, "binary", 0,
+            f"{bin_s} = {octet}.",
+            f"{bin_s} is {octet}.",
+            f"Read the bit positions as 128+64+32+16+8+4+2+1. The bits set in "
+            f"{bin_s} add up to {octet}."))
+
+    # cables / wifi / devices / topologies / speeds
+    for cable, speed in _NET_CABLES:
+        others = [s for _, s in _NET_CABLES if s != speed]
+        others = others[(_slot(cable) * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"c{cable}"), speed)
+        qs.append(_mk_q(
+            f"What can {cable} carry?",
+            c, i, "cables", 0,
+            f"{cable} carries {speed}.",
+            f"{cable}: {speed}.",
+            f"{cable} is twisted-pair copper rated for {speed}. The category "
+            f"number is about the twists per meter — more twists, less "
+            f"interference, more speed."))
+    for std, freq, rate in _NET_WIFI:
+        qs.append(_mk_q(
+            f"Wi-Fi standard {std} uses which band?",
+            [f for f in ("2.4 GHz", "5 GHz", "2.4/5 GHz", "2.4/5/6 GHz")
+             if f != freq][:3] + [freq],
+            None, "wifi", 0,
+            f"{std} runs on {freq}.",
+            f"{std} uses {freq}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(freq)
+    for dev, desc in _NET_DEVICES:
+        qs.append(_mk_q(
+            f"Which device {desc}?",
+            [d for d, _ in _NET_DEVICES if d != dev]
+            [(_slot(dev) * 2) % 4:][:3] + [dev],
+            None, "devices", 0,
+            f"The {dev} {desc}.",
+            f"That's the {dev}: it {desc}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(dev)
+    for topo, desc in _NET_TOPOLOGIES:
+        qs.append(_mk_q(
+            f"A {topo} topology means…",
+            [d for _, d in _NET_TOPOLOGIES if d != desc]
+            [(_slot(topo) * 2) % 2:][:3] + [desc],
+            None, "topologies", 0,
+            f"Star = {_NET_TOPOLOGIES[0][1]}.",
+            f"{topo}: {desc}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(desc)
+    for std, mbps in _NET_SPEEDS:
+        others = [m for _, m in _NET_SPEEDS if m != mbps]
+        others = others[(_slot(std) * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"s{std}"), mbps)
+        qs.append(_mk_q(
+            f"What speed is {std}?",
+            [f"{x} Mbps" if x < 1000 else f"{x // 1000} Gbps" for x in c],
+            i, "speeds", 0,
+            f"{std} = {mbps} Mbps.",
+            f"{std} runs at {mbps} Mbps.",
+            None))
+
+    # -- INTERMEDIATE ------------------------------------------------------ #
+    # usable hosts per prefix
+    for prefix in range(24, 31):
+        hosts = (2 ** (32 - prefix)) - 2
+        others = [(2 ** (32 - p)) - 2 for p in (24, 25, 26, 27, 28, 29, 30)
+                  if p != prefix][:3]
+        c, i = _place(others, _slot(f"h{prefix}"), hosts)
+        qs.append(_mk_q(
+            f"How many usable host addresses in a /{prefix}?",
+            [str(x) for x in c], i, "hosts", 1,
+            f"/{prefix} has {hosts} usable hosts.",
+            f"A /{prefix} holds {hosts} hosts.",
+            f"A /{prefix} has {32 - prefix} host bits: 2^({32 - prefix}) "
+            f"addresses, minus the network and broadcast addresses = {hosts}."))
+    # which prefix fits N hosts
+    for hosts in (2, 6, 14, 30, 62, 126, 254, 510, 1022):
+        prefix = 32 - ((hosts + 2) - 1).bit_length()
+        others = [f"/{p}" for p in (24, 26, 28, 30, 22, 25) if p != prefix][:3]
+        c, i = _place(others, _slot(f"fit{hosts}"), f"/{prefix}")
+        qs.append(_mk_q(
+            f"You need {hosts} host addresses. Which subnet fits tightest?",
+            c, i, "hosts", 1,
+            f"A /{prefix} gives {2 ** (32 - prefix) - 2} usable hosts.",
+            f"/{prefix} fits {hosts} hosts exactly.",
+            f"Addresses needed = hosts + 2 (network + broadcast) = "
+            f"{hosts + 2}. The next power of two is {2 ** (32 - prefix)}, "
+            f"so /{prefix}."))
+    # network ID / broadcast / range on a fixed address
+    for prefix, host in ((24, 10), (25, 100), (26, 60), (27, 80), (28, 20),
+                         (29, 5), (24, 200)):
+        net = 0xC0A80000 | host
+        mask_bits = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+        net_id = net & mask_bits
+        bcast = net | (~mask_bits & 0xFFFFFFFF)
+        base = net & mask_bits
+        def ipstr(x): return ".".join(str((x >> s) & 0xFF)
+                                      for s in (24, 16, 8, 0))
+        qs.append(_mk_q(
+            f"192.168.{host // 256}.{host % 256} is on /{prefix}. Its network "
+            f"ID is…",
+            [ipstr(base + 1), ipstr(base + 256), ipstr(base - 1 & 0xFFFFFFFF),
+             ipstr(net_id)],
+            None, "netid", 1,
+            f"Network ID = {ipstr(net_id)}.",
+            f"The network ID is {ipstr(net_id)} — all host bits zeroed.",
+            None))
+        qs[-1]["ans"] = 3
+        qs.append(_mk_q(
+            f"192.168.{host // 256}.{host % 256} is on /{prefix}. Its "
+            f"broadcast address is…",
+            [ipstr(bcast), ipstr(net_id), ipstr(base + 1),
+             ipstr(bcast - 1 & 0xFFFFFFFF)],
+            None, "broadcast", 1,
+            f"Broadcast = {ipstr(bcast)}.",
+            f"The broadcast is {ipstr(bcast)} — all host bits set to 1.",
+            None))
+        qs[-1]["ans"] = 0
+    return qs
+
+
+NET_GENERATED = _gen_net_questions()
+
+
+def _Q(q, choices, ans, concept, level, why, say, again, deeper=None):
+    return _mk_q(q, choices, ans, concept, level, why, say, again, deeper)
+
+
+NET_QUESTIONS = NET_GENERATED + [
+    # ---- FOUNDATIONS: hand-written core concepts ------------------------- #
+    _Q("Your PC wants to send data to another PC on the same LAN. What does it "
+       "use to address the frame?", ["MAC address", "IP address", "port number",
+       "hostname"], 0, "mac-vs-ip", 0,
+       "Inside one LAN, delivery is by MAC address.",
+       "On the same LAN you talk by MAC address — the physical, burned-in "
+       "hardware address of the network card.",
+       "The frame carries the MAC of the NIC right next to you, while the "
+       "packet inside carries the IP for the end-to-end journey. The MAC is "
+       "rewritten at every hop; the IP stays the same until it arrives."),
+    _Q("What does DNS do?", ["turns names into IP addresses", "assigns IPs to "
+       "devices", "encrypts web traffic", "routes packets between networks"],
+       0, "dns", 0,
+       "DNS translates domain names to IP addresses.",
+       "DNS is the phone book — you type a name, it hands back the IP.",
+       "DNS is a distributed lookup: your machine asks a resolver, which asks "
+       "root servers, then TLD servers, then the domain's own servers, "
+       "caching the answer at every step so it's fast next time."),
+    _Q("What does DHCP do?", ["hands out IP config to devices automatically",
+       "resolves names to IPs", "secures the network", "forwards frames"],
+       0, "dhcp", 0,
+       "DHCP automatically assigns IP addresses, masks, gateways and DNS.",
+       "DHCP = the device plugs in and gets its whole network config handed "
+       "to it, no manual typing.",
+       "DHCP is a 4-step dance: Discover (client shouts for a server), Offer "
+       "(server proposes an IP), Request (client asks for that IP), "
+       "Acknowledge (server confirms). Remember DORA."),
+    _Q("An IP address is 192.168.1.20 /24. Which part is the network?",
+       ["192.168.1", "20", "1.20", "168.1.20"], 0, "network-host", 0,
+       "/24 means the first 24 bits — 192.168.1 — are the network.",
+       "/24 puts the split after the third octet: network = 192.168.1, host "
+       "= 20.",
+       "The prefix /24 = mask 255.255.255.0. Line the two up bit by bit: "
+       "everywhere the mask has a 1 is network, everywhere it has a 0 is the "
+       "host. So 192.168.1 is the street, .20 is the house."),
+    _Q("What is a MAC address?", ["a hardware address burned into the network "
+       "card", "an address assigned by DHCP", "a routing address", "a DNS "
+       "record"], 0, "mac", 0,
+       "The MAC is the NIC's built-in hardware address.",
+       "The MAC address is permanent, unique-ish, and stamped into the "
+       "network card at the factory.",
+       "MAC = Media Access Control. It's 48 bits, written as six hex pairs "
+       "like AA:BB:CC:DD:EE:FF. The first half identifies the vendor — look "
+       "up any MAC's prefix and you can name the chip maker."),
+    _Q("IPv4 addresses are 32 bits. IPv6 addresses are…", ["128 bits", "64 "
+       "bits", "48 bits", "16 bits"], 0, "ipv6-bits", 0,
+       "IPv6 uses 128 bits — four times IPv4.",
+       "IPv6 is 128 bits wide, written as eight groups of hex.",
+       "128 bits is 340 undecillion addresses — enough to never run out, "
+       "which is the whole point: IPv4's 32 bits gave us ~4.3 billion, and "
+       "we're out."),
+    _Q("Which of these is a PRIVATE IP range?", ["192.168.0.0/16", "8.8.8.0/24",
+       "172.32.0.0/16", "11.0.0.0/8"], 0, "private-ranges", 0,
+       "RFC 1918: 10/8, 172.16/12, 192.168/16.",
+       "The private ranges are 10.0.0.0/8, 172.16.0.0/12, and 192.168.0.0/16 "
+       "— everything else here is public.",
+       "Private addresses can't be routed on the public internet. That's why "
+       "NAT exists: your whole house hides behind one public IP while every "
+       "device inside uses a 192.168 address."),
+    _Q("A broadcast frame is addressed to…", ["FF:FF:FF:FF:FF:FF", "its own "
+       "MAC", "the gateway's MAC", "00:00:00:00:00:00"], 0, "broadcast", 0,
+       "FF:FF:FF:FF:FF:FF = everyone on the LAN.",
+       "All-ones MAC = the broadcast address; every NIC on the segment picks "
+       "it up.",
+       "A broadcast goes to every host on the LAN — one sender, everyone "
+       "listens. Useful for discovery (ARP, DHCP) but a broadcast storm can "
+       "melt a network."),
+    _Q("TCP is different from UDP because TCP…", ["acknowledges and "
+       "re-transmits lost data", "is always faster", "has no ordering", "is "
+       "connectionless"], 0, "tcp-udp", 0,
+       "TCP = reliable, ordered, connected.",
+       "TCP guarantees delivery: it numbers segments, acknowledges them, and "
+       "re-sends what got lost.",
+       "TCP opens a connection, orders every byte, and retransmits anything "
+       "unacknowledged. UDP just fires datagrams and hopes — faster, but no "
+       "guarantees. Video calls trade reliability for speed; downloads need "
+       "TCP."),
+    _Q("Which device connects DIFFERENT networks together?", ["router",
+       "switch", "hub", "repeater"], 0, "router-role", 0,
+       "Routers join networks; switches join devices.",
+       "A router moves packets between networks; a switch moves frames "
+       "between devices on one network.",
+       "The router is the post office between streets: it looks at the "
+       "destination IP, checks its routing table, and hands the packet to "
+       "the next hop. Your home router connects your LAN to the internet."),
+    _Q("A switch learns MAC addresses by…", ["reading the source MAC of "
+       "incoming frames", "asking the router", "ARP broadcasts only", "DNS"],
+       0, "switch-learning", 0,
+       "Switches learn from source MACs and forward by destination MACs.",
+       "Every incoming frame teaches the switch which port that source MAC "
+       "lives on — after a few seconds it knows the whole LAN.",
+       "The switch builds a MAC address table: source MAC → port. Unknown "
+       "destinations get flooded out every port except the one it came in "
+       "on; known ones go straight to their port."),
+    _Q("Ping uses which protocol?", ["ICMP", "TCP", "UDP", "ARP"], 0, "ping", 0,
+       "Ping sends ICMP echo requests and waits for echo replies.",
+       "Ping = ICMP echo. The target answers echo-reply if it's alive.",
+       "ICMP is the network's diagnostics channel — echo for ping, "
+       "destination-unreachable for dead routes, time-exceeded for "
+       "traceroute."),
+    _Q("What does the default gateway do?", ["forwards your traffic to other "
+       "networks", "assigns your IP", "filters viruses", "translates names"],
+       0, "gateway", 0,
+       "The default gateway is the router your traffic leaves through.",
+       "The gateway is your LAN's exit door — anything not local goes to it.",
+       "When the destination IP isn't on your subnet, your machine can't "
+       "deliver it locally, so it sends the frame to the gateway's MAC. The "
+       "packet inside still carries the final destination."),
+    _Q("In the OSI model, a router works at layer…", ["3 — Network", "2 — "
+       "Data Link", "4 — Transport", "1 — Physical"], 0, "osi-router", 0,
+       "Routers decide by IP, so they live at layer 3.",
+       "A router reads IP addresses (layer 3) and picks the next hop.",
+       "The layer tells you what the device READS. Switches read MACs "
+       "(layer 2), routers read IPs (layer 3), firewalls often read ports "
+       "(layer 4)."),
+    _Q("What is latency?", ["the delay for data to travel", "the amount of "
+       "data that can flow", "the error rate", "the packet size"], 0,
+       "latency", 0,
+       "Latency = delay. Bandwidth = capacity.",
+       "Latency is how long a packet takes; bandwidth is how many packets "
+       "can move per second.",
+       "Latency is usually measured in milliseconds (ping shows it), "
+       "bandwidth in Mbps. A water pipe: bandwidth is the width of the pipe, "
+       "latency is how fast the water flows."),
+    _Q("Which connector plugs a PC into a wired LAN today?", ["RJ45",
+       "RJ11", "BNC", "USB-C only"], 0, "rj45", 0,
+       "RJ45 carries Ethernet over twisted pair.",
+       "RJ45 is the chunky 8-pin connector on Ethernet cables.",
+       "RJ45 has 8 pins (4 pairs). 10/100BASE-T uses 2 pairs; gigabit uses "
+       "all 4. RJ11 is the smaller phone plug — easy to confuse."),
+    _Q("What does ARP do?", ["finds the MAC address for a known IP", "finds "
+       "an IP for a name", "assigns IPs", "encrypts frames"], 0, "arp", 0,
+       "ARP asks the LAN: who has this IP? Answer: it's me, here's my MAC.",
+       "ARP = address resolution protocol — IP to MAC, just on your LAN.",
+       "The sender broadcasts 'who has 192.168.1.1?', the owner answers "
+       "directly with its MAC, and the sender caches the answer in its ARP "
+       "table. Check it any time with ip neigh."),
+    _Q("What is the subnet mask for a /24 network?", ["255.255.255.0",
+       "255.255.0.0", "255.0.0.0", "255.255.255.255"], 0, "mask24", 0,
+       "/24 = 24 one-bits = 255.255.255.0.",
+       "/24 is the classic home network mask: 255.255.255.0.",
+       "Each 255 is eight 1-bits. /24 = three full octets of 1s and one "
+       "octet of 0s = 255.255.255.0, leaving 256 addresses for hosts."),
+    _Q("Which protocol is connection-oriented and reliable?", ["TCP", "UDP",
+       "ICMP", "ARP"], 0, "tcp-reliable", 0,
+       "TCP — connection, ordering, retransmission.",
+       "TCP opens a session and guarantees delivery; UDP doesn't.",
+       "Reliability costs round-trips: TCP's three-way handshake alone is "
+       "one RTT before any data moves. That's why DNS uses UDP by default — "
+       "one packet each way is enough."),
+    _Q("10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16 are…", ["private ranges "
+       "from RFC 1918", "public ranges", "multicast ranges", "loopback "
+       "ranges"], 0, "rfc1918", 0,
+       "RFC 1918 defines the three private ranges.",
+       "Those three are the RFC 1918 private blocks — free for anyone to use "
+       "internally.",
+       "Because they're private, they can be reused in every building on "
+       "earth; NAT translates them to public IPs at the edge."),
+    _Q("Your browser fetches https://example.com. Which port does it connect "
+       "to by default?", ["443", "80", "22", "53"], 0, "https-port", 0,
+       "HTTPS = 443, the encrypted web.",
+       "443 is HTTPS (encrypted), 80 is plain HTTP.",
+       "The 'S' in HTTPS is TLS, and TLS lives on 443. Traffic on 80 is "
+       "readable by anyone on the wire; on 443 it's encrypted."),
+    _Q("What does a VLAN do?", ["splits one physical switch into separate "
+       "virtual LANs", "speeds up Wi-Fi", "encrypts traffic", "joins two "
+       "buildings"], 0, "vlan", 0,
+       "A VLAN logically splits a switch into isolated LANs.",
+       "VLANs let one switch carry several separate networks at once.",
+       "VLANs isolate broadcast domains without buying more switches. Frames "
+       "get a tag (802.1Q) that says which VLAN they belong to; ports "
+       "carrying many VLANs are trunks."),
+    _Q("What does NAT do?", ["translates private addresses to a public one",
+       "encrypts the LAN", "speeds up DNS", "assigns MAC addresses"], 0,
+       "nat", 0,
+       "NAT swaps private source IPs for the public IP at the edge.",
+       "NAT lets a whole network share one public address.",
+       "Every outbound packet gets its source rewritten to the router's "
+       "public IP; the router remembers the mapping so replies find their "
+       "way home. PAT = the port-overloading version almost everyone uses."),
+    _Q("What is a subnet?", ["a slice of a larger network", "a faster cable",
+       "a security device", "a DNS zone"], 0, "subnet-def", 0,
+       "A subnet is a network chopped into smaller networks.",
+       "Subnetting splits one network into smaller, tidier pieces.",
+       "Borrow host bits for the network part and one /24 becomes many "
+       "smaller nets — less broadcast noise, cleaner security boundaries, "
+       "fewer wasted addresses."),
+    _Q("Which is the loopback address?", ["127.0.0.1", "192.168.0.1",
+       "255.255.255.255", "0.0.0.0"], 0, "loopback", 0,
+       "127.0.0.1 is localhost — yourself.",
+       "127.0.0.1 always means this machine.",
+       "The whole 127.0.0.0/8 range loops back to your own stack — nothing "
+       "ever leaves the NIC. Great for testing servers before exposing "
+       "them."),
+    _Q("What is bandwidth?", ["how much data can flow per second", "how long "
+       "data takes to arrive", "how many errors occur", "how many hops "
+       "exist"], 0, "bandwidth", 0,
+       "Bandwidth = capacity, in bits per second.",
+       "Bandwidth is the width of the pipe, not the speed of the water.",
+       "100 Mbps means 100 million bits per second. Latency is the delay; "
+       "bandwidth is the capacity. A high-latency, high-bandwidth link is "
+       "great for big downloads, terrible for gaming."),
+    _Q("Which cable type uses light instead of electricity?", ["fiber",
+       "Cat 6", "coax", "Cat 5e"], 0, "fiber", 0,
+       "Fiber = pulses of light through glass.",
+       "Fiber carries light; copper carries electricity.",
+       "Light in glass doesn't care about electromagnetic noise and goes "
+       "kilometers without a repeater — that's why backbones are fiber. "
+       "Single-mode = one narrow beam, long haul; multimode = short runs."),
+    _Q("A hub is different from a switch because a hub…", ["repeats frames "
+       "out every port", "learns MAC addresses", "routes between networks",
+       "filters by IP"], 0, "hub", 0,
+       "Hubs blast everything everywhere; switches are smart.",
+       "A hub is a dumb repeater — all ports, all the time.",
+       "Hubs are layer 1: they just repeat bits. Collisions were the price. "
+       "Switches replaced them by learning MACs and forwarding only where "
+       "needed."),
+    _Q("What is 127.0.0.1 used for?", ["talking to your own machine",
+       "reaching the internet", "broadcasting to the LAN", "assigning IPs"],
+       0, "loopback-use", 0,
+       "It's localhost — your own stack, for local testing.",
+       "127.0.0.1 is how a machine talks to itself.",
+       "Servers bind to 127.0.0.1 while you develop so nothing is exposed "
+       "to the network; the traffic never touches a wire."),
+    _Q("What does the ping command's time value measure?", ["round-trip "
+       "latency", "bandwidth", "CPU usage", "uptime"], 0, "ping-time", 0,
+       "Ping time = round-trip delay in milliseconds.",
+       "That number is the RTT — out and back.",
+       "It's the round-trip time: your echo request out, the reply back. "
+       "Under ~1 ms on a LAN, ~10-30 ms to a nearby city, 100+ ms across an "
+       "ocean."),
+    _Q("Which statement about IP addresses is TRUE?", ["every interface "
+       "needs one to talk on the internet", "MACs are only used in IPv6",
+       "IPs never change", "a switch reads IPs to forward"], 0, "ip-need", 0,
+       "Every interface needs an IP to reach the internet.",
+       "No IP, no internet — the packet has nowhere to be addressed.",
+       "An interface without an IP can still do local things (ARP, "
+       "switching), but nothing routable leaves. Addresses can be static or "
+       "DHCP-assigned."),
+    _Q("Which of these is a CLASS C private address?", ["192.168.1.1",
+       "10.0.0.1", "172.16.0.1", "8.8.8.8"], 0, "class-c", 0,
+       "192.168.x.x is the class-C-sized private range.",
+       "192.168/16 is the private range built on the old class C.",
+       "The old class system: A = /8, B = /16, C = /24. RFC 1918 set aside "
+       "one of each for private use: 10/8, 172.16/12, 192.168/16."),
+    _Q("What happens when two hosts on a LAN use the same IP?", ["address "
+       "conflict — both break intermittently", "the router fixes it", "it "
+       "just works", "the newer one wins permanently"], 0, "ip-conflict", 0,
+       "Duplicate IPs cause an address conflict — flaky, broken traffic.",
+       "Same IP on two machines = an IP conflict; traffic lands on the "
+       "wrong one.",
+       "The ARP table now maps that IP to whichever MAC answered last, so "
+       "traffic flips between the two. DHCP servers track leases to avoid "
+       "exactly this."),
+    _Q("What does 'full duplex' mean?", ["both directions at the same time",
+       "one direction at a time", "half the speed", "error-free"], 0,
+       "duplex", 0,
+       "Full duplex = send and receive simultaneously.",
+       "Full duplex talks both ways at once; half duplex takes turns.",
+       "Gigabit Ethernet is full duplex — the pairs are used in both "
+       "directions at once, so a 1 Gbps link moves 1 Gbps each way."),
+    _Q("The 224.0.0.0/4 block is reserved for…", ["multicast", "private "
+       "LANs", "public internet", "loopback"], 0, "multicast", 0,
+       "224/4 = multicast — one sender, many subscribers.",
+       "Multicast ranges are 224.0.0.0 through 239.255.255.255.",
+       "Multicast lets one stream reach many interested receivers without "
+       "flooding everyone — the backbone of IPTV and stock feeds."),
+    _Q("What is a packet?", ["a chunk of data with an IP header", "a frame's "
+       "payload only", "a DNS query", "a MAC address"], 0, "packet", 0,
+       "A packet = data + IP header, the routed unit.",
+       "The packet is what routers move: payload wrapped in an IP header.",
+       "Layer names tell the story: bits (1) → frames (2, MAC) → packets "
+       "(3, IP) → segments (4, TCP/UDP). Each layer wraps the one above."),
+    _Q("Which layer of the OSI model does a switch belong to?", ["Layer 2",
+       "Layer 3", "Layer 4", "Layer 1"], 0, "osi-switch", 0,
+       "Switches read MACs — layer 2.",
+       "A switch forwards by MAC address, so it's a layer-2 device.",
+       "Layer-3 switches exist too (they can route), but a classic switch "
+       "lives at layer 2, moving frames by MAC."),
+    _Q("What is an SSID?", ["the Wi-Fi network's name", "the router's "
+       "password", "the MAC of the AP", "the ISP's IP"], 0, "ssid", 0,
+       "SSID = the name you pick from the Wi-Fi list.",
+       "The SSID is the network name the access point broadcasts.",
+       "Access points beacon their SSID so clients can find them. Hiding "
+       "the SSID is not security — the frames still carry it."),
+    _Q("A MAC address is how many bits?", ["48", "32", "128", "64"], 0,
+       "mac-bits", 0,
+       "48 bits, shown as six hex octets.",
+       "MACs are 48 bits: AA:BB:CC:DD:EE:FF.",
+       "Six bytes. The first three are the OUI — the vendor ID — and the "
+       "last three are the device's serial within that vendor."),
+    _Q("Which network device broadcasts an SSID?", ["access point", "switch",
+       "firewall", "modem"], 0, "ap-ssid", 0,
+       "The access point broadcasts the SSID.",
+       "APs beacon the network name; clients associate to it.",
+       "The AP is the bridge between Wi-Fi radios and the wired LAN — "
+       "clients associate to it and their frames hop onto the wire."),
+    _Q("What does 'hop' mean in networking?", ["one router along the path",
+       "one DNS server", "one switch port", "one Wi-Fi channel"], 0, "hop", 0,
+       "A hop = one router the packet passes through.",
+       "Each router between you and the server is one hop.",
+       "traceroute lists every hop and its latency — the backbone of path "
+       "debugging when things break in the middle."),
+    _Q("Which IP version uses eight groups of hexadecimal numbers?",
+       ["IPv6", "IPv4", "both", "neither"], 0, "ipv6-format", 0,
+       "IPv6: 2001:db8::1 style, eight hextets.",
+       "IPv6 writes as eight hex groups; IPv4 as four decimals.",
+       "IPv6 shortens zeros: leading zeros drop, and one run of all-zero "
+       "groups becomes '::'. So 2001:0db8:0000:0000:0000:0000:0000:0001 "
+       "is just 2001:db8::1."),
+    _Q("A client joins Wi-Fi. Which step comes FIRST?", ["scan for networks",
+       "authenticate", "get an IP via DHCP", "resolve DNS"], 0, "wifi-join", 0,
+       "Scan, associate, authenticate, then DHCP.",
+       "First the client scans beacons, then it associates to the SSID.",
+       "Order: scan (hear the beacons) → associate (pick the AP) → "
+       "authenticate (WPA2 handshake) → DHCP (get your IP) → DNS (find "
+       "things)."),
+    _Q("What is the difference between a LAN and a WAN?", ["scope — a "
+       "building vs. long distances", "LANs are wireless only", "WANs use "
+       "only fiber", "there is no difference"], 0, "lan-wan", 0,
+       "LAN = local (a building); WAN = wide (cities apart).",
+       "A LAN is one site; a WAN links sites together.",
+       "Your home network is a LAN; the internet is the biggest WAN. The "
+       "border router is where your LAN's responsibility ends and the "
+       "ISP's WAN begins."),
+    _Q("What is the transport-layer protocol of the web?",
+       ["TCP, port 80/443", "UDP, port 53", "ICMP", "ARP"], 0, "web-tcp", 0,
+       "Web pages ride TCP on 80 (HTTP) and 443 (HTTPS).",
+       "The web uses TCP because pages must arrive complete and in order.",
+       "A half-loaded page is useless, so the web demands TCP's guarantees. "
+       "HTTP/3 switches to QUIC (over UDP) but still rebuilds reliability "
+       "itself."),
+    _Q("A 255.255.255.255 address means…", ["broadcast to the local subnet",
+       "your own machine", "multicast group", "invalid address"], 0,
+       "bcast-local", 0,
+       "255.255.255.255 = broadcast to the local segment.",
+       "All-ones = broadcast; DHCP Discover uses it before it has an IP.",
+       "A machine without an IP still needs to shout — the limited "
+       "broadcast 255.255.255.255 reaches every host on the wire."),
+
+    # ---- INTERMEDIATE: hand-written ------------------------------------- #
+    _Q("Which protocol and port does SMTP use for mail delivery?",
+       ["TCP 25", "UDP 53", "TCP 110", "TCP 443"], 0, "smtp", 1,
+       "SMTP sends mail over TCP 25.",
+       "SMTP = Simple Mail Transfer Protocol, TCP port 25.",
+       "SMTP sends, POP3 (110) and IMAP (143) receive. Modern SMTP also "
+       "uses 587 with STARTTLS for submission — the reason 25 gets blocked "
+       "by ISPs to fight spam."),
+    _Q("A host sends a packet to 8.8.8.8. What does it do with the ARP "
+       "request?", ["it ARPs for the GATEWAY's MAC, not 8.8.8.8's",
+       "it ARPs for 8.8.8.8's MAC directly", "it skips ARP entirely",
+       "it ARPs for the DNS server"], 0, "arp-gateway", 1,
+       "Off-subnet destinations get the gateway's MAC.",
+       "8.8.8.8 isn't on your LAN, so the frame goes to the gateway's MAC "
+       "while the packet keeps 8.8.8.8.",
+       "ARP only works on the local segment. Your host compares 8.8.8.8 "
+       "against its own subnet mask, sees it's foreign, and resolves the "
+       "gateway's MAC instead. The IP inside never changes."),
+    _Q("In the TCP three-way handshake, the correct order is…",
+       ["SYN → SYN-ACK → ACK", "ACK → SYN → SYN-ACK", "SYN → ACK → SYN-ACK",
+       "SYN-ACK → SYN → ACK"], 0, "tcp-handshake", 1,
+       "SYN, SYN-ACK, ACK — the client opens, the server agrees, the client "
+       "confirms.",
+       "Client: SYN. Server: SYN-ACK. Client: ACK. Connection up.",
+       "Two flags in one packet is legal, which is why step 2 is SYN-ACK: "
+       "the server both acknowledges the SYN and sends its own. Sequence "
+       "numbers start random so old packets from dead connections can't "
+       "confuse the new one."),
+    _Q("Which subnet mask gives you 62 usable hosts?", ["/26 — 255.255.255.192",
+       "/27 — 255.255.255.224", "/25 — 255.255.255.128", "/28 — "
+       "255.255.255.240"], 0, "hosts62", 1,
+       "/26 = 64 addresses, minus 2 = 62 hosts.",
+       "/26 has 6 host bits: 2^6 = 64, minus network+broadcast = 62.",
+       "Host bits: /24→256, /25→128, /26→64, /27→32, /28→16, /29→8, "
+       "/30→4. Always subtract 2 for network and broadcast."),
+    _Q("What is the main job of STP?", ["prevent switching loops",
+       "speed up switching", "encrypt frames", "route between VLANs"], 0,
+       "stp", 1,
+       "Spanning Tree blocks redundant paths so loops can't form.",
+       "STP keeps redundant links without letting frames loop forever.",
+       "Two links between switches would loop broadcasts to death. STP "
+       "elects a root bridge, then blocks every port that would create a "
+       "cycle — a blocked port waits silently in case a working link "
+       "dies."),
+    _Q("Which DNS record maps a name to an IPv4 address?", ["A", "MX", "CNAME",
+       "NS"], 0, "dns-a", 1,
+       "A = IPv4 address. AAAA = IPv6.",
+       "The A record holds the IPv4 answer.",
+       "A = address (IPv4), AAAA = the same for IPv6, CNAME = alias to "
+       "another name, MX = mail server, NS = name server, TXT = free text "
+       "(SPF, verification)."),
+    _Q("What does a CNAME record do?", ["aliases one name to another",
+       "maps a name to an IP", "points to a mail server", "marks a name "
+       "server"], 0, "dns-cname", 1,
+       "CNAME = 'this name is really that other name'.",
+       "A CNAME makes www.example.com point at example.com.",
+       "The CNAME target is another NAME, not an IP — the resolver chains "
+       "through until it reaches an A record. One more lookup, but rename "
+       "once and every alias follows."),
+    _Q("VLANs are separated at which OSI layer?", ["Layer 2", "Layer 3",
+       "Layer 4", "Layer 1"], 0, "vlan-layer", 1,
+       "VLANs are layer-2 constructs (802.1Q tags).",
+       "VLANs split layer 2 into isolated broadcast domains.",
+       "Traffic between VLANs must be ROUTED (layer 3) — that's why "
+       "inter-VLAN routing exists. The tag is added in the frame header: "
+       "802.1Q."),
+    _Q("A trunk port carries…", ["frames from multiple VLANs, tagged",
+       "only one VLAN", "only voice traffic", "no VLANs"], 0, "trunk", 1,
+       "Trunks carry many VLANs, each frame tagged with its VLAN ID.",
+       "A trunk is the multi-VLAN link between switches.",
+       "The 802.1Q tag rides in the frame header: 12 bits of VLAN ID. "
+       "Access ports strip tags for end devices; trunks keep them so each "
+       "frame lands in the right VLAN."),
+    _Q("What does the traceroute command reveal?", ["the path and latency "
+       "hop by hop", "your download speed", "open ports", "DNS records"],
+       0, "traceroute", 1,
+       "Traceroute lists every router along the path with RTTs.",
+       "traceroute maps the path: each hop's IP and delay.",
+       "It sends probes with rising TTLs: TTL 1 dies at hop 1, TTL 2 at hop "
+       "2... each death sends back an ICMP time-exceeded carrying the "
+       "router's address."),
+    _Q("What is DHCP's DORA order?", ["Discover, Offer, Request, Ack",
+       "Discover, Request, Offer, Ack", "Offer, Discover, Ack, Request",
+       "Request, Offer, Discover, Ack"], 0, "dora", 1,
+       "DORA: Discover → Offer → Request → Acknowledge.",
+       "D-O-R-A. The client discovers, the server offers, the client "
+       "requests, the server acknowledges.",
+       "Discover is broadcast because the client has no IP yet. The Offer "
+       "holds a lease (IP + mask + gateway + DNS + lease time). The client "
+       "requests that offer; the server confirms. At half the lease time "
+       "the client renews."),
+    _Q("Which of these is the fastest way to move traffic BETWEEN VLANs?",
+       ["a router or layer-3 switch", "another switch", "a hub", "a "
+       "repeater"], 0, "intervlan", 1,
+       "Inter-VLAN traffic must be routed — router or L3 switch.",
+       "Different VLANs = different subnets = routing required.",
+       "Since each VLAN is its own broadcast domain (and usually its own "
+       "subnet), only a layer-3 device can hop between them. A router-on-a-"
+       "stick uses one trunked link with sub-interfaces."),
+    _Q("WPA2 encryption for Wi-Fi is…", ["AES-CCMP", "TKIP", "WEP", "none"],
+       0, "wpa2", 1,
+       "WPA2 uses AES-CCMP — strong encryption.",
+       "WPA2 = AES. WPA = TKIP. WEP = ancient and broken.",
+       "WEP cracks in minutes, WPA-TKIP was the stopgap, WPA2-AES is the "
+       "standard, WPA3 adds forward secrecy and protects open networks."),
+    _Q("What does 'stateful' firewalling mean?", ["it tracks connections and "
+       "allows replies automatically", "it only filters by port", "it "
+       "encrypts traffic", "it logs everything"], 0, "stateful", 1,
+       "A stateful firewall remembers sessions; replies flow without extra "
+       "rules.",
+       "Stateful = it knows the connection, so the return traffic is "
+       "expected.",
+       "You allow outbound HTTP and the reply packets are let back in "
+       "because they match the tracked session — no rule for them needed. "
+       "Stateless filtering would need a rule for each direction."),
+    _Q("Which command shows your machine's listening ports on Linux?",
+       ["ss -tulpn", "ip a", "ping", "dig"], 0, "ss", 1,
+       "ss -tulpn lists TCP/UDP listeners with the owning process.",
+       "ss is the modern netstat: ss -tulpn shows listeners.",
+       "-t = TCP, -u = UDP, -l = listening, -p = process, -n = numeric "
+       "(no slow DNS lookups). netstat does the same but is deprecated."),
+    _Q("A VPN's main job is…", ["an encrypted tunnel between networks",
+       "speeding up the internet", "assigning MACs", "blocking ads"], 0,
+       "vpn", 1,
+       "VPN = encrypted tunnel; traffic inside is private.",
+       "A VPN wraps your traffic in an encrypted tunnel to another "
+       "network.",
+       "Site-to-site VPNs join offices over the internet; client VPNs give "
+       "remote workers a secure path into the office. IPsec and WireGuard "
+       "are the common protocols."),
+    _Q("What is a proxy server?", ["a middleman that fetches on your behalf",
+       "a router", "a DNS server", "a switch"], 0, "proxy", 1,
+       "A proxy fetches web content for you, hiding your address.",
+       "Proxy = intermediary. Your requests go to it, it goes to the web.",
+       "Because the proxy originates the request, the server sees the "
+       "proxy's IP — that's how content filters and anonymisers work. "
+       "Forward = for clients, reverse = in front of web servers."),
+    _Q("What does an IDS do that a firewall doesn't?", ["detects intrusions "
+       "by inspecting content", "blocks ports", "encrypts traffic", "routes "
+       "packets"], 0, "ids", 1,
+       "IDS watches traffic and alerts; IPS also blocks.",
+       "An IDS sniffs and flags attacks; a firewall just enforces rules.",
+       "Firewalls enforce policy (port/address); IDS/IPS inspect the "
+       "CONTENT for attack patterns — signatures or anomalies. Detection "
+       "vs. prevention is the D vs P."),
+    _Q("Which tool sends a DNS query to a specific server?", ["dig @server "
+       "name", "ping server", "traceroute name", "ss name"], 0, "dig", 1,
+       "dig @1.1.1.1 example.com asks that resolver directly.",
+       "dig is the DNS debugging swiss-army knife.",
+       "dig shows the full answer section, the query time, and which server "
+       "answered — perfect for checking whether a record has propagated."),
+    _Q("What is QoS?", ["prioritizing traffic so important flows get "
+       "bandwidth first", "a security protocol", "a routing protocol",
+       "a wireless standard"], 0, "qos", 1,
+       "QoS = quality of service — priority for voice/video.",
+       "QoS decides whose packets go first when the link is full.",
+       "When a link saturates, queues form. QoS marks traffic (DSCP bits in "
+       "the IP header) and the router serves the high-priority queue first "
+       "— VoIP stays clear while a download waits."),
+    _Q("What is SNMP used for?", ["monitoring and managing network devices",
+       "routing packets", "encrypting mail", "resolving names"], 0, "snmp", 1,
+       "SNMP reads/writes device stats: uptime, interfaces, errors.",
+       "SNMP is how monitoring tools poll switches and routers.",
+       "Devices keep counters (bytes in/out, errors, CPU) in a MIB; SNMP "
+       "lets tools read them (or set configs) over UDP 161. v3 adds "
+       "encryption."),
+    _Q("How many usable hosts are in a /28?", ["14", "16", "30", "62"], 0,
+       "hosts28", 1,
+       "/28: 4 host bits = 16 addresses, minus 2 = 14.",
+       "16 total, 14 usable — the /28.",
+       "2^(32-28) = 2^4 = 16. Take away the network ID and broadcast: 14 "
+       "hosts. Typical size for a small server subnet."),
+    _Q("Which command displays the routing table on Linux?", ["ip route",
+       "ip neigh", "ss -t", "dig"], 0, "ip-route-cmd", 1,
+       "ip route show — the kernel's forwarding decisions.",
+       "ip route lists where the kernel sends each destination.",
+       "Each entry = destination, via/gateway, and interface. The 'default' "
+       "route catches everything that doesn't match anything more specific "
+       "— longest prefix wins."),
+    _Q("What does 'link-local' addressing mean?", ["an address usable only "
+       "on the local segment", "a public address", "a multicast address",
+       "a NAT address"], 0, "link-local", 1,
+       "Link-local = works on this segment only, never routed.",
+       "169.254.0.0/16 is IPv4 link-local; fe80::/10 in IPv6.",
+       "When DHCP fails, Windows/Linux self-assign a 169.254.x.x address "
+       "(APIPA) so local devices can still talk. Routers refuse to forward "
+       "them."),
+    _Q("Two hosts with the same VLAN ID but different subnets…", ["still "
+       "need a router between them", "can talk directly", "can't exist on "
+       "one switch", "must use IPv6"], 0, "vlan-subnet", 1,
+       "VLAN ≠ subnet. Different subnets always need routing.",
+       "Same VLAN, different subnets: the frames can reach each other but "
+       "the IPs won't talk without a router.",
+       "VLANs split layer 2; subnets split layer 3. They usually map 1:1 "
+       "but don't have to. If the subnets differ, routing is required — "
+       "even inside one VLAN."),
+    _Q("What is the purpose of the lease time in DHCP?", ["how long the "
+       "client may keep the IP", "how fast the LAN runs", "the password "
+       "timeout", "DNS TTL"], 0, "lease", 1,
+       "Lease time = the IP's rental period before renewal.",
+       "The lease says how long the IP is yours; renew or hand it back.",
+       "At 50% of the lease the client renews; if the server's gone it "
+       "keeps trying until 87.5%, then falls back to broadcast renewal. "
+       "Leases let addresses return to the pool for other devices."),
+    _Q("Which encryption standard do modern Wi-Fi networks prefer?",
+       ["WPA3", "WEP", "WPA-TKIP", "none of these"], 0, "wpa3", 1,
+       "WPA3 = the current standard, with forward secrecy.",
+       "WPA3 fixes WPA2's weaknesses — especially on open networks.",
+       "WPA3 replaces PSK with SAE (resists offline guessing) and adds "
+       "individualised data encryption so one device can't sniff another."),
+    _Q("What is a DMZ in a network design?", ["a semi-trusted zone for "
+       "public-facing servers", "the core router", "a backup link", "a "
+       "wireless channel"], 0, "dmz", 1,
+       "The DMZ holds internet-facing servers, firewalled off from the LAN.",
+       "A DMZ is the middle zone: public servers, strictly firewalled.",
+       "If the web server gets owned, the attacker is in the DMZ — not "
+       "your LAN. Rules allow only the minimum: 80/443 from outside, "
+       "nothing back into the LAN."),
+    _Q("In the TCP header, what do sequence numbers do?", ["order segments "
+       "so data is reassembled correctly", "encrypt the payload", "set the "
+       "port", "identify the VLAN"], 0, "tcp-seq", 1,
+       "Sequence numbers let the receiver reassemble out-of-order segments.",
+       "Every byte is numbered; the receiver puts them back in order.",
+       "Packets can arrive scrambled over the internet. Sequence numbers "
+       "are the page numbers — without them, retransmits and reordering "
+       "would corrupt the stream."),
+    _Q("Which protocol announces routes dynamically inside a single "
+       "organization?", ["OSPF", "BGP", "ARP", "DHCP"], 0, "igp", 1,
+       "OSPF (an IGP) routes inside one organization; BGP runs between "
+       "them.",
+       "IGPs like OSPF work inside; BGP is the exterior protocol.",
+       "Interior Gateway Protocols (OSPF, EIGRP, IS-IS) share routes "
+       "within an AS. BGP is the Exterior Gateway Protocol that stitches "
+       "the internet together."),
+    _Q("What does the ping -c flag do on Linux?", ["sets the number of "
+       "pings sent", "sets the packet size", "chooses the interface",
+       "enables IPv6"], 0, "ping-c", 1,
+       "-c = count: ping -c 4 sends exactly four pings.",
+       "ping -c 4 = four pings, then stop. Without -c it never stops on "
+       "Linux.",
+       "Windows uses -n for count (ping -n 4). Know both — the lab "
+       "terminals are Linux, but real-world troubleshooting hits both."),
+    _Q("An MTU mismatch usually causes…", ["large packets to fail or "
+       "fragment", "DNS failures", "port conflicts", "broadcast storms"],
+       0, "mtu", 1,
+       "MTU mismatch breaks big packets — weird, size-dependent failures.",
+       "If a link's MTU is smaller than the packet, it fragments or drops.",
+       "Classic symptom: small pings work, large pings die. Ethernet's MTU "
+       "is 1500; a VPN or PPPoE shaves a few bytes and suddenly large "
+       "transfers stall."),
+    _Q("Which of these is a routing protocol metric OSPF uses?", ["cost "
+       "(based on bandwidth)", "hop count only", "round-trip time", "MAC "
+       "age"], 0, "ospf-metric", 1,
+       "OSPF's cost is derived from link bandwidth.",
+       "OSPF sums interface costs along the path; lowest total wins.",
+       "Cost = reference bandwidth / link bandwidth (100 Mbps / 1 Gbps = "
+       "0.1, etc). RIP counts hops; EIGRP blends bandwidth and delay."),
+    _Q("What does ip neigh show?", ["the ARP table — IPs and their MACs",
+       "the routing table", "listening ports", "DNS cache"], 0, "ip-neigh",
+       1,
+       "ip neigh = the ARP cache: IP → MAC entries.",
+       "ip neigh lists which MAC currently answers each local IP.",
+       "Every local conversation starts here. A stale or wrong entry = "
+       "traffic going to the wrong NIC — flush it with ip neigh flush "
+       "all."),
+    _Q("What is the default gateway's job in routing terms?", ["the default "
+       "route's next hop", "the DNS server", "the DHCP server", "the "
+       "firewall"], 0, "def-route", 1,
+       "The gateway is the next hop for everything not otherwise routed.",
+       "The default route says: everything else, send it here.",
+       "The routing table matches most-specific first; 0.0.0.0/0 is the "
+       "least-specific possible, so it's the catch-all. No default route = "
+       "you can reach your LAN and nothing else."),
+
+    # ---- ADVANCED: hand-written ----------------------------------------- #
+    _Q("OSPF elects a Designated Router on which network type?",
+       ["broadcast multi-access (Ethernet)", "point-to-point serial links",
+       "loopback interfaces", "every network"], 0, "ospf-dr", 2,
+       "DR/BDR elections happen on broadcast multi-access networks.",
+       "On Ethernet, OSPF elects a DR and BDR to cut down adjacencies.",
+       "Every router would otherwise form a full mesh of adjacencies — "
+       "n(n-1)/2 of them. The DR centralizes LSA flooding; point-to-point "
+       "links skip the election entirely."),
+    _Q("Which BGP attribute is considered FIRST in path selection?",
+       ["weight (Cisco-proprietary)", "local preference", "AS path length",
+       "MED"], 0, "bgp-weight", 2,
+       "Weight wins first — though it's Cisco-only and never leaves the "
+       "router.",
+       "Weight > local pref > AS path > origin > MED. Weight never leaves "
+       "the box.",
+       "The order: weight, local preference, locally-originated, AS path "
+       "length, origin, MED, eBGP over iBGP, lowest IGP cost, router ID. "
+       "Know the first three cold."),
+    _Q("What is the difference between eBGP and iBGP?", ["eBGP = between "
+       "different ASes; iBGP = inside one AS", "eBGP is faster", "iBGP "
+       "uses TCP 80", "there is none"], 0, "ebgp", 2,
+       "eBGP links different autonomous systems; iBGP peers inside one.",
+       "eBGP = between ASes. iBGP = within an AS.",
+       "eBGP peers are usually directly connected; iBGP peers can be far "
+       "apart, which is why iBGP rides on an IGP. eBGP-learned routes get "
+       "advertised with the AS number prepended."),
+    _Q("In Spanning Tree, the root bridge is the switch with…", ["the "
+       "lowest bridge ID (priority + MAC)", "the most ports", "the highest "
+       "IP", "the newest uptime"], 0, "stp-root", 2,
+       "Lowest bridge priority, then lowest MAC, wins the root election.",
+       "The root bridge = lowest priority, tie-broken by lowest MAC.",
+       "Everything flows toward the root: each switch picks its cheapest "
+       "path there (root ports), and links NOT on the tree get blocked. "
+       "Change the priority to steer where traffic concentrates."),
+    _Q("Which port state does STP converge through LAST before forwarding?",
+       ["forwarding", "listening", "learning", "blocking"], 0, "stp-states",
+       2,
+       "Blocking → listening → learning → forwarding.",
+       "Forwarding is the final state; the port earns it after listening "
+       "and learning.",
+       "Listening = checking for loops (15s), learning = building the MAC "
+       "table (15s), then forwarding. That's the ~30s convergence classic "
+       "STP is famous for — RSTP collapses this."),
+    _Q("In IPv6, the link-local prefix is…", ["fe80::/10", "fc00::/7",
+       "2001:db8::/32", "ff00::/8"], 0, "ipv6-linklocal", 2,
+       "fe80::/10 — every IPv6 interface gets one automatically.",
+       "Link-local = fe80::/10, auto-configured on every interface.",
+       "The fe80 address is derived from the MAC (EUI-64) and exists even "
+       "with no router — that's how NDP and routing protocols talk."),
+    _Q("What does SLAAC do in IPv6?", ["lets hosts build their own address "
+       "from router advertisements", "assigns MACs", "resolves names",
+       "tunnels IPv4"], 0, "slaac", 2,
+       "SLAAC: the router advertises a prefix; the host makes its own "
+       "address.",
+       "SLAAC = stateless address auto-configuration — no DHCPv6 needed.",
+       "The router sends RAs with the prefix; the host appends its "
+       "interface ID (from the MAC). Stateless: the router keeps no record "
+       "of who got what. DHCPv6 exists when you need that control."),
+    _Q("NDP in IPv6 replaces which IPv4 protocols?", ["ARP + ICMP router "
+       "discovery", "TCP + UDP", "DHCP only", "BGP"], 0, "ndp", 2,
+       "NDP does neighbor discovery (ARP's job) plus router discovery.",
+       "NDP = Neighbor Discovery Protocol — ARP's IPv6 successor.",
+       "NDP's messages ride ICMPv6: neighbor solicitation/advertisement "
+       "(ARP's job), router solicitation/advertisement (gateway discovery), "
+       "and redirects."),
+    _Q("Which IPv6 range is reserved for documentation?", ["2001:db8::/32",
+       "fe80::/10", "::1/128", "fc00::/7"], 0, "ipv6-doc", 2,
+       "2001:db8::/32 is the docs-and-examples range.",
+       "2001:db8 is the IPv6 equivalent of example.com.",
+       "RFC 3849 reserves 2001:db8::/32 so examples can never collide with "
+       "real addresses. fe80:: = link-local, fc00::/7 = unique local, "
+       "::1 = loopback."),
+    _Q("Which IPsec component encrypts the actual payload?", ["ESP",
+       "AH", "IKE", "TLS"], 0, "esp", 2,
+       "ESP encrypts and authenticates; AH only authenticates.",
+       "ESP = Encapsulating Security Payload — the encrypted one.",
+       "AH signs the whole packet but encrypts nothing — largely obsolete. "
+       "ESP encrypts the payload (and optionally the header in tunnel "
+       "mode). IKE negotiates the keys first."),
+    _Q("HSRP and VRRP provide…", ["a virtual gateway IP shared by routers "
+       "for failover", "load balancing only", "link encryption", "DHCP "
+       "redundancy"], 0, "fhrp", 2,
+       "FHRPs: one virtual IP, two routers, instant failover.",
+       "HSRP/VRRP give hosts a gateway that never dies.",
+       "Hosts point at a virtual IP owned by the active router; if it "
+       "fails, the standby takes the address in seconds. HSRP is Cisco's; "
+       "VRRP is the open standard."),
+    _Q("What does DSCP marking do?", ["tags packets with a QoS class in the "
+       "IP header", "encrypts the header", "routes the packet", "sets the "
+       "MTU"], 0, "dscp", 2,
+       "DSCP = 6 bits in the IP header carrying the QoS class.",
+       "DSCP is the modern QoS mark, replacing the old IP precedence bits.",
+       "Routers read DSCP and place the packet in the matching queue — "
+       "EF (46) for voice, AF classes for video, default for everything "
+       "else."),
+    _Q("In the three-tier design, which layer connects the access switches "
+       "together?", ["distribution", "core", "access", "edge"], 0, "3tier",
+       2,
+       "Distribution aggregates access switches; core joins distribution "
+       "blocks.",
+       "Access → distribution → core. Distribution ties the access layer "
+       "together.",
+       "Access = where hosts plug in. Distribution = aggregation, routing, "
+       "policy. Core = fast backbone with zero policy — just move packets."),
+    _Q("What is the purpose of BGP's AS path?", ["loop prevention and path "
+       "selection", "encryption", "QoS marking", "DHCP"], 0, "aspath", 2,
+       "The AS path lists every AS the route crossed — loops are dropped, "
+       "shorter wins.",
+       "Each AS prepends its number; if your own number shows up, the "
+       "route is discarded.",
+       "It's both a distance metric and a loop guard: a route that circles "
+       "back into your AS is dropped instantly. That's why AS path "
+       "prepending is used to make a path look longer and steer traffic "
+       "away."),
+    _Q("Which protocol builds layer-2 tunnels over IP for L2VPNs?",
+       ["L2TP/EVPN/VXLAN", "BGP alone", "STP", "ARP"], 0, "l2vpn", 2,
+       "L2VPNs extend the LAN: L2TP, VXLAN, EVPN.",
+       "Layer-2 tunnelling (L2TP, VXLAN) stretches a LAN across an IP "
+       "network.",
+       "VXLAN wraps Ethernet frames in UDP so VLANs can span data centers; "
+       "EVPN adds control-plane smarts so MACs are learned, not flooded."),
+    _Q("What is split-horizon in routing?", ["don't advertise a route back "
+       "out the interface you learned it on", "block half the traffic", "a "
+       "QoS queue", "a VPN mode"], 0, "split-horizon", 2,
+       "Split horizon stops loops by never echoing a route to its source.",
+       "Learned from an interface? Never advertised back out the same one.",
+       "Distance-vector protocols (RIP, EIGRP) use it; poisoned reverse "
+       "goes further and advertises it back as unreachable."),
+    _Q("A /31 subnet is valid for…", ["point-to-point links — 2 usable "
+       "addresses", "nothing, it's invalid", "one host", "broadcast "
+       "domains"], 0, "slash31", 2,
+       "/31 = 2 addresses, both usable on point-to-point links (RFC 3021).",
+       "Modern stacks allow /31 on P2P links — no network/broadcast waste.",
+       "RFC 3021 says: on a true point-to-point link, network and "
+       "broadcast have no meaning, so both addresses are hosts. Saves "
+       "address space on every WAN link."),
+    _Q("Which multicast protocol do OSPF routers use on a LAN?",
+       ["224.0.0.5 and 224.0.0.6 (DR)", "broadcast", "unicast to each "
+       "neighbor", "TCP"], 0, "ospf-mcast", 2,
+       "AllSPFRouters 224.0.0.5; DR routers also listen on 224.0.0.6.",
+       "OSPF multicasts hellos; the DR gets its own group.",
+       "Hellos go to 224.0.0.5; DRothers send updates to 224.0.0.6 so only "
+       "the DR/BDR process them."),
+    _Q("What is the OSPF backbone area?", ["area 0 — all other areas must "
+       "connect to it", "area 1", "the highest-numbered area", "the DMZ"],
+       0, "ospf-area0", 2,
+       "Area 0 is the backbone; every other area must touch it.",
+       "All inter-area traffic flows through area 0.",
+       "OSPF's design rule: areas are stubs off the backbone. Virtual "
+       "links exist to patch broken designs — they're the band-aid you "
+       "hope to never use."),
+    _Q("Which IPsec mode encrypts the original IP header too?", ["tunnel",
+       "transport", "both", "neither"], 0, "ipsec-mode", 2,
+       "Tunnel mode wraps a brand-new header around the whole packet.",
+       "Tunnel mode hides even the original source and destination.",
+       "Transport mode only encrypts the payload (host-to-host). Tunnel "
+       "mode is for site-to-site VPNs: the inner packet is fully "
+       "protected and the outer header just says 'to the other gateway'."),
+    _Q("EIGRP's successor route is…", ["the best path to a destination, "
+       "with a feasible successor as backup", "the first route learned",
+       "the route with the most hops", "a static route"], 0, "eigrp", 2,
+       "Successor = best path; feasible successor = guaranteed loop-free "
+       "backup.",
+       "The successor is in the routing table; the feasible successor "
+       "waits.",
+       "The feasibility condition: a backup's advertised distance must be "
+       "less than the successor's feasible distance. Then failover is "
+       "instant — no recomputation."),
+    _Q("What does SDN decouple?", ["the control plane from the data plane",
+       "IP from MAC", "TCP from UDP", "LAN from WAN"], 0, "sdn", 2,
+       "SDN centralizes decisions (control) away from the switches "
+       "forwarding traffic (data).",
+       "The brain (controller) separates from the muscle (switches).",
+       "A central controller programs forwarding rules; switches just "
+       "execute them. OpenFlow is the classic southbound protocol. The "
+       "network becomes software you version-control."),
+    _Q("802.1X provides…", ["port-based authentication before network "
+       "access", "VLAN tagging", "link aggregation", "QoS marking"], 0,
+       "dot1x", 2,
+       "802.1X = the port stays shut until the device proves its identity.",
+       "802.1X authenticates the device BEFORE it gets on the LAN.",
+       "The supplicant (laptop) talks EAP to the authenticator (switch), "
+       "which relays to a RADIUS server. Only after success does the port "
+       "open — that's how enterprise Wi-Fi and wired NAC work."),
+    _Q("LACP does what?", ["bundles links into one logical high-bandwidth "
+       "channel", "encrypts links", "blocks loops", "routes between "
+       "VLANs"], 0, "lacp", 2,
+       "LACP (802.3ad) aggregates parallel links into one fat pipe.",
+       "LACP = link aggregation — more bandwidth plus redundancy.",
+       "Two 1 Gbps links become one 2 Gbps logical link, and one cable "
+       "dying doesn't kill the channel. It's layer 2, so it doesn't "
+       "replace routing — it just fattens a single link."),
+    _Q("Troubleshooting from the bottom up means starting at…", ["layer 1 "
+       "(cables, links, power)", "layer 7 (the application)", "the DNS "
+       "server", "the firewall"], 0, "bottom-up", 2,
+       "Bottom-up = check the wire first; 80% of 'network' problems are "
+       "physical.",
+       "Start at layer 1 and climb: link light, then IP, then service.",
+       "A down NIC light, a bad cable, a switch port in the wrong VLAN — "
+       "physical issues masquerade as everything. Eliminate layers in "
+       "order and you never skip the cause."),
+    _Q("MPLS forwards packets using…", ["labels, not IP lookups", "MAC "
+       "tables", "DNS", "port numbers"], 0, "mpls", 2,
+       "MPLS pushes a short label and switches on that — no IP lookup per "
+       "hop.",
+       "Label switching: the packet follows a pre-built label-switched "
+       "path.",
+       "The label is the forwarding key, so the core never opens the IP "
+       "header — faster (historically) and the foundation of MPLS VPNs."),
+    _Q("Which BGP attribute is used INSIDE an AS to prefer an exit point?",
+       ["local preference", "weight", "MED", "AS path"], 0, "localpref", 2,
+       "Local preference picks the exit router — higher wins, and it's "
+       "shared across the AS.",
+       "Local pref = which way OUT of your AS. Weight is router-local "
+       "only.",
+       "Weight never leaves the router; local preference is carried by "
+       "iBGP to every router in the AS so they all agree on the exit."),
+    _Q("What does MED influence?", ["which entry point a NEIGHBORING AS "
+       "uses to reach you", "your own exit choice", "DHCP leases", "STP "
+       "elections"], 0, "med", 2,
+       "MED suggests to the other AS which link to use inbound — lower is "
+       "preferred.",
+       "MED is a hint you send to your neighbor about how to enter your "
+       "AS.",
+       "It's compared only between routes from the SAME neighboring AS, "
+       "and it's the weakest of the big attributes — weight and local "
+       "pref are decided long before anyone looks at MED."),
+    _Q("A wireless site survey determines…", ["AP placement and channel "
+       "plan", "password strength", "switch VLANs", "DNS servers"], 0,
+       "site-survey", 2,
+       "Surveys map coverage and interference to place APs and pick "
+       "channels.",
+       "Walk the floor with a meter; place APs where the signal actually "
+       "needs to be.",
+       "2.4 GHz gives you three non-overlapping channels (1, 6, 11); 5/6 "
+       "GHz give you many more. A good survey stops co-channel "
+       "interference before it starts."),
+    _Q("What is a routed port on a layer-3 switch?", ["a port with an IP, "
+       "acting as a router interface", "a trunk port", "a disabled port",
+       "a console port"], 0, "routed-port", 2,
+       "A routed port = IP address on the interface, no switchport.",
+       "Routed ports make the L3 switch behave like a router on that "
+       "link.",
+       "It's the opposite of a switchport: layer-3 addressing, point-to-"
+       "point behavior — typically the uplinks between distribution and "
+       "core."),
+    _Q("Which protocol is the underlay for most modern SD-WAN and VXLAN "
+       "fabrics?", ["BGP (often with EVPN)", "RIP", "STP", "DHCP"], 0,
+       "underlay", 2,
+       "Modern fabrics run eBGP underlays with EVPN on top.",
+       "BGP scales; EVPN distributes MACs and routes together.",
+       "BGP in the data center was once heresy — now it's the standard "
+       "underlay. EVPN adds the overlay: MACs learned once, distributed "
+       "everywhere, no flooding."),
+    _Q("What does 'anycast' mean in networking?", ["the same IP announced "
+       "from many places — you reach the nearest", "one IP per server",
+       "broadcast to all", "encrypted DNS"], 0, "anycast", 2,
+       "Anycast: many servers share one IP; routing sends you to the "
+       "nearest one.",
+       "One IP, many machines — BGP makes it work.",
+       "DNS root servers use anycast: your query lands at whichever copy "
+       "is topologically closest. It's also how CDNs absorb attacks — "
+       "traffic spreads across the whole planet."),
+    _Q("Which command on Linux shows per-interface byte counters since "
+       "boot?", ["ip -s link", "ss -t", "ping -c 1", "dig +stats"], 0,
+       "ip-s", 2,
+       "ip -s link shows RX/TX bytes, packets, errors and drops per "
+       "interface.",
+       "ip -s link = interface statistics at a glance.",
+       "Rising error/drop counters on one interface is the first clue of a "
+       "bad cable, duplex mismatch or overload — check it before blaming "
+       "the application."),
+    _Q("What is jumbo frames?", ["Ethernet frames larger than 1500 bytes",
+       "encrypted frames", "QoS-marked frames", "IPv6-only frames"], 0,
+       "jumbo", 2,
+       "Jumbo frames (often 9000 bytes) cut overhead on fast links.",
+       "Bigger frames = fewer interrupts = more throughput on 10 Gbps+.",
+       "Every hop must support the same MTU or they fragment/drop — jumbo "
+       "frames are for storage networks and backbones, not the LAN edge."),
+    _Q("Which one increases security on a switch port?", ["port security "
+       "(limit MACs)", "enabling CDP", "disabling STP", "higher MTU"], 0,
+       "portsec", 2,
+       "Port security limits which/how many MACs may use the port.",
+       "Lock the port to one MAC; anything else gets shut down.",
+       "Port security stops the classic attack: plugging in a rogue switch "
+       "or spoofing MACs. Violation modes: protect, restrict, or shutdown."),
+]
+
+
+_NET_PORTS2 = [
+    ("POP3S", 995), ("IMAPS", 993), ("SMTP submission", 587), ("DNS over TLS",
+     853), ("BGP", 179), ("OpenVPN", 1194), ("WireGuard", 51820), ("IPsec "
+     "IKE", 500), ("RADIUS", 1812), ("Elasticsearch", 9200), ("MongoDB",
+     27017), ("AMQP", 5672), ("Kafka", 9092), ("Grafana", 3000),
+    ("Prometheus", 9090), ("Docker API", 2375), ("Git protocol", 9418),
+    ("SOCKS proxy", 1080), ("Squid proxy", 3128), ("Graphite", 2003),
+    ("Zabbix agent", 10050), ("rsync", 873), ("NFS", 2049), ("CUPS", 631),
+]
+_NET_PORT_BANK2 = sorted({p for _, p in _NET_PORTS2})
+
+_NET_PROTO_LAYER = [
+    ("ARP", 2, "Data Link"), ("Ethernet", 2, "Data Link"), ("PPP", 2,
+     "Data Link"), ("MAC addressing", 2, "Data Link"), ("ICMP", 3,
+     "Network"), ("IP", 3, "Network"), ("routing", 3, "Network"), ("TCP", 4,
+     "Transport"), ("UDP", 4, "Transport"), ("port numbers", 4, "Transport"),
+    ("TLS/SSL", 6, "Presentation"), ("JPEG", 6, "Presentation"), ("ASCII",
+     6, "Presentation"), ("HTTP", 7, "Application"), ("SMTP", 7,
+     "Application"), ("DNS queries", 7, "Application"),
+]
+
+_NET_IP_CLASSIFY = [
+    ("10.45.2.9", "private class A"), ("172.16.8.4", "private class B"),
+    ("172.31.250.1", "private class B"), ("192.168.44.7", "private class C"),
+    ("8.8.8.8", "public"), ("203.0.113.7", "public"), ("11.3.2.1", "public"),
+    ("198.51.100.2", "public"), ("224.0.0.1", "multicast"),
+    ("239.1.1.1", "multicast"), ("127.0.0.1", "loopback"),
+    ("169.254.10.3", "link-local"), ("100.64.0.1", "CGNAT range"),
+    ("172.20.0.5", "private class B"), ("192.0.2.1", "public"),
+    ("255.255.255.255", "broadcast"),
+]
+
+_NET_DNS_RECORDS = [
+    ("A", "IPv4 address"), ("AAAA", "IPv6 address"), ("CNAME", "alias name"),
+    ("MX", "mail server"), ("NS", "name server"), ("TXT", "free text"),
+    ("PTR", "reverse lookup (IP to name)"), ("SRV", "service location"),
+    ("SOA", "zone start / authority"), ("CAA", "which CAs may issue certs"),
+]
+
+_NET_SUBNETS_NEEDED = [("2 networks", 1), ("4 networks", 2), ("8 networks",
+    3), ("16 networks", 4), ("32 networks", 5), ("64 networks", 6)]
+
+_NET_BLOCK_SIZES = [("/25", 128), ("/26", 64), ("/27", 32), ("/28", 16),
+                    ("/29", 8), ("/30", 4)]
+
+_NET_IPV6_SAMPLES = [
+    ("2001:0db8:0000:0000:0000:0000:0000:0001", "2001:db8::1"),
+    ("fe80:0000:0000:0000:0a00:27ff:fe8e:5c10", "fe80::a00:27ff:fe8e:5c10"),
+    ("2001:0db8:abcd:0012:0000:0000:0000:0034", "2001:db8:abcd:12::34"),
+    ("ff02:0000:0000:0000:0000:0000:0000:0001", "ff02::1"),
+    ("0000:0000:0000:0000:0000:0000:0000:0001", "::1"),
+    ("2001:0db8:0000:0001:0000:0000:0000:0001", "2001:db8:0:1::1"),
+    ("fd00:0000:0000:0000:0001:0002:0003:0004", "fd00::1:2:3:4"),
+    ("2001:0db8:ffff:ffff:ffff:ffff:ffff:ffff", "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"),
+    ("2001:0db8:0000:0000:0000:ffff:0000:0001", "2001:db8::ffff:0:1"),
+    ("fe80:0000:0000:0000:0000:0000:0000:000a", "fe80::a"),
+]
+
+
+def _gen_net_questions2() -> list:
+    """Second generator pass — the volume to hit 300/150/100 per level."""
+    qs = []
+
+    # -- FOUNDATIONS ------------------------------------------------------- #
+    for name, port in _NET_PORTS2:
+        wrongs = [p for p in _NET_PORT_BANK2 if p != port]
+        wrongs = wrongs[(_slot(f"2{name}") * 3) % (len(wrongs) - 2):][:3]
+        c, i = _place(wrongs, _slot(f"2{name}"), port)
+        qs.append(_mk_q(
+            f"Which port does {name} use by default?",
+            [str(x) for x in c], i, f"port-{name}", 0,
+            f"{name} uses port {port}.",
+            f"{name} listens on {port}.",
+            f"{name} is registered to port {port} by IANA — the registry "
+            f"that stops every vendor inventing conflicting numbers."))
+        svcs = [n for n, p in _NET_PORTS2 if p != port]
+        svcs = svcs[(_slot(f"2r{name}") * 5) % (len(svcs) - 2):][:3]
+        c, i = _place(svcs, _slot(f"2r{name}"), name)
+        qs.append(_mk_q(
+            f"Port {port} is the default for which service?",
+            c, i, f"port-{name}", 0,
+            f"Port {port} = {name}.",
+            f"That's {name} on port {port}.",
+            f"Port {port} is IANA-assigned to {name}. Knowing the port lets "
+            f"you spot the service instantly in packet captures."))
+
+    for proto, layer, lname in _NET_PROTO_LAYER:
+        qs.append(_mk_q(
+            f"{proto} lives at which OSI layer?",
+            [x for x in ("Data Link", "Network", "Transport", "Application",
+                         "Session") if x != lname][:3] + [lname],
+            None, f"osi-{lname}", 0,
+            f"{proto} is layer {layer} — {lname}.",
+            f"{proto} works at layer {layer}, {lname}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(lname)
+
+    for ip, kind in _NET_IP_CLASSIFY:
+        others = [k for _, k in _NET_IP_CLASSIFY if k != kind]
+        others = list(dict.fromkeys(others))[(_slot(f"c{ip}") * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"c{ip}"), kind)
+        qs.append(_mk_q(
+            f"The address {ip} is…",
+            c, i, "ip-classify", 0,
+            f"{ip} is {kind}.",
+            f"{ip} falls in the {kind} range.",
+            f"Check the first octet: 10/8 and 172.16/12 and 192.168/16 are "
+            f"private, 224-239 multicast, 127 loopback, 169.254 link-local. "
+            f"{ip} is {kind}."))
+
+    for q_text, ans_text, why_t, say_t in [
+        ("How many bits are in one IPv4 address?", "32", "4 octets × 8 bits.",
+         "Thirty two bits, four octets."),
+        ("What is the highest number an octet can hold?", "255",
+         "8 bits max out at 11111111 = 255.",
+         "Two fifty five — all eight bits set."),
+        ("How are IPv4 addresses written?", "four decimal octets separated "
+         "by dots", "Dotted decimal: a.b.c.d.", "Dotted decimal — four "
+         "octets with dots."),
+        ("How many IPv4 addresses exist in total?", "about 4.3 billion",
+         "2^32 ≈ 4.29 billion.", "Two to the thirty two — about four point "
+         "three billion."),
+    ]:
+        wrongs = {"32": ["64", "128", "16"], "255": ["256", "254", "999"],
+                  "four decimal octets separated by dots":
+                  ["six hex pairs", "two 16-bit words", "one long number"],
+                  "about 4.3 billion": ["about 3.4 trillion", "65536",
+                                        "about 18 quintillion"]}[ans_text]
+        c, i = _place(wrongs, _slot(f"s{ans_text[:8]}"), ans_text)
+        qs.append(_mk_q(q_text, c, i, "ipv4-structure", 0, why_t, say_t, why_t))
+
+    # -- INTERMEDIATE ------------------------------------------------------ #
+    for prefix, block in _NET_BLOCK_SIZES:
+        others = [str(b) for p, b in _NET_BLOCK_SIZES if p != prefix][:3]
+        c, i = _place(others, _slot(f"blk{prefix}"), block)
+        qs.append(_mk_q(
+            f"Subnets of {prefix} advance in blocks of how many addresses?",
+            [str(x) for x in c], i, "block-size", 1,
+            f"{prefix} subnets step by {block} addresses.",
+            f"The block size of {prefix} is {block}.",
+            f"The block size is 2^(32 - prefix) — that's {block} for "
+            f"{prefix}. Network IDs always land on multiples of it."))
+
+    for want, borrow in _NET_SUBNETS_NEEDED:
+        others = [f"{b} bits" for n, b in _NET_SUBNETS_NEEDED if b != borrow][:3]
+        c, i = _place(others, _slot(f"bor{borrow}"), f"{borrow} bits")
+        qs.append(_mk_q(
+            f"You need {want}. How many host bits must you borrow?",
+            c, i, "borrow-bits", 1,
+            f"Borrow {borrow} bit(s): 2^{borrow} = {2 ** borrow} subnets.",
+            f"{borrow} borrowed bit(s) makes {2 ** borrow} subnets.",
+            f"Each borrowed bit doubles the subnets: 2^n. For {2 ** borrow} "
+            f"subnets you borrow {borrow}."))
+
+    for rec, meaning in _NET_DNS_RECORDS:
+        others = [m for r, m in _NET_DNS_RECORDS if m != meaning]
+        others = others[(_slot(f"r{rec}") * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"r{rec}"), meaning)
+        qs.append(_mk_q(
+            f"What does a {rec} record hold?",
+            c, i, f"dns-{rec.lower()}", 1,
+            f"{rec} = {meaning}.",
+            f"The {rec} record holds the {meaning}.",
+            f"DNS keeps a drawer per record type: {rec} is the {meaning} "
+            f"drawer. dig {rec} queryname asks for exactly that drawer."))
+
+    # valid first/last host per prefix on three different bases
+    for prefix in (24, 25, 26, 27, 28, 29, 30):
+        size = 2 ** (32 - prefix)
+        for base_ip in ("192.168.10", "10.0.0", "172.16.5"):
+            base = _ip_to_int(base_ip + ".0")
+            first = _int_to_ip(base + 1)
+            last = _int_to_ip(base + size - 2)
+            qs.append(_mk_q(
+                f"On {base_ip}.0/{prefix}, the first usable host is…",
+                [_int_to_ip(base), _int_to_ip(base + size - 1),
+                 _int_to_ip(base + size), first],
+                None, "valid-range", 1,
+                f"First usable host = {first}.",
+                f"{first} — one above the network ID.",
+                None))
+            qs[-1]["ans"] = 3
+            qs.append(_mk_q(
+                f"On {base_ip}.0/{prefix}, the last usable host is…",
+                [_int_to_ip(base + size - 1), last, _int_to_ip(base + 2),
+                 _int_to_ip(base + size)],
+                None, "valid-range", 1,
+                f"Last usable host = {last}.",
+                f"{last} — one below the broadcast.",
+                None))
+            qs[-1]["ans"] = 1
+
+    # -- ADVANCED ---------------------------------------------------------- #
+    for full, short in _NET_IPV6_SAMPLES:
+        others = [s for f, s in _NET_IPV6_SAMPLES if s != short]
+        others = others[(_slot(f"v{full[:12]}") * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"v{full[:12]}"), short)
+        qs.append(_mk_q(
+            f"Compress this IPv6 address: {full}",
+            c, i, "ipv6-compress", 2,
+            f"{full} shortens to {short}.",
+            f"The short form is {short}.",
+            f"Drop leading zeros in each group, then collapse ONE run of "
+            f"all-zero groups into '::'. {full} → {short}."))
+        qs.append(_mk_q(
+            f"Expand this IPv6 address: {short}",
+            [f for f, s in _NET_IPV6_SAMPLES if f != full]
+            [(_slot(f"e{short[:12]}") * 2) % 3:][:3] + [full],
+            None, "ipv6-compress", 2,
+            f"{short} expands to {full}.",
+            f"Expanded: {full}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(full)
+
+    for q_text, ans_text, wrongs, concept, why_t in [
+        ("How many /64 subnets fit inside a /48?", "65,536", ["256", "1024",
+         "16,777,216"], "ipv6-subnets",
+         "64 - 48 = 16 host bits → 2^16 = 65,536 /64s."),
+        ("Which IPv6 address is the loopback?", "::1", ["::0", "fe80::1",
+         "2001:db8::1"], "ipv6-loopback",
+         "::1 is IPv6's 127.0.0.1."),
+        ("What does ff02::1 mean?", "all nodes on the local link",
+         ["all routers", "one specific host", "all nodes everywhere"],
+         "ipv6-mcast", "ff02::1 = link-local all-nodes multicast."),
+        ("EUI-64 builds the interface ID from…", "the MAC address with "
+         "fffe inserted", ["a random number", "the IPv4 address", "the DNS "
+         "name"], "eui64",
+         "The MAC splits and fffe is spliced in the middle, then bit 7 "
+         "flips."),
+        ("In IPv6, the loopback ::1 is a…", "/128 address", ["/64 address",
+         "/32 address", "/8 address"], "ipv6-loopback",
+         "::1/128 — a single address."),
+        ("fc00::/7 is the IPv6 range for…", "unique local addresses",
+         ["link-local", "multicast", "documentation"], "ula",
+         "fc00::/7 = ULAs, the IPv6 version of RFC 1918."),
+        ("Which IPv6 multicast scope is ff05::?", "site-local", ["link-"
+         "local", "global", "loopback"], "ipv6-mcast",
+         "The 4th hex digit is the scope: 2 link, 5 site, e global."),
+    ]:
+        c, i = _place(wrongs, _slot(f"a{q_text[:14]}"), ans_text)
+        qs.append(_mk_q(q_text, c, i, concept, 2, why_t,
+                       f"{ans_text}. {why_t}", why_t))
+
+    for q_text, ans_text, wrongs, concept, why_t in [
+        ("Which LSA type carries OSPF router-link states?", "Type 1",
+         ["Type 2", "Type 3", "Type 5"], "ospf-lsa",
+         "Type 1 = router LSAs, describing the router's own links."),
+        ("Type 3 LSAs in OSPF carry…", "summary routes between areas",
+         ["external routes", "router links", "network links"], "ospf-lsa",
+         "Type 3 = summary LSAs injected by ABRs."),
+        ("Which LSA type announces routes from outside OSPF?", "Type 5",
+         ["Type 1", "Type 3", "Type 4"], "ospf-lsa",
+         "Type 5 = external LSAs from redistribution (ASBR)."),
+        ("In OSPF, a 100 Mbps link has a default cost of…", "1",
+         ["10", "100", "0.1"], "ospf-cost",
+         "Reference bandwidth 100 Mbps / 100 Mbps = 1."),
+        ("In STP, the port facing the root bridge is the…", "root port",
+         ["designated port", "blocking port", "edge port"], "stp-ports",
+         "The root port is each switch's cheapest path to the root."),
+        ("STP default bridge priority is…", "32768", ["0", "65535", "4096"],
+         "stp-priority",
+         "32768 is the default; priorities step by 4096."),
+        ("DSCP value EF (Expedited Forwarding) is decimal…", "46",
+         ["0", "34", "63"], "dscp-values",
+         "EF = 46 — the voice queue, lowest latency."),
+        ("Policing vs shaping: which one drops excess traffic outright?",
+         "policing", ["shaping", "both", "neither"], "qos-actions",
+         "Policing drops; shaping buffers and delays instead."),
+    ]:
+        c, i = _place(wrongs, _slot(f"b{q_text[:14]}"), ans_text)
+        qs.append(_mk_q(q_text, c, i, concept, 2, why_t,
+                       f"{ans_text}. {why_t}", why_t))
+    return qs
+
+
+NET_QUESTIONS += _gen_net_questions2()
+
+
+_NET_IPV6_EXTRA = [
+    ("2001:0db8:0000:0000:0000:0000:0000:abcd", "2001:db8::abcd"),
+    ("fe80:0000:0000:0000:0211:22ff:fe33:4455", "fe80::211:22ff:fe33:4455"),
+    ("2001:0db8:aaaa:0000:0000:0000:0000:0002", "2001:db8:aaaa::2"),
+    ("ff05:0000:0000:0000:0000:0000:0000:000a", "ff05::a"),
+    ("2001:0db8:0000:0000:0000:0000:0001:0001", "2001:db8::1:1"),
+    ("fd00:1234:0000:0000:0000:0000:0000:0001", "fd00:1234::1"),
+]
+
+_NET_ADVANCED = [
+    ("VRRP routers elect the master by…", "highest priority",
+     ["lowest priority", "lowest IP address", "fastest CPU"], "vrrp",
+     "Highest priority wins, tie-broken by highest IP."),
+    ("GLBP differs from HSRP because it…", "load-balances across gateways",
+     ["only allows one active router", "uses BGP", "works at layer 1"],
+     "glbp", "GLBP shares one virtual IP across several routers, balancing."),
+    ("A spine-leaf fabric has how many tiers?", "two",
+     ["three", "four", "five"], "spine-leaf",
+     "Spine and leaf — two tiers, every leaf connects to every spine."),
+    ("Which protocol lets IPv6-only hosts reach IPv4 servers?", "NAT64",
+     ["SLAAC", "NDP", "6to4"], "nat64",
+     "NAT64 translates IPv6 to IPv4 at the edge, with DNS64 rewriting."),
+    ("In DHCPv6, which RA flag tells hosts to get OTHER config (DNS) via "
+     "DHCPv6?", "the O flag", ["the M flag", "the A flag", "the S flag"],
+     "ra-flags", "M = managed (addresses from DHCPv6), O = other config."),
+    ("A BGP route reflector…", "re-advertises iBGP routes to its clients",
+     ["encrypts routes", "converts eBGP to OSPF", "blocks updates"],
+     "route-reflector",
+     "Reflectors break the iBGP full-mesh rule by reflecting routes."),
+    ("Why does iBGP need a full mesh (or reflectors)?",
+     "iBGP-learned routes are never re-advertised to iBGP peers",
+     ["bandwidth limits", "security policy", "TCP connection limits"],
+     "ibgp-mesh",
+     "iBGP's loop rule: a route learned over iBGP is not passed to another "
+     "iBGP peer — hence full mesh or reflectors."),
+    ("eBGP peers many hops apart need which setting?", "eBGP multihop",
+     ["OSPF areas", "MPLS labels", "HSRP groups"], "multihop",
+     "eBGP normally expects a directly-connected peer; multihop raises the "
+     "TTL."),
+    ("ECMP means…", "several equal-cost paths share the traffic",
+     ["one path is reserved", "traffic is blocked", "costs are doubled"],
+     "ecmp",
+     "Equal-Cost Multi-Path: the router spreads flows across parallel "
+     "best paths."),
+    ("BFD's purpose is…", "fast failure detection between peers",
+     ["bandwidth shaping", "payload encryption", "address allocation"], "bfd",
+     "BFD sends rapid hello packets so failures are seen in milliseconds, "
+     "not protocol timers."),
+    ("Moving routes between OSPF and EIGRP requires…",
+     "explicit route redistribution config",
+     ["nothing — it is automatic", "a DHCP lease", "a device reboot"],
+     "redistribution",
+     "Protocols never share by default; redistribution plus metric "
+     "translation is manual work."),
+    ("OSPF's default reference bandwidth is…", "100 Mbps",
+     ["1 Gbps", "10 Mbps", "10 Gbps"], "ospf-refbw",
+     "Cost = 100 Mbps / link bandwidth by default — tune it for fast links."),
+    ("An OSPF stub area…", "receives no external LSAs",
+     ["receives no LSAs at all", "only allows Type 1", "must be area 0"],
+     "stub-area",
+     "Stub areas replace external routes with a default route — smaller "
+     "tables, less churn."),
+    ("BGP confederations exist to…",
+     "split a large AS so the iBGP mesh shrinks",
+     ["encrypt BGP sessions", "replace AS numbers", "speed up eBGP"],
+     "confederation",
+     "A confederation is one AS number outside, many mini-ASes inside."),
+    ("DHCPv6 prefix delegation hands out…",
+     "an entire routed prefix to a router",
+     ["one host address", "a MAC address", "a DNS name"], "pd",
+     "PD gives a downstream router a whole /56 or /64 to subnet for its "
+     "LAN."),
+    ("Which QoS mechanism drops packets only as a queue fills up?", "WRED",
+     ["policing", "shaping", "LACP"], "wred",
+     "WRED randomly drops early as the queue grows, so TCP backs off before "
+     "full congestion."),
+    ("The OSPF designated router's standby is the…", "BDR",
+     ["ASBR", "ABR", "root"], "bdr",
+     "BDR = Backup Designated Router; it takes over if the DR dies."),
+    ("802.1Q tags carry how many VLAN ID bits?", "12",
+     ["8", "16", "24"], "vlan-id-bits",
+     "12 bits = 4094 usable VLAN IDs (0 and 4095 are reserved)."),
+    ("A router-on-a-stick uses…", "one trunked link with sub-interfaces",
+     ["one cable per VLAN", "a hub", "layer-1 switching"], "roas",
+     "Sub-interfaces on a single trunk give each VLAN its own gateway."),
+    ("What does SD-WAN offer over plain MPLS links?",
+     "cheap internet links mixed in, steered per application",
+     ["faster routers", "more VLANs", "bigger MTU"], "sdwan",
+     "SD-WAN treats every link — MPLS, broadband, LTE — as one logical "
+     "underlay and picks per application."),
+]
+
+
+def _gen_net_questions3() -> list:
+    """Third pass: fill the intermediate + advanced quotas."""
+    qs = []
+    # INTERMEDIATE: network/broadcast ID on two more address bases
+    for prefix in (24, 25, 26, 27, 28, 29, 30):
+        for base_ip in ("10.10.0", "172.16.20"):
+            net = _ip_to_int(base_ip + ".0")
+            mask_bits = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+            net_id = net & mask_bits
+            bcast = net | (~mask_bits & 0xFFFFFFFF)
+            qs.append(_mk_q(
+                f"On {base_ip}.0/{prefix}, the network ID is…",
+                [_int_to_ip(net_id + 1), _int_to_ip(bcast),
+                 _int_to_ip(net_id + 256), _int_to_ip(net_id)],
+                None, "netid", 1,
+                f"Network ID = {_int_to_ip(net_id)}.",
+                f"The network ID is {_int_to_ip(net_id)} — host bits zeroed.",
+                None))
+            qs[-1]["ans"] = 3
+            qs.append(_mk_q(
+                f"On {base_ip}.0/{prefix}, the broadcast address is…",
+                [_int_to_ip(bcast), _int_to_ip(net_id),
+                 _int_to_ip(net_id + 1), _int_to_ip(bcast - 1)],
+                None, "broadcast", 1,
+                f"Broadcast = {_int_to_ip(bcast)}.",
+                f"The broadcast is {_int_to_ip(bcast)} — host bits all ones.",
+                None))
+            qs[-1]["ans"] = 0
+    # ADVANCED: extra IPv6 compression pairs
+    for full, short in _NET_IPV6_EXTRA:
+        others = [s for f, s in _NET_IPV6_EXTRA if s != short]
+        others = others[(_slot(f"x{full[:12]}") * 2) % 3:][:3]
+        c, i = _place(others, _slot(f"x{full[:12]}"), short)
+        qs.append(_mk_q(
+            f"Compress this IPv6 address: {full}",
+            c, i, "ipv6-compress", 2,
+            f"{full} shortens to {short}.",
+            f"The short form is {short}.",
+            f"Leading zeros drop per group; one all-zero run becomes '::'. "
+            f"{full} → {short}."))
+        qs.append(_mk_q(
+            f"Expand this IPv6 address: {short}",
+            [f for f, s in _NET_IPV6_EXTRA if f != full]
+            [(_slot(f"y{short[:12]}") * 2) % 3:][:3] + [full],
+            None, "ipv6-compress", 2,
+            f"{short} expands to {full}.",
+            f"Expanded: {full}.",
+            None))
+        qs[-1]["ans"] = qs[-1]["choices"].index(full)
+    # ADVANCED: hand-written templates
+    for q_text, ans_text, wrongs, concept, why_t in _NET_ADVANCED:
+        c, i = _place(wrongs, _slot(f"z{concept}"), ans_text)
+        qs.append(_mk_q(q_text, c, i, concept, 2, why_t,
+                       f"{ans_text}. {why_t}", why_t))
+    return qs
+
+
+NET_QUESTIONS += _gen_net_questions3()
+
+
+def _net_pool_by_level(level: int) -> list:
+    return [q for q in NET_QUESTIONS if q["level"] == level]
+
+
+def _net_concept_questions(concept: str) -> list:
+    """All questions for one concept, in stable order (for variant re-asks)."""
+    return [q for q in NET_QUESTIONS if q["concept"] == concept]
+
+
+# Topic → extra question concepts (topics whose name isn't a concept prefix).
+NET_TOPIC_CONCEPTS = {
+    "network-basics": ["lan-wan", "packet", "bandwidth", "latency", "hop",
+                       "mac-vs-ip", "network-host", "mac"],
+    "osi-model": ["osi-Application", "osi-Presentation", "osi-Session",
+                  "osi-Transport", "osi-Network", "osi-Data Link",
+                  "osi-Physical", "osi-router", "osi-switch"],
+    "dhcp": ["dora", "lease", "dhcp", "port-DHCP"],
+    "arp": ["ip-neigh", "mac-vs-ip", "mac-bits", "switch-learning"],
+    "mac-vs-ip": ["mac", "mac-bits", "arp", "switch-learning",
+                  "network-host"],
+    "ipv4": ["masks", "ipv4-structure", "ip-classify", "private-ranges",
+             "rfc1918", "class-c", "network-host", "mask24", "ip-need",
+             "ip-conflict", "loopback", "loopback-use", "broadcast",
+             "bcast-local", "multicast", "duplex", "mac-bits", "ipv6-bits",
+             "ipv6-format"],
+    "switching": ["switch-learning", "hub", "mac", "broadcast", "duplex",
+                  "osi-switch", "vlan"],
+    "devices": ["devices", "router-role", "osi-router", "gateway", "ap-ssid",
+                "ssid", "rj45", "cables", "speeds", "fiber", "wifi",
+                "topologies", "wifi-join"],
+    "cabling": ["cables", "speeds", "rj45", "fiber", "wifi", "wifi-join"],
+    "subnetting": ["masks", "hosts", "block-size", "borrow-bits",
+                   "valid-range", "netid", "broadcast", "subnet-def",
+                   "hosts62", "hosts28", "mask24", "network-host", "slash31"],
+    "tcp-udp": ["tcp-udp", "tcp-reliable", "tcp-handshake", "tcp-seq",
+                "web-tcp", "smtp", "ping"],
+    "routing": ["router-role", "gateway", "def-route", "ip-route-cmd",
+                "traceroute", "hop", "ospf-metric", "igp", "arp-gateway",
+                "mtu", "arp", "ip-neigh", "ping-c", "ping-time"],
+    "vlans": ["vlan", "vlan-layer", "trunk", "intervlan", "vlan-subnet"],
+    "nat": ["nat", "private-ranges", "rfc1918", "link-local", "ip-classify"],
+    "firewall": ["stateful", "proxy", "ids", "portsec", "dmz"],
+    "dns-records": ["dns-a", "dns-cname", "dig", "dns"],
+    "wifi-sec": ["wpa2", "wpa3", "ssid", "wifi", "wifi-join", "dot1x"],
+    "troubleshooting": ["ping", "ping-time", "ping-c", "traceroute", "ss",
+                        "ip-route-cmd", "ip-neigh", "dig", "bottom-up",
+                        "mtu", "ip-s"],
+    "ospf": ["ospf-dr", "ospf-mcast", "ospf-area0", "ospf-metric", "ospf-lsa",
+             "ospf-cost", "igp"],
+    "bgp": ["bgp-weight", "ebgp", "aspath", "localpref", "med", "underlay",
+            "anycast"],
+    "stp": ["stp", "stp-root", "stp-states", "stp-ports", "stp-priority",
+            "lacp"],
+    "ipv6": ["ipv6-bits", "ipv6-format", "ipv6-linklocal", "slaac", "ndp",
+             "ipv6-doc", "ipv6-compress", "ipv6-subnets", "ipv6-loopback",
+             "ipv6-mcast", "eui64", "ula"],
+    "vpn-ipsec": ["vpn", "esp", "ipsec-mode", "l2vpn"],
+    "design": ["3tier", "fhrp", "lacp", "dmz", "routed-port", "sdn",
+               "site-survey", "dot1x"],
+    "qos": ["qos", "dscp", "dscp-values", "qos-actions", "jumbo"],
+}
+
+
+def _net_topic_qs(concept: str) -> list:
+    """All questions that belong to a topic: the concept itself, anything
+    prefixed with it (port-SSH …), plus the explicit extras map."""
+    stems = {concept, concept.rstrip("s")}
+    qs = [q for q in NET_QUESTIONS
+          if q["concept"] in stems
+          or any(q["concept"].startswith(s + "-") for s in stems)]
+    seen = {id(q) for q in qs}
+    for extra in NET_TOPIC_CONCEPTS.get(concept, []):
+        ex_stems = {extra, extra.rstrip("s")}
+        for q in NET_QUESTIONS:
+            if (q["concept"] in ex_stems
+                    or any(q["concept"].startswith(s + "-")
+                           for s in ex_stems)) and id(q) not in seen:
+                seen.add(id(q))
+                qs.append(q)
+    return qs
+
+
+def _net_alt_question(q: dict, asked: list) -> dict:
+    """A DIFFERENT question about the same concept (the retrain re-ask).  If
+    the concept only has one question, fall back to a same-family concept,
+    then to any other question of the same level."""
+    same = [x for x in _net_concept_questions(q["concept"]) if x is not q]
+    if same:
+        return same[len(asked) % len(same)]
+    fam = [x for x in NET_QUESTIONS
+           if x["concept"].split("-")[0] == q["concept"].split("-")[0]
+           and x is not q and x not in asked]
+    if fam:
+        return fam[len(asked) % len(fam)]
+    level_pool = [x for x in _net_pool_by_level(q["level"]) if x is not q]
+    return level_pool[len(asked) % len(level_pool)]
+
+
+# ---- animated network diagrams ------------------------------------------- #
+# Each returns a list of Text frames (played on a timer while the voice talks).
+
+def _net_frame(title: str, lines: list, hi: int = -1) -> Text:
+    t = Text()
+    t.append(title, style="bold #7dd3fc")
+    t.append("\n\n")
+    for i, ln in enumerate(lines):
+        if i == hi:
+            t.append("▸ ", style="bold #fbbf24")
+            t.append(ln, style="bold #fbbf24")
+        else:
+            t.append("  ")
+            t.append(ln, style="#d5d5d5")
+        t.append("\n")
+    return t
+
+
+def _net_anim(kind: str) -> list:
+    """All frames for an animation kind; None for a static single frame."""
+    if kind == "lan":
+        base = ["┌────────┐        ┌────────┐        ┌────────┐",
+                "│  PC-1  │        │ switch │        │  PC-2  │",
+                "│ .1.10  │────┬───│        │───┬────│ .1.20  │",
+                "└────────┘    │   └────────┘   │    └────────┘",
+                "              └──────┴─────────┘"]
+        return [_net_frame("a frame hops the LAN", base, hi)
+                for hi in (-1, 1, 4, -1, 2, 4)]
+    if kind == "osi":
+        layers = ["7  Application   HTTP, SMTP, DNS",
+                  "6  Presentation  encryption, compression",
+                  "5  Session       dialogs, RPC",
+                  "4  Transport     TCP/UDP + ports",
+                  "3  Network       IP + routing",
+                  "2  Data Link     MAC + frames",
+                  "1  Physical      cables, bits"]
+        return [_net_frame("the OSI model — data flows down, then up",
+                           layers, hi) for hi in range(len(layers))] + \
+               [_net_frame("the OSI model — seven layers", layers, -1)]
+    if kind == "subnet":
+        base = ["192.168.1.0/24  ── 256 addresses — one big LAN",
+                "├─ 192.168.1.0/26  (.1 – .62)   64 addresses",
+                "├─ 192.168.1.64/26 (.65 – .126) 64 addresses",
+                "├─ 192.168.1.128/26 (.129 – .190)",
+                "└─ 192.168.1.192/26 (.193 – .254)"]
+        return [_net_frame("slicing a /24 into four /26s", base, hi)
+                for hi in (-1, 0, 1, 2, 3, 4)]
+    if kind == "ports":
+        base = ["server 203.0.113.7",
+                "├─ :22   sshd    → the admin door",
+                "├─ :80   nginx   → the website",
+                "├─ :443  nginx   → the website, encrypted",
+                "└─ :3306 mysql   → the database",
+                "",
+                "one IP, many doors — the port picks the door"]
+        return [_net_frame("ports: which program do you want?", base, -1)]
+    if kind == "dns":
+        base = ["you ── dig example.com ──▶ resolver 1.1.1.1",
+                "       resolver ──▶ root server   (where is .com?)",
+                "       resolver ──▶ .com server   (where is example.com?)",
+                "       resolver ──▶ example.com   (what is its IP?)",
+                "       answer: 93.184.216.34  (cached everywhere now)"]
+        return [_net_frame("DNS — the phone book lookup", base, hi)
+                for hi in range(5)]
+    if kind == "dhcp":
+        base = ["client (no IP) ──▶ Discover   'is anyone a DHCP server?'",
+                "server ──▶ client  Offer      'take 192.168.1.42'",
+                "client ──▶ server  Request    'yes, I want .42'",
+                "server ──▶ client  Ack        'done — it's yours for 12h'",
+                "",
+                "D iscover  O ffer  R equest  A ck  =  DORA"]
+        return [_net_frame("DHCP — the DORA dance", base, hi)
+                for hi in range(4)] + \
+               [_net_frame("DHCP — the DORA dance", base, 5)]
+    if kind == "tcp":
+        base = ["client ── SYN seq=100 ────────▶ server",
+                "client ◀─ SYN-ACK seq=300 ack=101 ─ server",
+                "client ── ACK ack=301 ────────▶ server",
+                "",
+                "three packets and the connection is up —",
+                "every byte after that is numbered and acked"]
+        return [_net_frame("the TCP three-way handshake", base, hi)
+                for hi in range(3)] + \
+               [_net_frame("the TCP three-way handshake", base, 5)]
+    return [_net_frame("", [])]
+
+
+# ---- topics: what gets taught, in order, with visuals --------------------- #
+# Each topic: level, concept, title, a short narration, the visual animation
+# kind, and how many quiz steps follow.  Quiz steps pull DIFFERENT questions
+# for the same concept each time, so a wrong answer is never re-asked with
+# the same wording.
+NET_TOPICS = [
+    (0, "network-basics", "what a network is",
+     "A network is just devices talking. Two computers and a cable is a "
+     "network. Add a switch and the whole office can share. The internet is "
+     "just networks wired together by routers.", "lan"),
+    (0, "osi-model", "the OSI model",
+     "The OSI model splits networking into seven layers, so we can talk "
+     "about one part without the rest. Physical, Data Link, Network, "
+     "Transport, Session, Presentation, Application. Devices live at "
+     "specific layers: switches at two, routers at three.", "osi"),
+    (0, "mac-vs-ip", "MAC vs IP",
+     "Every network card has a MAC address burned in at the factory. Every "
+     "interface gets an IP address for routing. MACs move frames on one "
+     "LAN; IPs carry packets end to end.", "lan"),
+    (0, "ports", "ports and services",
+     "An IP gets you to the right machine. A port gets you to the right "
+     "program on that machine. SSH is twenty two, HTTP is eighty, HTTPS is "
+     "four four three.", "ports"),
+    (0, "ipv4", "IPv4 addresses",
+     "IPv4 is thirty two bits, written as four numbers like 192.168.1.20. "
+     "Part of the address names the network, part names the host. The mask "
+     "says where the split is.", "subnet"),
+    (0, "dns", "DNS — the phone book",
+     "Humans remember names, machines route numbers. DNS translates "
+     "example.com into an IP, by asking resolvers and name servers up the "
+     "chain.", "dns"),
+    (0, "dhcp", "DHCP — automatic addresses",
+     "Plug in a device and it gets an address, mask, gateway and DNS "
+     "automatically. That is DHCP, and its four-step dance spells DORA.",
+     "dhcp"),
+    (0, "devices", "the devices",
+     "Switches connect devices inside a LAN. Routers connect LANs "
+     "together. Firewalls filter. Access points bridge Wi-Fi. Every box "
+     "has one job and you can name it.", "lan"),
+    (0, "cabling", "cables and Wi-Fi",
+     "Copper twisted pair carries electricity. Fiber carries light. Wi-Fi "
+     "carries radio. Each has speed limits and distance limits, and the "
+     "category number on the cable tells you the speed.", "lan"),
+    (0, "switching", "how a switch learns",
+     "A switch reads the source MAC of every frame and remembers which "
+     "port it came from. Unknown destinations get flooded, known ones go "
+     "straight to their port. After seconds, the switch knows the whole "
+     "LAN.", "lan"),
+    (1, "subnetting", "subnetting",
+     "A network can be sliced into smaller networks by moving the split "
+     "between network and host bits. A slash twenty four becomes two slash "
+     "twenty fives, and so on. Every slice needs its network address and "
+     "broadcast address, which no host may use.", "subnet"),
+    (1, "arp", "ARP — IP to MAC",
+     "On one LAN, delivery is by MAC. ARP broadcasts who has this IP, the "
+     "owner answers with its MAC, and the sender caches it.", "lan"),
+    (1, "tcp-udp", "TCP vs UDP",
+     "TCP is the careful courier: connection, ordering, retransmission. "
+     "UDP is the fire-and-forget one: fast but no guarantees. The web uses "
+     "TCP; video calls and DNS prefer UDP.", "tcp"),
+    (1, "routing", "how routing works",
+     "A router compares the destination IP against its routing table and "
+     "picks the most specific match. The default route catches everything "
+     "else. Traceroute shows the path, hop by hop.", "lan"),
+    (1, "vlans", "VLANs and trunks",
+     "One switch can carry several separate LANs using VLANs. Access ports "
+     "belong to one VLAN; trunk ports carry them all, tagged with eight oh "
+     "two one Q.", "subnet"),
+    (1, "nat", "NAT and private addresses",
+     "Private addresses cannot travel the internet. NAT rewrites them to "
+     "the one public address at the edge, and remembers how to route the "
+     "replies home.", "lan"),
+    (1, "firewall", "firewalls",
+     "A firewall enforces rules: who may talk to what, on which ports. "
+     "Stateful firewalls remember connections so replies need no extra "
+     "rule.", "lan"),
+    (1, "dns-records", "DNS records",
+     "DNS stores more than addresses: A records for IPv4, AAAA for IPv6, "
+     "CNAME aliases, MX for mail, NS for name servers. Dig shows you the "
+     "raw answers.", "dns"),
+    (1, "wifi-sec", "Wi-Fi security",
+     "WEP was broken years ago. WPA with TKIP was the stopgap. WPA2 with "
+     "AES is the standard, and WPA3 is the new floor, with forward secrecy.",
+     "lan"),
+    (1, "troubleshooting", "troubleshooting tools",
+     "Ping tests reachability, traceroute maps the path, ss shows "
+     "listening ports, ip route shows the routing table, dig checks DNS. "
+     "Bottom up is the discipline: cable, then address, then service.",
+     "lan"),
+    (2, "ospf", "OSPF — the interior protocol",
+     "OSPF shares routes inside one organization. It builds a map of the "
+     "area and runs shortest-path-first across it. Area zero is the "
+     "backbone; every other area touches it.", "lan"),
+    (2, "bgp", "BGP — the internet's glue",
+     "BGP stitches autonomous systems into the internet. Routes carry the "
+     "list of ASes they crossed, and a fixed order of attributes decides "
+     "which path wins.", "lan"),
+    (2, "stp", "Spanning tree",
+     "Redundant links are good; loops are fatal. Spanning tree elects a "
+     "root bridge and blocks every port that would create a cycle, then "
+     "unblocks one if a link dies.", "lan"),
+    (2, "ipv6", "IPv6",
+     "IPv6 is one hundred twenty eight bits — enough forever. Hosts build "
+     "their own addresses from router advertisements, and NDP replaces "
+     "ARP.", "subnet"),
+    (2, "vpn-ipsec", "VPNs and IPsec",
+     "A VPN is an encrypted tunnel. IPsec negotiates keys with IKE, then "
+     "ESP encrypts the payload — in tunnel mode, even the original header.",
+     "lan"),
+    (2, "design", "enterprise design",
+     "Big networks are built in tiers: access where hosts plug in, "
+     "distribution where policy lives, core where speed matters. "
+     "Redundancy everywhere: HSRP gateways, LACP bundles, spanning tree.",
+     "lan"),
+    (2, "qos", "QoS",
+     "When a link is full, someone must wait. QoS marks packets with DSCP "
+     "classes and the router serves the important queue first, so voice "
+     "stays clear while downloads queue.", "lan"),
+]
+
+# ---- the Linux network simulation ----------------------------------------- #
+# A deterministic simulated device: interfaces, ARP/neighbor table, routing
+# table, forwarding flag and a firewall.  Commands mutate state exactly like
+# their real counterparts and output realistic text, so the labs read like a
+# genuine console.  No AI, no network — it's all state transitions.
+
+
+class NetDevice:
+    """One simulated Linux network device (host or router)."""
+
+    def __init__(self, name: str = "office-router"):
+        self.name = name
+        self.ifaces = {"lo": {"ip": "127.0.0.1", "prefix": 8, "up": True,
+                              "mac": "00:00:00:00:00:00"}}
+        self.neigh = {}          # ip -> mac (ARP table)
+        self.routes = []         # [(cidr, via|None, dev|None)]
+        self.forwarding = False
+        self.rules = []          # firewall rules: (action, proto, port, src)
+        self.dhcp_enabled = False
+        self.dhcp_range = None
+        self.dhcp_leases = {}
+        self.history = []        # every command run (for ↑ recall)
+
+    # -- helpers --------------------------------------------------------- #
+    def _iface(self, name: str):
+        if name not in self.ifaces:
+            return None
+        return self.ifaces[name]
+
+    def _net_of(self, iface) -> int:
+        mask = _ip_to_int(_prefix_to_mask(iface["prefix"]))
+        return _ip_to_int(iface["ip"]) & mask
+
+    def _local_iface(self, ip: str) -> str | None:
+        """The interface whose subnet contains ip, if any.  Unconfigured
+        interfaces (no address) never match — prefix 0 would claim every IP."""
+        n = _ip_to_int(ip)
+        for name, iface in self.ifaces.items():
+            if name == "lo":
+                continue
+            if (iface["up"] and iface["prefix"] > 0
+                    and iface["ip"] != "0.0.0.0"
+                    and _ip_to_int(iface["ip"]) & _ip_to_int(
+                        _prefix_to_mask(iface["prefix"]))
+                    == n & _ip_to_int(_prefix_to_mask(iface["prefix"]))):
+                return name
+        return None
+
+    def _route_for(self, ip: str):
+        """Longest-prefix match; returns (via, dev) or None."""
+        n = _ip_to_int(ip)
+        best, best_plen = None, -1
+        for cidr, via, dev in self.routes:
+            net, plen = cidr.split("/")
+            if n & _ip_to_int(_prefix_to_mask(int(plen))) == _ip_to_int(net):
+                if int(plen) > best_plen:
+                    best, best_plen = (via, dev), int(plen)
+        return best
+
+    # -- command handlers ------------------------------------------------- #
+    def run(self, cmd: str) -> list:
+        """Run one shell command; returns output lines (no prompt)."""
+        self.history.append(cmd)
+        try:
+            c = cmd.strip()
+            if not c:
+                return []
+            if c.startswith("hostname"):
+                return [self.name] if " " not in c else []
+            if c.startswith("ip addr add"):
+                return self._ip_addr_add(c)
+            if c.startswith("ip addr del"):
+                return self._ip_addr_del(c)
+            if c.startswith("ip addr") or c in ("ip a", "ip address"):
+                return self._ip_addr()
+            if c.startswith("ip link set"):
+                return self._ip_link_set(c)
+            if c.startswith("ip route"):
+                return self._ip_route(c)
+            if c.startswith("ip neigh"):
+                return self._ip_neigh(c)
+            if c.startswith("sysctl") and "ip_forward" in c:
+                return self._sysctl_forward(c)
+            if c.startswith("cat /proc/sys/net/ipv4/ip_forward"):
+                return [("1" if self.forwarding else "0")]
+            if c.startswith("ping"):
+                return self._ping(c)
+            if c.startswith("ss "):
+                return self._ss(c)
+            if c.startswith("nft ") or c.startswith("iptables "):
+                return self._firewall(c)
+            if c.startswith("echo "):
+                return []
+            if c.startswith("dnsmasq "):
+                return self._dnsmasq(c)
+            if c.startswith("systemctl ") and "dnsmasq" in c:
+                return self._dnsmasq_svc(c)
+            if c.startswith("cat ") and c.endswith("dnsmasq.conf"):
+                return self._dnsmasq_conf()
+            if " > " in c and c.endswith(".conf"):
+                return self._write_conf(c)
+            if c.startswith("ipconfig") or c.startswith("ifconfig"):
+                return [f"ifconfig is legacy — try 'ip a' on this box"]
+            return [f"bash: {c.split()[0]}: command not found"]
+        except Exception:
+            return ["error: that command didn't parse — check the syntax"]
+
+    def _ip_addr(self) -> list:
+        out = []
+        for i, (name, iface) in enumerate(self.ifaces.items(), 1):
+            state = "UP" if iface["up"] else "DOWN"
+            out.append(f"{i}: {name}: <{state},LOWER_UP> mtu 1500 qdisc "
+                       f"state {state} group default")
+            out.append(f"    link/ether {iface['mac']}")
+            out.append(f"    inet {iface['ip']}/{iface['prefix']} scope "
+                       f"global {name}")
+        return out
+
+    def _ip_link_set(self, c: str) -> list:
+        parts = c.split()
+        dev = parts[parts.index("dev") + 1] if "dev" in parts else \
+            parts[3] if len(parts) > 3 else None
+        if dev not in self.ifaces:
+            return [f'Cannot find device "{dev}"']
+        if "up" in parts:
+            self.ifaces[dev]["up"] = True
+        elif "down" in parts:
+            self.ifaces[dev]["up"] = False
+        return []
+
+    def _ip_addr_add(self, c: str) -> list:
+        parts = c.split()
+        try:
+            dev = parts[parts.index("dev") + 1]
+        except ValueError:
+            return ["Error: an inet address is expected."]
+        if dev not in self.ifaces:
+            return [f'Cannot find device "{dev}"']
+        addr = [p for p in parts if "/" in p and "." in p]
+        if not addr:
+            return ["Error: an inet address is expected."]
+        ip, prefix = addr[0].split("/")
+        self.ifaces[dev]["ip"] = ip
+        self.ifaces[dev]["prefix"] = int(prefix)
+        return []
+
+    def _ip_addr_del(self, c: str) -> list:
+        parts = c.split()
+        dev = parts[parts.index("dev") + 1] if "dev" in parts else None
+        addr = [p for p in parts if "/" in p and "." in p]
+        if dev in self.ifaces and addr:
+            ip = addr[0].split("/")[0]
+            if self.ifaces[dev]["ip"] == ip:
+                self.ifaces[dev]["ip"] = "0.0.0.0"
+                self.ifaces[dev]["prefix"] = 0
+        return []
+
+    def _ip_route(self, c: str) -> list:
+        parts = c.split()
+        if "add" in parts:
+            if "default" in parts:
+                via = parts[parts.index("via") + 1] if "via" in parts else None
+                self.routes = [r for r in self.routes if r[0] != "0.0.0.0/0"]
+                self.routes.append(("0.0.0.0/0", via, None))
+            else:
+                net = parts[parts.index("add") + 1]
+                via = parts[parts.index("via") + 1] if "via" in parts else None
+                dev = parts[parts.index("dev") + 1] if "dev" in parts else None
+                self.routes.append((net, via, dev))
+            return []
+        if "del" in parts:
+            net = parts[parts.index("del") + 1]
+            self.routes = [r for r in self.routes if r[0] != net]
+            return []
+        out = []
+        for net, via, dev in self.routes:
+            if via:
+                out.append(f"{net} via {via} dev {dev or ''} proto static")
+            elif dev:
+                out.append(f"{net} dev {dev} proto kernel scope link")
+        # connected routes
+        for name, iface in self.ifaces.items():
+            if name == "lo" or not iface["up"]:
+                continue
+            net = f"{_int_to_ip(self._net_of(iface))}/{iface['prefix']}"
+            out.append(f"{net} dev {name} proto kernel scope link src "
+                       f"{iface['ip']}")
+        return out
+
+    def _ip_neigh(self, c: str) -> list:
+        if not self.neigh:
+            return []
+        return [f"{ip} dev eth0 lladdr {mac} REACHABLE"
+                for ip, mac in self.neigh.items()]
+
+    def _sysctl_forward(self, c: str) -> list:
+        if "=" in c:
+            self.forwarding = c.rsplit("=", 1)[1].strip() == "1"
+        return [f"net.ipv4.ip_forward = {1 if self.forwarding else 0}"]
+
+    def _firewall(self, c: str) -> list:
+        parts = c.split()
+        if c.strip() in ("nft list ruleset", "iptables -L", "iptables -S"):
+            if not self.rules:
+                return ["(empty ruleset)"]
+            out = ["Chain INPUT (policy ACCEPT)"]
+            for i, (act, proto, port, src) in enumerate(self.rules, 1):
+                out.append(f"{i}  {act.upper():<6} proto {proto} dport "
+                           f"{port or 'any'} {src or ''}".rstrip())
+            return out
+        if "flush" in parts:
+            self.rules = []
+            return []
+        # add rule:  nft add rule ip filter INPUT tcp dport 22 accept
+        #            iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+        if "add rule" in c or "-A" in parts:
+            if "dport" in parts or "--dport" in parts:
+                idx = parts.index("dport") if "dport" in parts else \
+                    parts.index("--dport")
+                port = parts[idx + 1]
+            else:
+                port = None
+            proto = parts[parts.index("-p") + 1] if "-p" in parts else "ip"
+            act = "accept" if ("accept" in parts or "ACCEPT" in parts) else \
+                "drop"
+            self.rules.append((act, proto, port, None))
+            return []
+        return ["error: unknown firewall syntax"]
+
+    def _dnsmasq(self, c: str) -> list:
+        if "test" in c:
+            if not self.dhcp_enabled:
+                return ["dnsmasq: no dhcp-range configured in "
+                        "/etc/dnsmasq.conf", "dnsmasq: FAILED to start up"]
+            iface = next((n for n, i in self.ifaces.items()
+                          if i["up"] and n != "lo"), None)
+            if not iface:
+                return ["dnsmasq: no interface with address configured",
+                        "dnsmasq: FAILED to start up"]
+            return [f"dnsmasq: syntax check OK", "dnsmasq: started, "
+                    f"version 2.90 cachesize 150", f"dnsmasq: DHCP, "
+                    f"serving range {self.dhcp_range[0]} -> "
+                    f"{self.dhcp_range[1]}", f"dnsmasq: read {len(self.dhcp_leases) + 2} leases"]
+        return ["dnsmasq: bad command line options: try 'dnsmasq --test'"]
+
+    def _dnsmasq_svc(self, c: str) -> list:
+        if "restart" in c:
+            return self._dnsmasq("dnsmasq --test") if self.dhcp_enabled else \
+                ["Job for dnsmasq.service failed because the control process "
+                 "exited with error code.", "See systemctl status dnsmasq."]
+        if "enable" in c:
+            return ["Created symlink /etc/systemd/system/"
+                    "multi-user.target.wants/dnsmasq.service"]
+        if "status" in c:
+            return ["● dnsmasq.service - dnsmasq - A lightweight DHCP and "
+                    "caching DNS server", "   Active: active (running)"] if \
+                self.dhcp_enabled else [
+                    "● dnsmasq.service", "   Active: failed"]
+        return []
+
+    def _dnsmasq_conf(self) -> list:
+        lines = ["# /etc/dnsmasq.conf (simulated)"]
+        if self.dhcp_range:
+            lines.append(f"dhcp-range={self.dhcp_range[0]},"
+                         f"{self.dhcp_range[1]},12h")
+        return lines
+
+    def _write_conf(self, c: str) -> list:
+        left, right = c.split(">", 1)
+        if right.strip().endswith("dnsmasq.conf") and left.strip().startswith(
+                ("cat", "printf", "tee", "echo")):
+            body = left.strip().split(None, 1)
+            body = body[1] if len(body) > 1 else ""
+            m = re.search(r"dhcp-range=([\d.]+),([\d.]+)", body)
+            if m:
+                self.dhcp_range = (m.group(1), m.group(2))
+                self.dhcp_enabled = True
+                self.dhcp_leases["192.168.1.100"] = \
+                    "aa:bb:cc:00:00:01"
+            return []
+        return ["bash: syntax error near unexpected token"]
+
+    def _ss(self, c: str) -> list:
+        listeners = [("0.0.0.0:22", "sshd"), ("0.0.0.0:53", "dnsmasq"),
+                     ("0.0.0.0:23", "telnetd")]
+        if self.rules:
+            listeners = [l for l in listeners
+                         if not any(r[0] == "drop" and r[2] ==
+                                    l[0].split(":")[1] for r in self.rules)]
+        if self.dhcp_enabled:
+            listeners = [l for l in listeners if l[1] != "dnsmasq"] + \
+                [("0.0.0.0:67", "dnsmasq")]
+        out = ["Netid  State   Recv-Q Send-Q Local Address:Port Peer "
+               "Address:Port Process"]
+        for addr, proc in listeners:
+            out.append(f"tcp    LISTEN  0      128    {addr:<22}       "
+                       f"users:((\"{proc}\",pid=42,fd=3))")
+        return out
+
+    def _ping(self, c: str) -> list:
+        parts = c.split()
+        ip = [p for p in parts if re.match(r"^\d+\.\d+\.\d+\.\d+$", p)]
+        if not ip:
+            return ["ping: unknown host"]
+        ip = ip[0]
+        if ip in ("127.0.0.1", "127.0.0.8"):
+            return ["PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.",
+                    "64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.031 ms",
+                    "64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.028 ms",
+                    "", "--- 127.0.0.1 ping statistics ---",
+                    "2 packets transmitted, 2 received, 0% packet loss"]
+        # local subnet → needs the target's MAC via ARP (auto-filled)
+        iface = self._local_iface(ip)
+        if iface:
+            if self._iface(iface)["ip"] == ip:
+                return ["PING self — that's your own interface, always up"]
+            if ip not in self.neigh:
+                self.neigh[ip] = "aa:bb:cc:" + ":".join(
+                    f"{int(o):02x}" for o in ip.split(".")[:3])
+            return [f"PING {ip} ({ip}) 56(84) bytes of data.",
+                    f"64 bytes from {ip}: icmp_seq=1 ttl=64 time=0.412 ms",
+                    f"64 bytes from {ip}: icmp_seq=2 ttl=64 time=0.399 ms",
+                    "", f"--- {ip} ping statistics ---",
+                    "2 packets transmitted, 2 received, 0% packet loss"]
+        # off-subnet → needs forwarding + a route
+        route = self._route_for(ip)
+        if not self.forwarding and route and route[0]:
+            src = next((self.ifaces[n]["ip"] for n in self.ifaces
+                        if n != "lo" and self.ifaces[n]["up"] and
+                        self.ifaces[n]["ip"] != "0.0.0.0"), "0.0.0.0")
+            return [f"PING {ip} ({ip}) 56(84) bytes of data.",
+                    f"From {src} icmp_seq=1 Destination Host Unreachable",
+                    f"From {src} icmp_seq=2 Destination Host Unreachable",
+                    "", f"--- {ip} ping statistics ---",
+                    "2 packets transmitted, 0 received, +2 errors, 100% "
+                    "packet loss"]
+        if not route:
+            return [f"ping: connect: Network is unreachable"]
+        if self.forwarding and route:
+            return [f"PING {ip} ({ip}) 56(84) bytes of data.",
+                    f"64 bytes from {ip}: icmp_seq=1 ttl=63 time=1.21 ms",
+                    f"64 bytes from {ip}: icmp_seq=2 ttl=63 time=1.18 ms",
+                    "", f"--- {ip} ping statistics ---",
+                    "2 packets transmitted, 2 received, 0% packet loss"]
+        return ["ping: connect: Network is unreachable"]
+
+
+NET_LABS = [
+    {
+        "title": "plug the box into the LAN",
+        "level": 0,
+        "brief": "A fresh office PC has no network config. Give it an address "
+                 "on 192.168.1.0/24, bring the link up, and set a default "
+                 "gateway so it can reach the internet.",
+        "device": {"ifaces": {
+            "lo": {"ip": "127.0.0.1", "prefix": 8, "up": True,
+                   "mac": "00:00:00:00:00:00"},
+            "eth0": {"ip": "0.0.0.0", "prefix": 0, "up": False,
+                     "mac": "aa:bb:cc:00:00:0a"},
+            "eth1": {"ip": "0.0.0.0", "prefix": 0, "up": False,
+                     "mac": "aa:bb:cc:00:00:0b"}},
+         "routes": [], "forwarding": False},
+        "checks": [
+            ("ip addr add 192.168.1.10/24 dev eth0",
+             "address on eth0",
+             lambda d: d.ifaces["eth0"]["ip"] == "192.168.1.10"),
+            ("ip link set eth0 up", "link up",
+             lambda d: d.ifaces["eth0"]["up"]),
+            ("ip route add default via 192.168.1.1", "default gateway",
+             lambda d: any(r[0] == "0.0.0.0/0" and r[1] == "192.168.1.1"
+                           for r in d.routes)),
+            ("ping 8.8.8.8", "reach the internet",
+             lambda d: any(r[0] == "0.0.0.0/0" and r[1] == "192.168.1.1"
+                           for r in d.routes) and d.ifaces["eth0"]["up"] and
+             d.forwarding is False and d._local_iface("8.8.8.8") is None),
+        ],
+        "hints": [
+            "ip addr add 192.168.1.10/24 dev eth0",
+            "ip link set eth0 up",
+            "ip route add default via 192.168.1.1",
+            "ping 8.8.8.8",
+        ],
+    },
+    {
+        "title": "turn the box into a router",
+        "level": 1,
+        "brief": "This machine sits between two networks: 192.168.1.0/24 "
+                 "(eth0) and 10.10.10.0/24 (eth1). Give each interface its "
+                 "address, enable packet forwarding, and prove traffic can "
+                 "cross from one side to the other.",
+        "device": {"ifaces": {
+            "lo": {"ip": "127.0.0.1", "prefix": 8, "up": True,
+                   "mac": "00:00:00:00:00:00"},
+            "eth0": {"ip": "0.0.0.0", "prefix": 0, "up": False,
+                     "mac": "aa:bb:cc:00:00:0a"},
+            "eth1": {"ip": "0.0.0.0", "prefix": 0, "up": False,
+                     "mac": "aa:bb:cc:00:00:0b"}},
+         "routes": [], "forwarding": False},
+        "checks": [
+            ("ip addr add 192.168.1.1/24 dev eth0", "eth0 = 192.168.1.1/24",
+             lambda d: d.ifaces["eth0"]["ip"] == "192.168.1.1"),
+            ("ip link set eth0 up", "eth0 up",
+             lambda d: d.ifaces["eth0"]["up"]),
+            ("ip addr add 10.10.10.1/24 dev eth1", "eth1 = 10.10.10.1/24",
+             lambda d: d.ifaces["eth1"]["ip"] == "10.10.10.1"),
+            ("ip link set eth1 up", "eth1 up",
+             lambda d: d.ifaces["eth1"]["up"]),
+            ("sysctl -w net.ipv4.ip_forward=1", "enable forwarding",
+             lambda d: d.forwarding),
+            ("ping 10.10.10.50", "traffic crosses the router",
+             lambda d: d.forwarding and d.ifaces["eth1"]["up"] and
+             d.ifaces["eth1"]["ip"] == "10.10.10.1"),
+        ],
+        "hints": [
+            "ip addr add 192.168.1.1/24 dev eth0",
+            "ip addr add 10.10.10.1/24 dev eth1",
+            "ip link set eth0 up && ip link set eth1 up",
+            "sysctl -w net.ipv4.ip_forward=1",
+            "ping 10.10.10.50",
+        ],
+    },
+    {
+        "title": "lock the firewall down",
+        "level": 1,
+        "brief": "A server is listening on SSH, Telnet and a web app. Telnet "
+                 "is a disaster waiting to happen: drop its port, make sure "
+                 "SSH stays reachable, and verify with ss.",
+        "device": {"ifaces": {
+            "lo": {"ip": "127.0.0.1", "prefix": 8, "up": True,
+                   "mac": "00:00:00:00:00:00"},
+            "eth0": {"ip": "192.168.1.10", "prefix": 24, "up": True,
+                     "mac": "aa:bb:cc:00:00:0a"}},
+         "routes": [], "forwarding": False, "rules": []},
+        "checks": [
+            ("nft add rule ip filter INPUT tcp dport 23 drop",
+             "drop Telnet (23)",
+             lambda d: any(r[0] == "drop" and r[2] == "23"
+                           for r in d.rules)),
+            ("nft add rule ip filter INPUT tcp dport 22 accept",
+             "allow SSH (22)",
+             lambda d: any(r[0] == "accept" and r[2] == "22"
+                           for r in d.rules)),
+            ("ss -tulpn", "verify the listener is gone",
+             lambda d: any(r[0] == "drop" and r[2] == "23"
+                           for r in d.rules) and any(
+                               r[0] == "accept" and r[2] == "22"
+                               for r in d.rules)),
+        ],
+        "hints": [
+            "nft add rule ip filter INPUT tcp dport 23 drop",
+            "nft add rule ip filter INPUT tcp dport 22 accept",
+            "ss -tulpn   (telnetd should be gone, sshd still there)",
+        ],
+    },
+]
+
+
+def _net_lab_device(spec: dict) -> NetDevice:
+    """A fresh NetDevice wired exactly like the lab spec."""
+    d = NetDevice()
+    d.ifaces = {k: dict(v) for k, v in spec["ifaces"].items()}
+    d.routes = list(spec.get("routes", []))
+    d.forwarding = spec.get("forwarding", False)
+    d.rules = list(spec.get("rules", []))
+    return d
+
+
+# grouped modules for the picker: (name, first_topic, count)
+NET_MODULES = []
+for _ni, _nt in enumerate(NET_TOPICS):
+    _lv = NET_LEVELS[_nt[0]]
+    if not NET_MODULES or NET_MODULES[-1]["name"] != _lv:
+        NET_MODULES.append({"name": _lv, "first": _ni, "count": 0})
+    NET_MODULES[-1]["count"] += 1
+# the labs sit at the end of the course, one per level
+NET_MODULES.append({"name": "NETWORK LABS", "first": len(NET_TOPICS),
+                    "count": len(NET_LABS)})
+
+
+def net_checkpoint_label(p: dict) -> str:
+    """One-line 'where am I' for the NETWORK+ resume display."""
+    if p.get("net_course_done"):
+        return "NETWORK+ — course complete"
+    m = p.get("net_module")
+    if not isinstance(m, int) or not (0 <= m < len(NET_MODULES)):
+        return ""
+    name = NET_MODULES[m]["name"]
+    ti = p.get("net_topic", 0)
+    if m < 3:
+        topics = [t for t in NET_TOPICS if t[0] == m]
+        if 0 <= ti < len(topics):
+            return f"NETWORK+ · {name} · {topics[ti][2]}"
+    return f"NETWORK+ · {name}"
+
+
 # Post-ghost vim edit warm-up: a short run of real edits the user must perform in
 # the ACTUAL editor (not the demo buffer) so the motions they just learned get
 # exercised right before the Python challenge. Each task starts from the same
@@ -7850,6 +10341,17 @@ class CloudTrainer(Vertical):
         self.app._dev_on_key(event)
 
 
+class NetTrainer(Vertical):
+    """Full-screen NETWORK+ overlay: an animated diagram canvas (left) with a
+    quiz / lab terminal (right).  The app owns all state; this widget holds
+    focus and pipes every keystroke to `app._net_on_key`."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._net_on_key(event)
+
+
 class CloudHelpIcon(Static):
     """The always-visible, clickable `?` in the dev top bar — opens the
     command manual. Mouse-click only (the trainer owns the keyboard)."""
@@ -8035,6 +10537,17 @@ class TutorApp(App):
     #dev.visible { display: block; }
     #dev-topbar { width: 100%; height: auto; }
     #dev-head { width: 1fr; height: auto; }
+    #net { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #net.visible { display: block; }
+    #net-topbar { width: 100%; height: auto; }
+    #net-head { width: 1fr; height: auto; }
+    #net-body { width: 100%; height: 1fr; }
+    #net-canvas-box { width: 1fr; height: 100%; border: round #334155; padding: 0 1; }
+    #net-canvas { width: 100%; height: 100%; }
+    #net-side { width: 45%; height: 100%; border: round #334155; padding: 0 1; }
+    #net-side-title { width: 100%; height: auto; }
+    #net-side-body { width: 100%; height: 1fr; }
+    #net-foot { width: 100%; height: auto; }
     #dev-help-icon { width: 5; height: 3; padding: 0 1; color: #d5d5d5; text-style: bold; }
     #dev-help-icon:hover { background: $surface; color: $text; }
     #dev-ghost { width: 100%; height: 3; padding: 0 2; background: #0d1117; border: solid #30363d; }
@@ -8251,6 +10764,27 @@ class TutorApp(App):
         self._dev_flash = 0
         self._dev_flash_timer = None
         self._dev_adv_timer = None
+        self._net_on = False          # NETWORK+ overlay open
+        self._net_module = 0          # current module idx (0-3)
+        self._net_queue: list = []    # pending steps for this module
+        self._net_step = None         # the step being worked (dict)
+        self._net_topic_i = 0         # topic position inside the module
+        self._net_topics_n = 0        # topic count inside the module
+        self._net_quiz_n = 0          # quizzes answered (recap cadence)
+        self._net_history: list = []  # (question, right?) — recap pool
+        self._net_asked = 0           # quiz steps completed (retrain scaling)
+        self._net_dev = None          # NetDevice for the current lab
+        self._net_lab_i = -1          # lab idx (-1 = not in a lab)
+        self._net_cmd = ""            # the lab command being typed
+        self._net_out: list = []      # (style, text) lab terminal scrollback
+        self._net_done_checks = set() # lab checks completed
+        self._net_msg = ""            # transient feedback line
+        self._net_msg_kind = ""       # "win" | "hint" | "retrain"
+        self._net_anim_frames: list = []   # current animation frames
+        self._net_anim_i = 0
+        self._net_anim_timer = None
+        self._net_gen = 0             # timer generation counter
+        self._net_retrain: list = []  # topics flagged weak this module
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -8397,6 +10931,16 @@ class TutorApp(App):
                     yield Static("", id="dev-state-tree")
             yield Static("", id="dev-foot")
         yield Static("", id="dev-help")
+        with NetTrainer(id="net"):
+            with Horizontal(id="net-topbar"):
+                yield Static("", id="net-head")
+            with Horizontal(id="net-body"):
+                with Vertical(id="net-canvas-box"):
+                    yield Static("", id="net-canvas")
+                with Vertical(id="net-side"):
+                    yield Static("", id="net-side-title")
+                    yield Static("", id="net-side-body")
+            yield Static("", id="net-foot")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -8480,6 +11024,8 @@ class TutorApp(App):
             self._render_series_list()
         elif self.menu_level == "dev_modules":
             self._render_dev_module_list()
+        elif self.menu_level == "net_modules":
+            self._render_net_module_list()
         else:
             self._render_challenge_list()
         self._render_menu_preview()
@@ -8628,9 +11174,83 @@ class TutorApp(App):
         scroll = self.query_one("#menu-list", VerticalScroll)
         self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
 
+    def _net_module_items(self):
+        """The NETWORK+ picker list: an optional resume entry, then the modules."""
+        items = []
+        if isinstance(self.p.get("net_module"), int) \
+                and not self.p.get("net_course_done"):
+            m = min(self.p["net_module"], len(NET_MODULES) - 1)
+            items.append({"name": "Resume where you left off", "first": m,
+                          "resume": True, "count": 0, "done": 0})
+        for i, m in enumerate(NET_MODULES):
+            done = self.p.get("net_done", {}).get(m["name"], 0)
+            items.append({"name": m["name"], "first": i, "resume": False,
+                          "count": m["count"], "done": done})
+        return items
+
+    def _net_enter_module(self):
+        items = self._net_module_items()
+        if 0 <= self.menu_sel < len(items):
+            play_menu_blip(3)
+            self._net_begin(items[self.menu_sel]["first"])
+
+    def _render_net_module_list(self):
+        t = Text()
+        t.append("── NETWORK+ ", style="bold #ffa657")
+        t.append(f"({len(NET_MODULES)} modules · {len(NET_QUESTIONS)} "
+                 f"questions · 3 labs)", style="dim")
+        t.append("\n\n")
+        items = self._net_module_items()
+        sel_line = 0
+        line_no = 0
+        for i, it in enumerate(items):
+            sel = i == self.menu_sel
+            line = Text()
+            line.append("▶ " if sel else "  ")
+            if it.get("resume"):
+                line.append("⏵ ", style="bold yellow")
+                line.append(it["name"], style="bold yellow" if sel else "#fbbf24")
+            else:
+                if it["done"] >= it["count"] and it["count"] > 0:
+                    line.append("✓ ", style="green")
+                else:
+                    line.append("· ", style="dim")
+                line.append(it["name"], style="bold" if sel else "#d5d5d5")
+                line.append(f"   {it['done']}/{it['count']}", style="dim")
+            if sel:
+                line.stylize("reverse")
+                sel_line = line_no
+            t.append_text(line)
+            t.append("\n")
+            line_no += 1
+        t.append("\nEnter — start · Esc — back to series · j/k — move", style="dim")
+        self.query_one("#menu-list-inner", Static).update(t)
+        scroll = self.query_one("#menu-list", VerticalScroll)
+        self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
+
     def _render_series_list(self):
         t = Text()
         t.append("CHOOSE A SERIES", style="bold magenta")
+        t.append("\n\n")
+        # NETWORK+ — the noob → engineer networking path (series_sel == -4)
+        sel = self.series_sel == -4
+        t.append("▶ " if sel else "  ")
+        if self.p.get("net_course_done"):
+            t.append("✓ ", style="green")
+        t.append("NETWORK+", style="bold #ffa657" if sel else "#f0a05a")
+        t.append("   noob → network engineer", style="dim")
+        t.append("\n")
+        t.append("   ")
+        t.append("300+ foundations · 150+ intermediate · 100+ advanced questions",
+                 style="dim")
+        t.append("\n")
+        t.append("   ")
+        t.append("animated diagrams · quizzes with retraining · Linux config labs",
+                 style="dim")
+        label = net_checkpoint_label(self.p)
+        if label:
+            t.append("\n   ")
+            t.append(f"⏵ resume: {label}", style="bold yellow")
         t.append("\n\n")
         # CLOUD & DEVOPS — the noob → engineer path (series_sel == -3)
         sel = self.series_sel == -3
@@ -8721,8 +11341,8 @@ class TutorApp(App):
         self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
 
     def _preview_challenge(self):
-        if self.series_sel in (-1, -2, -3):
-            return None   # VIM / BUILD / CLOUD courses — handled separately in _render_menu_preview
+        if self.series_sel in (-1, -2, -3, -4):
+            return None   # VIM / BUILD / CLOUD / NETWORK+ courses — handled separately
         if self.menu_level == "series":
             g = GROUPS[self.series_sel]
             return g["challenges"][0] if g["challenges"] else None
@@ -8730,6 +11350,55 @@ class TutorApp(App):
         return g["challenges"][self.menu_sel] if 0 <= self.menu_sel < len(g["challenges"]) else None
 
     def _render_menu_preview(self):
+        if self.series_sel == -4:
+            if self.menu_level == "net_modules":
+                self.query_one("#menu-preview-title", Static).update("MODULE")
+                items = self._net_module_items()
+                t = Text()
+                if 0 <= self.menu_sel < len(items):
+                    it = items[self.menu_sel]
+                    if it.get("resume"):
+                        t.append("Pick up right where you left off.\n\n", style="#f0f0f5")
+                        t.append("press Enter to resume", style="dim")
+                    else:
+                        t.append(it["name"], style="bold #ffa657")
+                        t.append("\n\n")
+                        t.append(f"{it['count']} topics · ", style="#d5d5d5")
+                        t.append(f"{it['done']}/{it['count']} done",
+                                 style="green" if it["done"] >= it["count"]
+                                 else "#d5d5d5")
+                        t.append("\n\n")
+                        t.append("press Enter to jump here and work through it "
+                                 "again", style="dim")
+                self.query_one("#menu-preview-inner", Static).update(t)
+                return
+            self.query_one("#menu-preview-title", Static).update(
+                "PREVIEW — NETWORK+")
+            t = Text()
+            t.append("Go from knowing nothing about networking to Network+ "
+                     "level.\n\n", style="#f0f0f5")
+            for line in ("animated diagrams — watch packets move, DHCP dance, "
+                         "TCP shake hands",
+                         "550+ questions across three levels",
+                         "wrong answer? it re-teaches you a DIFFERENT way, "
+                         "deeper, then re-asks differently",
+                         "questions come back through and through — missed "
+                         "ones first",
+                         "weak topics get re-drilled until they stick "
+                         "(tracked in the backend)",
+                         "build real networks: ip, routes, firewalls, "
+                         "dnsmasq — in a live Linux console"):
+                t.append("• ", style="dim")
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\n")
+            t.append(f"{len(NET_MODULES)} modules · ", style="dim")
+            t.append(f"{len(NET_QUESTIONS)} questions", style="#d5d5d5")
+            t.append(" · 3 config labs", style="dim")
+            t.append("\n\n")
+            t.append("press Enter to browse the modules", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
         if self.series_sel == -3:
             if self.menu_level == "dev_modules":
                 self.query_one("#menu-preview-title", Static).update("MODULE")
@@ -8954,9 +11623,12 @@ class TutorApp(App):
         if self.menu_level == "series":
             self.series_sel += 1
             if self.series_sel >= len(GROUPS):
-                self.series_sel = -3
+                self.series_sel = -4
         elif self.menu_level == "dev_modules":
             n = len(self._dev_module_items())
+            self.menu_sel = (self.menu_sel + 1) % n
+        elif self.menu_level == "net_modules":
+            n = len(self._net_module_items())
             self.menu_sel = (self.menu_sel + 1) % n
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
@@ -8969,10 +11641,13 @@ class TutorApp(App):
             return
         if self.menu_level == "series":
             self.series_sel -= 1
-            if self.series_sel < -3:
+            if self.series_sel < -4:
                 self.series_sel = len(GROUPS) - 1
         elif self.menu_level == "dev_modules":
             n = len(self._dev_module_items())
+            self.menu_sel = (self.menu_sel - 1) % n
+        elif self.menu_level == "net_modules":
+            n = len(self._net_module_items())
             self.menu_sel = (self.menu_sel - 1) % n
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
@@ -9013,6 +11688,8 @@ class TutorApp(App):
             return   # BUILD STUFF shell overlay owns the keyboard; Esc there exits it
         if self._dev_on:
             return   # CLOUD & DEVOPS overlay owns the keyboard; Esc there exits it
+        if self._net_on:
+            return   # NETWORK+ overlay owns the keyboard; Esc there exits it
         if self._lesson_on:
             self._finish_lesson()
             return
@@ -9027,7 +11704,7 @@ class TutorApp(App):
             self.query_one("#editor", VimEditor).focus()
             return
         if self.mode == "menu":
-            if self.menu_level in ("challenges", "dev_modules"):
+            if self.menu_level in ("challenges", "dev_modules", "net_modules"):
                 self.menu_level = "series"
                 self._render_menu()
             return
@@ -9064,6 +11741,8 @@ class TutorApp(App):
             return   # BUILD STUFF shell overlay owns the keyboard
         if self._dev_on:
             return   # CLOUD & DEVOPS overlay owns the keyboard
+        if self._net_on:
+            return   # NETWORK+ overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -9071,6 +11750,11 @@ class TutorApp(App):
             return
         if self.mode == "menu":
             if self.menu_level == "series":
+                if self.series_sel == -4:
+                    self.menu_level = "net_modules"
+                    self.menu_sel = 0
+                    self._render_menu()
+                    return
                 if self.series_sel == -3:
                     self.menu_level = "dev_modules"
                     self.menu_sel = 0
@@ -9092,6 +11776,8 @@ class TutorApp(App):
                 self._render_menu()
             elif self.menu_level == "dev_modules":
                 self._dev_enter_module()
+            elif self.menu_level == "net_modules":
+                self._net_enter_module()
             else:
                 self._select_challenge()
             return
@@ -11935,6 +14621,576 @@ class TutorApp(App):
             return t
         t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
+
+    # ---- NETWORK+ engine ------------------------------------------------- #
+    def _net_topics_for_module(self, module: int) -> list:
+        if module >= 3:
+            return []
+        return [t for t in NET_TOPICS if t[0] == module]
+
+    def _net_begin(self, module=None):
+        """Open the NETWORK+ overlay at a module (picker) or the saved spot."""
+        if module is None:
+            module = self.p.get("net_module", 0) \
+                if isinstance(self.p.get("net_module"), int) else 0
+        module = max(0, min(module, len(NET_MODULES) - 1))
+        self._net_on = True
+        self._net_module = module
+        self._net_queue = []
+        self._net_step = None
+        self._net_quiz_n = 0
+        self._net_asked = 0
+        self._net_retrain = []
+        self._net_last_topic_key = None
+        self.p.setdefault("net_skills", {})
+        self.p.setdefault("net_done", {})
+        # restore persisted recap history (question text -> (text, right))
+        hist = self.p.setdefault("net_history", [])
+        self._net_history = []
+        for qtext, ok in hist:
+            self._net_history.append(({"q": qtext}, ok))
+        self._qtext_map = {q["q"]: q for q in NET_QUESTIONS}
+        topics = self._net_topics_for_module(module)
+        self._net_topics_n = len(topics) if module < 3 else len(NET_LABS)
+        start_topic = 0
+        if module < 3 and isinstance(self.p.get("net_topic"), int) \
+                and self.p.get("net_module") == module:
+            start_topic = min(self.p["net_topic"], len(topics))
+        self._net_topic_i = start_topic
+        if module == 3:
+            for li in range(len(NET_LABS)):
+                self._net_queue.append({"kind": "lab_intro", "lab": li})
+                self._net_queue.append({"kind": "lab", "lab": li})
+        else:
+            for ti, topic in enumerate(topics):
+                if ti < start_topic:
+                    continue
+                self._net_queue.append({"kind": "lesson", "topic": topic})
+                for _ in range(4):
+                    self._net_queue.append({"kind": "quiz", "topic": topic,
+                                            "asked": [], "wrongs": 0,
+                                            "q": None})
+        self._net_lab_i = -1
+        self._net_cmd = ""
+        self._net_out = []
+        self._net_done_checks = set()
+        self._net_msg = ""
+        self._net_msg_kind = ""
+        self.query_one("#net", NetTrainer).add_class("visible")
+        self.query_one("#net", NetTrainer).focus()
+        self._net_next()
+
+    def _net_skill_score(self) -> int:
+        """Average per-concept accuracy, 0-100 (the skill backend readout)."""
+        skills = self.p.get("net_skills", {})
+        if not skills:
+            return 100
+        total = sum(s["right"] + s["wrong"] for s in skills.values())
+        if total == 0:
+            return 100
+        return int(round(sum(s["right"] for s in skills.values()) * 100 / total))
+
+    def _net_speak_q(self, q):
+        if not self.voice_on:
+            return
+        speak(q["q"])
+
+    def _net_next(self):
+        if not self._net_queue:
+            self._net_module_complete()
+            return
+        step = self._net_queue.pop(0)
+        if step["kind"] == "quiz":
+            if step.get("q") is None:
+                pool = _net_topic_qs(step["topic"][1])
+                step["q"] = pool[self._net_quiz_n % len(pool)]
+            step["asked"] = step.get("asked", [])
+            step["wrongs"] = step.get("wrongs", 0)
+            self._net_step = step
+            self._net_msg = ""
+            self._net_msg_kind = ""
+            self._net_speak_q(step["q"])
+        elif step["kind"] == "lesson":
+            self._net_step = step
+            topic = step["topic"]
+            if self._net_last_topic_key != id(topic) and not step.get("retrain"):
+                self._net_topic_i += 1
+                self._net_last_topic_key = id(topic)
+                self.p["net_module"] = self._net_module
+                self.p["net_topic"] = self._net_topic_i
+                save_progress(self.p)
+            self._net_start_anim(topic[4])
+            if self.voice_on:
+                if step.get("retrain"):
+                    speak("Let's rebuild that one from scratch — deeper this "
+                          "time. " + topic[3])
+                else:
+                    speak(topic[3])
+        elif step["kind"] == "recap":
+            self._net_step = step
+            q = step["q"]
+            self._net_msg = "recap — you saw this one earlier"
+            self._net_msg_kind = "hint"
+            self._net_speak_q(q)
+        elif step["kind"] == "lab_intro":
+            self._net_step = step
+            lab = NET_LABS[step["lab"]]
+            self._net_stop_anim()
+            if self.voice_on:
+                speak(lab["brief"])
+        elif step["kind"] == "lab":
+            self._net_step = step
+            self._net_lab_i = step["lab"]
+            lab = NET_LABS[self._net_lab_i]
+            self._net_dev = _net_lab_device(lab["device"])
+            self._net_out = []
+            self._net_cmd = ""
+            self._net_done_checks = set()
+            self._net_msg = ""
+            self._net_msg_kind = ""
+            self._net_stop_anim()
+        self._net_render()
+
+    def _net_queue_retrain(self, topic, drills):
+        """Re-teach a weak topic at the end of the module; more fails → more
+        drills, until the knowledge sticks."""
+        self._net_queue.append({"kind": "lesson", "topic": topic,
+                                "retrain": True})
+        for _ in range(min(3, max(1, drills))):
+            self._net_queue.append({"kind": "quiz", "topic": topic,
+                                    "asked": [], "wrongs": 0, "q": None,
+                                    "retrain": True})
+
+    def _net_maybe_recap(self):
+        """Every 6th quiz, a question from earlier comes back — missed ones
+        first (the 'through and through' re-asking)."""
+        if self._net_asked % 6 != 0 or not self._net_history:
+            return
+        missed = [qt for qt, ok in self._net_history if not ok]
+        pool = missed or [qt for qt, ok in self._net_history]
+        pick = pool[(self._net_asked // 6 - 1) % len(pool)]
+        qtext = pick.get("q") or ""
+        q = self._qtext_map.get(qtext)
+        if q is not None:
+            self._net_queue.insert(0, {"kind": "recap", "q": q})
+
+    def _net_answer(self, idx: int):
+        step = self._net_step
+        if step is None or step["kind"] not in ("quiz", "recap"):
+            return
+        q = step["q"]
+        skills = self.p["net_skills"]
+        skill = skills.setdefault(q["concept"],
+                                  {"right": 0, "wrong": 0, "weak": False})
+        self._net_quiz_n += 1
+        if idx == q["ans"]:
+            skill["right"] += 1
+            self._net_history.append((q, True))
+            self.p["net_history"] = [(qt.get("q") or "", ok)
+                                     for qt, ok in self._net_history[-200:]]
+            self._net_msg = f"✓ correct — {q['why']}"
+            self._net_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(q["say"])
+            if step["kind"] == "quiz" and step["wrongs"] >= 2:
+                # failed at least twice before getting it — retrain it
+                skill["weak"] = True
+                self._net_retrain.append(step["topic"])
+                self._net_queue_retrain(step["topic"], step["wrongs"])
+            step["done"] = True
+            self._net_step = None
+            self._net_asked += 1
+            self._net_maybe_recap()
+            self._net_next()
+            return
+        # recap: a memory check — show the answer and move on
+        if step["kind"] == "recap":
+            self._net_history.append((q, False))
+            self.p["net_history"] = [(qt.get("q") or "", ok)
+                                     for qt, ok in self._net_history[-200:]]
+            skill["wrong"] += 1
+            self._net_msg = (f"the answer was: {q['choices'][q['ans']]} — "
+                             f"{q['why']}")
+            self._net_msg_kind = "retrain"
+            if self.voice_on:
+                speak("The answer was " + q["choices"][q["ans"]] + ". " +
+                      q["why"])
+            step["done"] = True
+            self._net_step = None
+            self._net_asked += 1
+            self._net_maybe_recap()
+            self._net_next()
+            return
+        # wrong: teach again, differently and deeper
+        step["wrongs"] += 1
+        skill["wrong"] += 1
+        self._net_history.append((q, False))
+        self.p["net_history"] = [(qt.get("q") or "", ok)
+                                 for qt, ok in self._net_history[-200:]]
+        step["asked"].append(q)
+        if step["wrongs"] == 1:
+            self._net_msg = f"✗ not quite. {q['again']}"
+            self._net_msg_kind = "retrain"
+            if self.voice_on:
+                speak(q["again"])
+        elif step["wrongs"] == 2:
+            self._net_msg = f"✗ still off — let's go deeper. {q['deeper']}"
+            self._net_msg_kind = "retrain"
+            if self.voice_on:
+                speak(q["deeper"])
+        else:
+            skill["weak"] = True
+            self._net_retrain.append(step["topic"])
+            self._net_msg = (f"the answer is: {q['choices'][q['ans']]} — "
+                             f"{q['why']}  (topic flagged for retraining)")
+            self._net_msg_kind = "retrain"
+            fail, _ = self._sounds_for("netplus")
+            play_file(fail, self._fx_volume())
+            if self.voice_on:
+                speak("The answer is " + q["choices"][q["ans"]] + ". " +
+                      q["why"] + " I'm flagging this topic for retraining.")
+            self._net_queue_retrain(step["topic"], step["wrongs"])
+            step["done"] = True
+            step["reveal"] = idx
+            self._net_step = None
+            self._net_asked += 1
+            self._net_maybe_recap()
+            self._net_next()
+            return
+        # re-ask a DIFFERENT question about the same concept
+        step["q"] = _net_alt_question(q, step["asked"])
+        if self.voice_on:
+            speak(step["q"]["q"])
+        self._net_render()
+
+    def _net_module_complete(self):
+        """End of a module: record it, then either next module or course
+        complete."""
+        m = NET_MODULES[self._net_module]
+        self.p["net_done"][m["name"]] = m["count"]
+        self.p["net_module"] = self._net_module + 1
+        self.p["net_topic"] = 0
+        if self._net_module + 1 >= len(NET_MODULES):
+            self.p["net_course_done"] = True
+            self._net_msg = ("🏁 NETWORK+ complete!  You went from zero to "
+                             "Network+ level — Esc to return.")
+            self._net_msg_kind = "win"
+        else:
+            nxt = NET_MODULES[self._net_module + 1]["name"]
+            self._net_msg = (f"✓ {m['name']} complete — next up: {nxt}. "
+                             f"Esc to the menu, or jump straight in.")
+            self._net_msg_kind = "win"
+        save_progress(self.p)
+        self._net_stop_anim()
+        self._celebrate()
+        self._net_render()
+
+    def _net_lab_run(self):
+        cmd = self._net_cmd
+        self._net_cmd = ""
+        if not cmd.strip():
+            return
+        lab = NET_LABS[self._net_lab_i]
+        self._net_out.append(("cmd", cmd))
+        for line in self._net_dev.run(cmd):
+            self._net_out.append(("out", line))
+        for _ex, desc, verify in lab["checks"]:
+            if desc in self._net_done_checks:
+                continue
+            if verify(self._net_dev):
+                self._net_done_checks.add(desc)
+                self._net_msg = f"✓ {desc} — done"
+                self._net_msg_kind = "win"
+        if len(self._net_done_checks) >= len(lab["checks"]):
+            self._net_msg = "🏁 lab complete — Enter to continue"
+            self._net_msg_kind = "win"
+            self._net_step["done"] = True
+            win, _ = self._sounds_for("netlab")
+            play_file(win, self._fx_volume())
+            self._celebrate()
+        self._net_render()
+
+    # -- NETWORK+ input --------------------------------------------------- #
+    def _net_on_key(self, event):
+        k = event.key
+        if k == "escape":
+            self._net_exit()
+            return
+        step = self._net_step
+        if step is None:
+            if k == "enter":
+                self._net_exit()   # module complete screen
+            return
+        if step["kind"] == "lesson" or step["kind"] == "lab_intro":
+            if k == "enter":
+                self._net_stop_anim()
+                self._net_next()
+            return
+        if step["kind"] == "quiz" or step["kind"] == "recap":
+            if k in ("1", "2", "3", "4"):
+                self._net_answer(int(k) - 1)
+            return
+        if step["kind"] == "lab":
+            if step.get("done"):
+                if k == "enter":
+                    self._net_lab_i = -1
+                    self._net_step = None
+                    self._net_next()
+                return
+            if k == "enter":
+                self._net_lab_run()
+            elif k == "backspace":
+                self._net_cmd = self._net_cmd[:-1]
+                self._net_render()
+            elif event.character and event.character.isprintable():
+                self._net_cmd += event.character
+                self._net_render()
+
+    def _net_exit(self):
+        self._net_stop_anim()
+        save_progress(self.p)
+        self._net_on = False
+        self._net_step = None
+        self._net_lab_i = -1
+        self.query_one("#net", NetTrainer).remove_class("visible")
+        self._show_menu()
+        self.series_sel = -4
+        self.menu_level = "net_modules"
+        self._render_menu()
+
+    # -- NETWORK+ animation ------------------------------------------------ #
+    def _net_start_anim(self, kind):
+        self._net_stop_anim()
+        self._net_anim_frames = _net_anim(kind)
+        self._net_anim_i = 0
+        if len(self._net_anim_frames) > 1:
+            self._net_gen += 1
+            gen = self._net_gen
+            self._net_anim_timer = self.set_interval(
+                0.9, lambda: self._net_anim_tick(gen))
+
+    def _net_anim_tick(self, gen):
+        if gen != self._net_gen or not self._net_on:
+            return
+        self._net_anim_i = (self._net_anim_i + 1) % len(self._net_anim_frames)
+        self._net_render_canvas()
+
+    def _net_stop_anim(self):
+        t = getattr(self, "_net_anim_timer", None)
+        if t is not None:
+            t.stop()
+            self._net_anim_timer = None
+        self._net_gen += 1
+        self._net_anim_frames = []
+        self._net_anim_i = 0
+
+    # -- NETWORK+ rendering ------------------------------------------------ #
+    def _net_render(self):
+        self._net_render_head()
+        self._net_render_canvas()
+        self._net_render_side()
+        self._net_render_foot()
+
+    def _net_render_head(self):
+        m = NET_MODULES[self._net_module]["name"]
+        t = Text()
+        t.append(" NETWORK+ ", style="bold #11111b on #ffa657")
+        t.append(f"  {m} ", style="bold #ffa657")
+        t.append(f"·  skill {self._net_skill_score()}% ", style="#d5d5d5")
+        step = self._net_step
+        if step is not None and step.get("topic"):
+            t.append(f"·  {step['topic'][2]} ", style="dim")
+        if step is not None and step.get("retrain"):
+            t.append("· retraining", style="bold #fbbf24")
+        self.query_one("#net-head", Static).update(t)
+
+    def _net_render_canvas(self):
+        t = Text()
+        step = self._net_step
+        if step is None:
+            t.append("module complete", style="bold green")
+            t.append("\n\n")
+            t.append(self._net_msg, style="bold #22c55e")
+            self.query_one("#net-canvas", Static).update(t)
+            return
+        if step["kind"] == "lab" or step["kind"] == "lab_intro":
+            if self._net_dev is None:
+                lab = NET_LABS[step["lab"]]
+                t.append("NEXT LAB", style="bold #7dd3fc")
+                t.append("\n\n")
+                t.append(lab["title"], style="bold white")
+                t.append("\n\n")
+                t.append(lab["brief"], style="#d5d5d5")
+                t.append("\n\nyou'll get a fresh simulated Linux device and a "
+                         "real console — type the commands yourself.",
+                         style="dim")
+            else:
+                t.append_text(self._net_lab_canvas())
+            self.query_one("#net-canvas", Static).update(t)
+            return
+        if step["kind"] == "quiz" or step["kind"] == "recap":
+            topic = step.get("topic")
+            if topic is not None:
+                frames = _net_anim(topic[4])
+                if frames:
+                    t.append_text(frames[0])
+            elif step["kind"] == "recap":
+                t.append("RECAP", style="bold #fbbf24")
+                t.append("\n\nan old question comes back —")
+                t.append("muscle memory check", style="dim")
+            self.query_one("#net-canvas", Static).update(t)
+            return
+        # lesson: animated frames
+        if self._net_anim_frames:
+            t.append_text(self._net_anim_frames[self._net_anim_i])
+        else:
+            topic = step["topic"]
+            t.append(topic[2], style="bold #7dd3fc")
+            t.append("\n\n")
+            t.append(topic[3], style="#d5d5d5")
+        self.query_one("#net-canvas", Static).update(t)
+
+    def _net_lab_canvas(self) -> Text:
+        """Live device state on the left while you configure it."""
+        t = Text()
+        t.append("DEVICE", style="bold #7dd3fc")
+        t.append(f"  {self._net_dev.name}\n\n")
+        for name, iface in self._net_dev.ifaces.items():
+            state = "UP" if iface["up"] else "DOWN"
+            color = "#22c55e" if iface["up"] and iface["ip"] != "0.0.0.0" \
+                else "#d5d5d5"
+            t.append(f"  {name:<6} ", style=color)
+            t.append(f"{iface['ip']}/{iface['prefix']} ", style=color)
+            t.append(state, style="bold green" if state == "UP" else "bold red")
+            t.append("\n")
+        t.append("\n")
+        t.append(f"  forwarding   {'ON' if self._net_dev.forwarding else 'off'}\n")
+        t.append(f"  routes       {len(self._net_dev.routes)}\n")
+        t.append(f"  fw rules     {len(self._net_dev.rules)}\n")
+        t.append(f"  arp entries  {len(self._net_dev.neigh)}\n")
+        if self._net_step and self._net_step["kind"] == "lab":
+            lab = NET_LABS[self._net_lab_i]
+            t.append("\nGOALS\n", style="bold #fbbf24")
+            for _ex, desc, _v in lab["checks"]:
+                done = desc in self._net_done_checks
+                t.append("✓ " if done else "· ",
+                         style="green" if done else "dim")
+                t.append(desc,
+                         style="#22c55e" if done else "#d5d5d5")
+                t.append("\n")
+        return t
+
+    def _net_render_side(self):
+        step = self._net_step
+        self.query_one("#net-side-title", Static).update(
+            Text("QUIZ" if step and step["kind"] in ("quiz", "recap")
+                 else "LAB" if step and step["kind"] in ("lab", "lab_intro")
+                 else "LESSON", style="bold #7dd3fc"))
+        t = Text()
+        if step is None:
+            t.append(self._net_msg, style="bold #22c55e")
+            self.query_one("#net-side-body", Static).update(t)
+            return
+        if step["kind"] == "lesson":
+            topic = step["topic"]
+            t.append(topic[2], style="bold white")
+            t.append("\n\n")
+            t.append(topic[3], style="#d5d5d5")
+            if step.get("retrain"):
+                t.append("\n\nretraining — same idea, deeper this time",
+                         style="bold #fbbf24")
+        elif step["kind"] == "lab_intro":
+            lab = NET_LABS[step["lab"]]
+            t.append(lab["title"], style="bold white")
+            t.append("\n\n")
+            t.append(lab["brief"], style="#d5d5d5")
+            t.append("\n\n")
+            t.append("this is a REAL Linux console (simulated) — you type "
+                     "the commands.\n", style="dim")
+            t.append("the left panel shows the device state live.", style="dim")
+        elif step["kind"] == "lab":
+            lab = NET_LABS[self._net_lab_i]
+            t.append(lab["title"], style="bold white")
+            t.append("\n")
+            for line in self._net_out[-18:]:
+                kind, text = line
+                if kind == "cmd":
+                    t.append("$ ", style="bold #22c55e")
+                    t.append(text, style="bold #22c55e")
+                else:
+                    t.append(text, style="#d5d5d5")
+                t.append("\n")
+            t.append("$ ", style="bold #22c55e")
+            t.append(self._net_cmd, style="#f0f0f5")
+            t.append("█", style="#7dd3fc")
+            t.append("\n\n")
+            if self._net_msg:
+                color = "#22c55e" if self._net_msg_kind == "win" else "#fbbf24"
+                t.append(self._net_msg, style=f"bold {color}")
+            else:
+                pending = [d for _e, d, _v in lab["checks"]
+                           if d not in self._net_done_checks]
+                if pending:
+                    t.append("next goal: ", style="dim")
+                    t.append(pending[0], style="bold #fbbf24")
+                    hint = lab["hints"][len(self._net_done_checks)] \
+                        if len(self._net_done_checks) < len(lab["hints"]) \
+                        else ""
+                    if hint:
+                        t.append("\n\nhint: ", style="dim")
+                        t.append(hint, style="#7dd3fc")
+        elif step["kind"] == "quiz" or step["kind"] == "recap":
+            q = step["q"]
+            if step["kind"] == "recap":
+                t.append("RECAP — you saw this before", style="bold #fbbf24")
+                t.append("\n\n")
+            t.append(q["q"], style="#f0f0f5")
+            t.append("\n\n")
+            for i, c in enumerate(q["choices"]):
+                num = f"{i + 1}. "
+                if step.get("reveal") is not None and i == q["ans"]:
+                    t.append(num, style="bold green")
+                    t.append(c, style="bold green")
+                else:
+                    t.append(num, style="bold #7dd3fc")
+                    t.append(c, style="#d5d5d5")
+                t.append("\n")
+            if step.get("wrongs"):
+                t.append("\n")
+                t.append("✗ " * step["wrongs"], style="bold #f38ba8")
+            if self._net_msg:
+                color = {"win": "#22c55e",
+                         "retrain": "#fbbf24"}.get(self._net_msg_kind, "#fbbf24")
+                t.append("\n\n")
+                t.append(self._net_msg, style=f"bold {color}")
+        self.query_one("#net-side-body", Static).update(t)
+
+    def _net_render_foot(self):
+        t = Text()
+        step = self._net_step
+        if step is None:
+            t.append("Esc — back to the menu", style="dim")
+        elif step["kind"] in ("lesson", "lab_intro"):
+            t.append("Enter — continue", style="dim")
+            t.append("   ·   ")
+            t.append("Esc — save & exit to menu", style="dim")
+        elif step["kind"] in ("quiz", "recap"):
+            t.append("press 1-4 to answer", style="bold #7dd3fc")
+            t.append("   ·   ")
+            t.append("wrong? you'll get it again, taught a different way",
+                     style="dim")
+            t.append("   ·   ")
+            t.append("Esc — save & exit", style="dim")
+        elif step["kind"] == "lab":
+            if step.get("done"):
+                t.append("Enter — continue", style="bold green")
+            else:
+                t.append("type the command, Enter runs it", style="bold #7dd3fc")
+            t.append("   ·   ")
+            t.append("Esc — save & exit", style="dim")
+        self.query_one("#net-foot", Static).update(t)
 
     def action_demo(self):
         """Replay the current challenge's example demo (press F3)."""
