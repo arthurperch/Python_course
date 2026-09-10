@@ -413,7 +413,7 @@ GROUPS = [
             {"title": "factorial", "topic": "recursion",
              "prompt": "Write a recursive `fact(n)` and print `fact(5)` (should be 120).",
              "starter": "", "expect": ["120"], "need": ["def"], "stdin": "",
-             "example": "Recursion that counts down:\n```python\ndef count(n):\n    if n == 0:\n        return\n    print(n)\n    count(n - 1)\n```\n> recursion = a function that calls itself."},
+             "example": "Recursion that counts down:\n```python\ndef count(n):\n    if n == 0:\n        return\n    print(n)\n    count(n - 1)\n\ncount(3)\n```\n> recursion = a function that calls itself. count(3) runs it: 3, 2, 1."},
             {"title": "lambda square", "topic": "lambda",
              "prompt": "Use a `lambda` to square 3 and print the result.",
              "starter": "", "expect": ["9"], "need": ["lambda"], "stdin": "",
@@ -425,7 +425,7 @@ GROUPS = [
             {"title": "decorator", "topic": "decorator",
              "prompt": "Write a decorator that prints `before` and `after` around a function call.",
              "starter": "", "expect": ["before", "after"], "need": ["def"], "stdin": "",
-             "example": "A decorator wrapper:\n```python\ndef wrap(fn):\n    def inner():\n        print(\"start\")\n        fn()\n        print(\"end\")\n    return inner\n```\n> a decorator wraps a function to add behavior around it."},
+             "example": "A decorator wrapper:\n```python\ndef wrap(fn):\n    def inner():\n        print(\"start\")\n        fn()\n        print(\"end\")\n    return inner\n\n@wrap\ndef hello():\n    print(\"hi\")\n\nhello()\n```\n> a decorator wraps a function to add behavior around it. @wrap then hello() prints start, hi, end."},
             {"title": "custom error", "topic": "error",
              "prompt": "Raise a `ValueError` with the message `nope`, catch it, and print the message.",
              "starter": "", "expect": ["nope"], "need": ["raise"], "stdin": "",
@@ -479,7 +479,7 @@ GROUPS = [
             {"title": "sum to n", "topic": "recursion",
              "prompt": "Write a recursive `add_up(n)` that returns 1 + 2 + ... + n, then print `add_up(5)`.",
              "starter": "def add_up(n):\n    pass\n", "expect": ["15"], "need": ["def", "return"], "stdin": "",
-             "example": "Recursive countdown instead:\n```python\ndef count(n):\n    if n == 0:\n        return\n    print(n)\n    count(n - 1)\n```\n> recursion = a function calling itself with a base case."},
+             "example": "Recursive countdown instead:\n```python\ndef count(n):\n    if n == 0:\n        return\n    print(n)\n    count(n - 1)\n\ncount(3)\n```\n> recursion = a function calling itself with a base case. count(3) prints 3, 2, 1."},
         ],
     },
     {
@@ -14011,7 +14011,8 @@ class TutorApp(App):
                     self._ghost_final_vars = final
                     out = "\n".join(f"{k} = {v}" for k, v in final.items())
                 else:
-                    out = "✓ ran — no output"
+                    out = ("✓ ran — nothing printed: the code only set things up, "
+                           "it never called anything that shows a result")
         if gen != self._ghost_gen:
             return
         self.call_from_thread(self._ghost_on_result, (out or err or "").rstrip("\n"), gen)
