@@ -13061,6 +13061,8 @@ class TutorApp(App):
         self._ghost_fill_is_num = False      # True when the blank expects a number
         self._ghost_fill_cursor = 0          # insertion index within the blank
         self._ghost_fill_mode = "insert"     # "insert" or "normal" (Esc toggles)
+        self._ghost_fill_hint = ""           # recommendation (the blanked original value)
+        self._ghost_fill_hint_said = False   # TTS recommendation spoken once
         self._ghost_goal_out = ""            # expected output, shown during fade/blind
         self._ghost_used_hint = False       # true once the user peeked at the answer
         self._ghost_mastery_streak = 0      # clean blind completions in a row
@@ -14946,6 +14948,14 @@ class TutorApp(App):
                 t.append_text(ft)
                 if i < len(need) - 1:
                     t.append("   ", style="dim")
+        # HOW IT WORKS — explain the worked example line by line, so the user
+        # sees the *why* (each line's job), not just the what to print
+        ex = example_code(c.get("example", ""))[1]
+        if ex:
+            t.append("\n\n")
+            t.append("HOW IT WORKS", style="bold magenta")
+            t.append("\n")
+            t.append_text(_ghost_why_text(ex))
         return _box_lines(_lines_of(t))
 
     def _set_task_arrow(self, title):
@@ -15411,6 +15421,10 @@ class TutorApp(App):
             self._ghost_fill_input = ""
             self._ghost_fill_s, self._ghost_fill_e, self._ghost_fill_is_num = \
                 self._ghost_fill_blank(self._ghost_target)
+            # the recommendation = the original value we blanked out — shown as
+            # faint ghost letters and spoken once, so the user knows what to add
+            self._ghost_fill_hint = self._ghost_target[self._ghost_fill_s:self._ghost_fill_e]
+            self._ghost_fill_hint_said = False
         else:
             self._ghost_fill = False
         # recall modes (fade/blind): show the EXPECTED output as the goal, so the
@@ -16368,6 +16382,14 @@ class TutorApp(App):
         s, e = self._ghost_fill_s, self._ghost_fill_e
         val = self._ghost_fill_input
         cur = self._ghost_fill_cursor
+        hint = getattr(self, "_ghost_fill_hint", "")
+        # speak the recommendation ONCE (e.g. "add bean") while the blank is empty
+        if hint and not getattr(self, "_ghost_fill_hint_said", False) and not val:
+            self._ghost_fill_hint_said = True
+            if self.writing_tts_on:
+                speak_write(f"add {hint}")
+            elif self.voice_on:
+                speak(f"add {hint}")
         t = Text()
         pos = 0
         for i, line in enumerate(code.split("\n")):
@@ -16380,14 +16402,20 @@ class TutorApp(App):
                 le = min(len(line), e - pos)
                 # pre-filled text BEFORE the blank — normal, non-editable
                 t.append(line[:ls], style="#cdd6f4")
-                # the blank: typed value + a vim reverse-bold BLOCK cursor that
-                # covers the char at the insert point (or a block space if empty)
-                for k, vch in enumerate(val):
-                    if k == cur:
-                        t.append(vch, style="reverse bold")
-                    else:
-                        t.append(vch, style="#e6e6f0")
-                if cur >= len(val):
+                # the blank: typed value + a vim reverse-bold BLOCK cursor. Empty
+                # shows the recommendation as faint ghost letters to copy.
+                if val:
+                    for k, vch in enumerate(val):
+                        if k == cur:
+                            t.append(vch, style="reverse bold")
+                        else:
+                            t.append(vch, style="#e6e6f0")
+                    if cur >= len(val):
+                        t.append(" ", style="reverse bold")
+                elif hint:
+                    t.append(" ", style="reverse bold")
+                    t.append(hint, style="dim #8a7bc4")
+                else:
                     t.append(" ", style="reverse bold")
                 # pre-filled text AFTER the blank — normal, non-editable
                 t.append(line[le:], style="#cdd6f4")
@@ -20266,6 +20294,8 @@ class TutorApp(App):
         self._show_menu()
 
     def _mark_pass(self, out=""):
+        # cap the printout so a runaway loop can never push the console off screen
+        out = _cap_lines(out.rstrip("\n"), 40)
         self._py_update_sched(self._current()["topic"], True)
         self.attempts[self._flat_index()] = 0
         challenge_stat(self.p, self._current()["title"])["right"] += 1
@@ -20366,6 +20396,8 @@ class TutorApp(App):
         self._render_challenge()
 
     def _mark_fail(self, topic, out, hint):
+        # cap the printout so a runaway loop can never push the console off screen
+        out = _cap_lines(out.rstrip("\n"), 40)
         self._py_update_sched(self._current()["topic"], False)
         self.p["streak"] = 0
         key = self._flat_index()
@@ -22419,6 +22451,14 @@ class TutorApp(App):
         self._cat_proc = play_video(_cat_video(), mute=False)   # full audio loading screen
         self.query_one("#cat", Static).add_class("visible")
         self.query_one("#cat", Static).update(self._cat_banner())
+        if self._cat_proc is None:
+            # no video player available — don't sit on a blank 5.6s screen;
+            # show the banner for a beat, then advance
+            t = getattr(self, "_cat_timer", None)
+            if t is not None:
+                t.stop()
+            self._cat_timer = self.set_timer(1.2, self._cat_done)
+            return
         t = getattr(self, "_cat_timer", None)
         if t is not None:
             t.stop()
@@ -22439,7 +22479,11 @@ class TutorApp(App):
         if proc is not None:
             try:
                 if proc.poll() is None:
-                    proc.terminate()
+                    proc.kill()          # SIGKILL — mpv/ffplay die for sure
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=2)     # reap it so the --fs window really closes
             except Exception:
                 pass
         self._cat_proc = None
