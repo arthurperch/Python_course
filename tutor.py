@@ -594,6 +594,60 @@ GROUPS = [
              "example": 'Trace a different length:\n```python\ns = "hi"\nprint(len(s))\n```\n> "hi" has 2 letters, so it prints 2.'},
         ],
     },
+    {
+        "id": "nextlevel",
+        "name": "NEXT LEVEL",
+        "challenges": [
+            {"title": "count the vowels", "topic": "loops",
+             "prompt": "Count how many vowels (a, e, i, o, u) are in the string `s`, then print that number.",
+             "starter": "s = \"hello world\"\n", "expect": ["3"], "need": ["for", "if"], "stdin": "",
+             "example": "Count a different letter:\n```python\ns = \"hello\"\nn = 0\nfor ch in s:\n    if ch == \"l\":\n        n += 1\nprint(n)\n```\n> a counter plus a loop: each lap checks one letter, and the counter grows when it matches."},
+            {"title": "total the list", "topic": "lists",
+             "prompt": "Print the SUM of all the numbers in `nums` — in one expression.",
+             "starter": "nums = [1, 2, 3, 4]\n", "expect": ["10"], "need": ["sum"], "stdin": "",
+             "example": "Sum a different list:\n```python\nnums = [5, 6]\nprint(sum(nums))\n```\n> sum() adds every number in a list for you — no loop needed."},
+            {"title": "biggest number", "topic": "loops",
+             "prompt": "Print the BIGGEST number in `nums` — but do it with a loop, not max().",
+             "starter": "nums = [4, 9, 2, 7]\n", "expect": ["9"], "need": ["for", "if"], "stdin": "",
+             "example": "Same hunt for the smallest:\n```python\nnums = [4, 9, 2, 7]\nbest = nums[0]\nfor x in nums:\n    if x < best:\n        best = x\nprint(best)\n```\n> remember the best one seen so far, and replace it whenever the loop finds better."},
+            {"title": "reverse it", "topic": "strings",
+             "prompt": "Print the string `word` backwards.",
+             "starter": "word = \"python\"\n", "expect": ["nohtyp"], "need": ["[::"], "stdin": "",
+             "example": "Reverse a different word:\n```python\ns = \"race\"\nprint(s[::-1])\n```\n> the third slice number is the step — a step of -1 walks through the string from the end."},
+            {"title": "every other letter", "topic": "strings",
+             "prompt": "Print every SECOND letter of `s`, starting with the first one.",
+             "starter": "s = \"abcdefg\"\n", "expect": ["a", "c", "e", "g"], "need": ["[::"], "stdin": "",
+             "example": "Every second letter of a different word:\n```python\ns = \"qwerty\"\nprint(s[::2])\n```\n> a step of 2 jumps one letter at a time — first, third, fifth…"},
+            {"title": "only even numbers", "topic": "lists",
+             "prompt": "Build a NEW list holding only the even numbers from `nums`, then print it.",
+             "starter": "nums = [1, 2, 3, 4, 5, 6]\n", "expect": ["2", "4", "6"], "need": ["for", "if", "append", "%"], "stdin": "",
+             "example": "Collect the odd ones instead:\n```python\nnums = [1, 2, 3]\nodds = []\nfor x in nums:\n    if x % 2 == 1:\n        odds.append(x)\nprint(odds)\n```\n> start an empty list, append the keepers one lap at a time."},
+            {"title": "word count", "topic": "strings",
+             "prompt": "Print HOW MANY words are in `sentence`.",
+             "starter": "sentence = \"the quick brown fox\"\n", "expect": ["4"], "need": ["split", "len"], "stdin": "",
+             "example": "Count the words in a different sentence:\n```python\ns = \"hi there\"\nprint(len(s.split()))\n```\n> split() chops a sentence into a list of words, and len() counts them."},
+            {"title": "no duplicates", "topic": "lists",
+             "prompt": "Print the list `nums` with every duplicate thrown away, smallest first.",
+             "starter": "nums = [1, 2, 2, 3, 3, 3]\n", "expect": ["1", "2", "3"], "need": ["set", "sorted"], "stdin": "",
+             "example": "De-duplicate a list of words:\n```python\nwords = [\"x\", \"x\", \"y\"]\nprint(sorted(set(words)))\n```\n> set() throws duplicates away, and sorted() puts what's left in order."},
+            {"title": "price check", "topic": "dicts",
+             "prompt": "Print the price of `tea` from the `menu` dictionary.",
+             "starter": "menu = {\"coffee\": 3, \"tea\": 2, \"cake\": 5}\n", "expect": ["2"], "need": [], "stdin": "",
+             "example": "Look up a different key:\n```python\nprint(menu[\"coffee\"])\n```\n> d[\"key\"] reaches into a dictionary and hands back that value."},
+            {"title": "stock check", "topic": "dicts",
+             "prompt": "Print the TOTAL number of items in the `stock` dictionary — every value added together.",
+             "starter": "stock = {\"apple\": 3, \"pear\": 2, \"plum\": 4}\n", "expect": ["9"], "need": ["sum", "values"], "stdin": "",
+             "example": "Add up a different dictionary:\n```python\nprices = {\"a\": 1, \"b\": 2}\nprint(sum(prices.values()))\n```\n> .values() hands over just the numbers, and sum() adds them."},
+            {"title": "safe divide", "topic": "error handling",
+             "prompt": "Divide `a` by `b` — but if `b` is zero, print `cannot divide by zero` instead of crashing.",
+             "starter": "a = 10\nb = 0\n", "expect": ["cannot divide by zero"], "need": ["try", "except"], "stdin": "",
+             "example": "Catch a different error:\n```python\nx = \"five\"\ntry:\n    n = int(x)\nexcept ValueError:\n    print(\"not a number\")\n```\n> try runs the risky part; except catches the crash and lets you answer gracefully."},
+            {"title": "roll the dice", "topic": "random",
+             "prompt": "Import the random toolbox, then print a random whole number from 1 to 6.",
+             "starter": "", "expect": [], "need": ["import", "random"], "stdin": "",
+             "example": "A different random range:\n```python\nimport random\nprint(random.randint(1, 10))\n```\n> random.randint(a, b) picks a whole number between a and b — run it twice and you get different answers."},
+        ],
+    },
 ]
 
 EXAMPLES = {
@@ -3847,6 +3901,16 @@ class ModeChanged(Message):
     def __init__(self, mode: str) -> None:
         super().__init__()
         self.mode = mode
+
+
+class ExLine(Static):
+    """One clickable worked-example code line in the task panel. Click it to
+    hear what the line does and how it relates to the syntax you've learned."""
+
+    def __init__(self, n: int, code: str, expl: str, gen: int = 0):
+        super().__init__(f"  {n:>2} │ {code}", id=f"exline-{gen}-{n}")
+        self.expl = expl
+        self.ex_code = code
 
 
 class VimEditor(Static):
@@ -11799,13 +11863,20 @@ class TutorApp(App):
     #volume-icon { width: 5; padding: 1 1; }
     #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
-    #challenge-box { width: 30%; border: tall $accent; }
+    #challenge-box { width: 30%; border: tall $accent; display: none; }
+    #challenge-box.visible { display: block; }
     #challenge { height: auto; min-height: 4; max-height: 12; padding: 1 2; overflow: auto; }
     #goal { height: auto; max-height: 9; padding: 0 1; background: #0d1117; border-bottom: solid $success; overflow: auto; }
     #demo-label { height: 1; padding: 0 2; background: $boost; }
     #demo-editor { height: 7; padding: 1 2; background: #0d1117; border: solid $primary; }
     #demo-console { height: 5; padding: 1 2; background: #000000; border: solid $success; }
     #editor-box { width: 1fr; border: tall $primary; }
+    #split-drag { width: 1; background: $surface-darken-2; }
+    #split-drag:hover { background: $accent; }
+    #task-check { dock: bottom; width: 100%; min-height: 3; }
+    ExLine { width: 100%; height: 1; padding: 0 1; color: $text-muted; }
+    ExLine:hover { background: $boost; color: $text; }
+    #ex-lines { height: auto; }
     #editor-label { height: 1; padding: 0 2; color: $text; }
     #editor-label.normal { background: #1f4e79; }
     #editor-label.insert { background: #1e6b3f; }
@@ -11995,6 +12066,7 @@ class TutorApp(App):
         self._tts = _tts_engine()
         self._demo_timer = None
         self._demo_next_timer = None
+        self._split_dragging = False   # dragging the editor/task divider
         self._demo_gen = 0
         self._demo_phase = "idle"
         self._demo_code = ""
@@ -12214,10 +12286,14 @@ class TutorApp(App):
                 yield Static("", id="output")
                 yield Static("", id="wildmenu")
                 yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
+            yield Static("", id="split-drag")
             with Vertical(id="side-examples"):
-                yield TabLabel("examples", id="side-examples-title")
+                yield TabLabel("TASK", id="side-examples-title")
                 with VerticalScroll(id="side-scroll"):
                     yield Static("", id="side-inner")
+                    with Vertical(id="ex-lines"):
+                        pass
+                yield Button("✓ CHECK", id="task-check", variant="primary")
             yield Markdown("", id="cheat")
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
@@ -12472,6 +12548,27 @@ class TutorApp(App):
             play_menu_blip(3)
             self._dev_begin(items[self.menu_sel]["first"])
 
+    def _snap_menu_scroll(self, sel_line: int):
+        """Keep the selected row visible in the picker list. The scroll is
+        deferred twice: the first post-refresh callback can run before the
+        new content height is measured, so the second pass (a tick later)
+        catches it. Clamped to max_scroll_y so the bottom rows are always
+        reachable."""
+        try:
+            scroll = self.query_one("#menu-list", VerticalScroll)
+        except Exception:
+            return
+
+        def snap():
+            try:
+                scroll.scroll_to(y=min(sel_line, max(0, scroll.max_scroll_y)),
+                                 animate=False)
+            except Exception:
+                pass
+
+        self.call_after_refresh(snap)
+        self.call_later(lambda *_a: self.call_after_refresh(snap), 0.05)
+
     def _render_dev_module_list(self):
         t = Text()
         t.append("── CLOUD & DEVOPS ", style="bold #7dd3fc")
@@ -12502,8 +12599,7 @@ class TutorApp(App):
             line_no += 1
         t.append("\nEnter — start · Esc — back to series · j/k — move", style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
-        scroll = self.query_one("#menu-list", VerticalScroll)
-        self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
+        self._snap_menu_scroll(sel_line)
 
     def _net_module_items(self):
         """The NETWORK+ picker list: an optional resume entry, then the modules."""
@@ -12575,8 +12671,7 @@ class TutorApp(App):
             line_no += 1
         t.append("\nEnter — start · Esc — back to series · j/k — move", style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
-        scroll = self.query_one("#menu-list", VerticalScroll)
-        self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
+        self._snap_menu_scroll(sel_line)
 
     def _render_series_list(self):
         t = Text()
@@ -12691,8 +12786,7 @@ class TutorApp(App):
             line_no += 1
         t.append("\nEnter — start   ·   Esc — back to series   ·   j/k — move", style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
-        scroll = self.query_one("#menu-list", VerticalScroll)
-        self.call_after_refresh(scroll.scroll_to, y=sel_line, animate=False)
+        self._snap_menu_scroll(sel_line)
 
     def _preview_challenge(self):
         if self.series_sel in (-1, -2, -3, -4):
@@ -12940,6 +13034,12 @@ class TutorApp(App):
         self._render_menu_preview()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "task-check":
+            # the CHECK button is the mouse-friendly path to run+submit —
+            # identical to typing :submit in the editor command line
+            if self.mode == "challenge" and self.started:
+                self._run_and_submit()
+            return
         if event.button.id == "name-save":
             self._save_name()
 
@@ -13181,7 +13281,8 @@ class TutorApp(App):
         self._update_guide()
         self._set_task_arrow(c["title"])
         self._render_side_examples()
-        self._start_demo()
+        self._stop_demo()   # the F3 lesson demo is opt-in now — the task panel
+                            # and editor own the screen by default
         self.sub_title = c["title"]
         topic = c.get("topic", "custom")
         self.seen_topics.add(topic)
@@ -13311,6 +13412,8 @@ class TutorApp(App):
         self._demo_examples = EXAMPLES.get(c["title"]) or self._fallback_examples(c)
         self._demo_idx = 0
         self._demo_gen += 1
+        # the demo plays in the left panel (hidden the rest of the time)
+        self.query_one("#challenge-box", VerticalScroll).add_class("visible")
         self._begin_demo_example()
 
     def _fallback_examples(self, c):
@@ -17137,9 +17240,60 @@ class TutorApp(App):
         self.query_one("#net-foot", Static).update(t)
 
     def action_demo(self):
-        """Replay the current challenge's example demo (press F3)."""
-        if self.started:
+        """F3 — open/close the worked-example demo. The demo shows in the
+        left panel while it plays; the rest of the time the editor and task
+        panel own the whole screen."""
+        if not self.started:
+            return
+        if self._demo_phase == "idle":
             self._start_demo()
+        else:
+            self._stop_demo()
+
+    def _stop_demo(self):
+        self._stop_demo_timers()
+        try:
+            self.query_one("#challenge-box", VerticalScroll).remove_class("visible")
+            self.query_one("#demo-label", Static).update("")
+        except Exception:
+            pass
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if getattr(event.widget, "id", None) == "split-drag":
+            self._split_dragging = True
+            self.capture_mouse(event.widget)
+            return
+        if isinstance(event.widget, ExLine):
+            # clicked an example line: explain it out loud + flash it
+            if self.voice_on:
+                speak(event.widget.expl)
+            w = event.widget
+            w.styles.background = "#3b3b54"
+            self.call_later(lambda *_a: self._unflash_exline(w), 0.9)
+
+    def _unflash_exline(self, w):
+        try:
+            w.styles.background = None
+        except Exception:
+            pass
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if getattr(self, "_split_dragging", False):
+            self._split_dragging = False
+            try:
+                self.release_mouse()
+            except Exception:
+                pass
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if not getattr(self, "_split_dragging", False):
+            return
+        try:
+            w = self.size.width or 1
+            pct = max(38, min(82, round(event.screen_x / w * 100)))
+            self.query_one("#editor-box", Vertical).styles.width = f"{pct}%"
+        except Exception:
+            pass
 
     def _update_guide(self):
         """The hold-your-hand bar — always says exactly what to do next."""
@@ -19074,34 +19228,192 @@ class TutorApp(App):
 
     # ---- examples panel (F8): static wall of worked examples ------------ #
 
-    def _render_side_examples(self):
+    _HINT_MAP = {
+        "print": "print() — put what you want to SHOW inside the parentheses",
+        "input": "input() — the program stops and waits for the user to type",
+        "int": "int() — turn typed text into a real number you can do math with",
+        "str": "str() — turn a number back into text so it can join a string",
+        "for": "a for loop — repeat a block, once per item",
+        "range": "range(n) — the counting numbers 0, 1, 2, … up to (not including) n",
+        "while": "a while loop — keep repeating while a condition is still true",
+        "if": "if — ask a yes/no question and run a block only when it's yes",
+        "elif": "elif — a second question, asked only when the first was no",
+        "else": "else — the fallback that runs when every if/elif was no",
+        "break": "break — jump out of a loop early",
+        "def": "def — give a block of code a name so you can call it later",
+        "return": "return — hand a value back out of a function",
+        "append": ".append(x) — add x onto the end of a list",
+        "remove": ".remove(x) — delete one matching item from a list",
+        "len": "len() — count the items in a list or the letters in a string",
+        "f": "f-strings — f\"text {variable}\" fills values straight into text",
+        "%": "% — the remainder after division (perfect for even/odd)",
+        "[0]": "indexing — [0] is the FIRST item, because counting starts at 0",
+        "[-1]": "negative index — [-1] reaches the LAST item",
+        "split": ".split() — chop a string into a list of pieces",
+        "slice": "slicing — s[a:b:c] cuts a piece of a string; the third number is the STEP (what happens if the step walks backwards?)",
+        "[::": "the double colon is a slice with a STEP — the third number says how big a jump to take",
+        "values": ".values() — hand over every value in a dictionary",
+        "except": "except — the safety net that runs when an error happens",
+        "join": "\".join(list) — glue a list of strings into one string",
+        "sum": "sum() — add up every number in a list",
+        "max": "max() — the biggest value; min() is the smallest",
+        "sorted": "sorted() — a new list, smallest first",
+        "set": "set() — a bag that throws away duplicate values",
+        "dict": "a dictionary — {key: value} looks things up by name",
+        "items": ".items() — walk a dictionary key-by-key",
+        "try": "try/except — run code, and catch errors instead of crashing",
+        "exception": "except — the safety net that runs when an error happens",
+        "and": "and — BOTH sides must be true",
+        "or": "or — EITHER side is enough",
+        "not": "not — flip true to false",
+        "import": "import — pull in a built-in toolbox of functions",
+        "random": "random — the toolbox for surprise: random.randint(a, b)",
+        "def.": "functions — code you name once and reuse everywhere",
+        "loop.": "a loop — anything you repeat lives inside one",
+        "variable": "a variable — a named box that remembers a value",
+        "float": "float() — a number with a decimal point",
+        "count": ".count(x) — how many times x appears in a list or string",
+        "upper": ".upper() / .lower() — make text ALL CAPS or all lowercase",
+        "strip": ".strip() — remove stray spaces from the edges of text",
+        "sort": ".sort() — put a list in order, in place",
+        "enumerate": "enumerate() — loop with the INDEX and the ITEM together",
+    }
+
+    def _line_expl(self, code: str) -> str:
+        """A plain-English 'what this line does + how it fits' explanation,
+        generated from the syntax on the line. Never reveals the answer to the
+        CURRENT task — it explains the EXAMPLE's line, which is a different
+        problem with the same ideas."""
+        s = code.strip()
+        if s.startswith("print("):
+            return "print() shows text or numbers on the screen — whatever is between its parentheses ends up printed, one line at a time. It's how your program talks back to you."
+        if s.startswith("input("):
+            return "input() pauses the program and waits for the user to type something, then hands that text to your code. Whatever the user typed becomes the value of this line."
+        if s.startswith("def "):
+            return "def names a new function — it opens a reusable block of code. The name in parentheses are the values the function will receive when someone calls it."
+        if s.strip() == "return x" or s.startswith("return "):
+            return "return hands a value back out of the function to whoever called it. After return, the function is finished — this is how functions give you answers instead of just printing them."
+        if s.startswith("if "):
+            return "if asks a yes/no question. When the answer is yes, the indented block under it runs; when no, Python skips that block entirely."
+        if s.startswith("elif "):
+            return "elif is 'else if' — it only gets asked when every earlier if/elif in the chain was false. It lets one block of code pick between three or more paths."
+        if s.strip() == "else:":
+            return "else is the fallback — its block runs only when none of the if/elif questions above it were true. Every chain ends here."
+        if s.startswith("for "):
+            return "for repeats its block once for each item in a list or range. The loop variable changes on every lap — first item, then the next, and so on."
+        if s.startswith("while "):
+            return "while keeps repeating its block as long as the condition stays true. Something inside the loop has to change the condition, or it runs forever."
+        if "range(" in s:
+            return "range(a, b) produces the numbers from a up to (but not including) b. range(n) alone starts at 0. It's the engine behind almost every for loop."
+        if s.strip() == "break":
+            return "break jumps straight out of the loop — no more laps. It's how you stop early the moment you've found what you were looking for."
+        if "append(" in s:
+            return ".append(x) tacks x onto the end of a list. The list grows by one each time this line runs."
+        if ".remove(" in s:
+            return ".remove(x) deletes the FIRST item that matches x. The list shrinks by one."
+        if "len(" in s:
+            return "len() counts — letters in a string, items in a list. It returns the number, which you can print or compare."
+        if "f\"" in s or "f'" in s:
+            return "The f before the quotes makes this an f-string: anything in {braces} is treated as real code and its value is filled into the text. Numbers become text automatically."
+        if "%" in s and ("==" in s or "!=" in s):
+            return "% is the remainder operator — it hands back what's left after division. Comparing that to 0 is the classic way to test even/odd or divisibility."
+        if s.endswith("+= 1") or s.endswith("+=1"):
+            return "+= 1 adds one to the variable — it's shorthand for 'n = n + 1'. This is the counter that makes loops eventually finish."
+        if s.endswith("-= 1") or s.endswith("-=1"):
+            return "-= 1 subtracts one — shorthand for 'n = n - 1'. It counts a variable downward, one step per lap."
+        if "input(" in s and "int(" in s:
+            return "input() hands back TEXT, but this line wraps it in int() to convert it into a number — you can't do math with text, so the conversion is the step that makes the value usable."
+        if "==" in s:
+            return "== compares two values and asks 'are they equal?' The answer is True or False, which is exactly what an if needs."
+        if "[" in s and "]" in s and "=" in s and "def " not in s:
+            return "A pair of brackets creates a list — a row of values in order. [x] by itself with an index reads ONE item out of that row."
+        if "{" in s and ":" in s and "=" in s:
+            return "Braces with colons make a dictionary — {name: value} pairs. You look things up by name instead of position."
+        if s.startswith("import "):
+            return "import pulls a standard toolbox into your program — like importing random gives you random numbers. The toolbox's tools are used with its name and a dot."
+        return ("This line is part of the worked example. Read it together with "
+                "the lines around it: examples always show the same shape as "
+                "the task, just with different values.")
+
+    def _task_suggestions(self, c) -> list:
+        """Suggestions that point at the ideas needed — never the answer.
+        Built from the challenge's `need` tokens plus its topic."""
+        out = []
+        for tok in c.get("need", []) + [c.get("topic", "")]:
+            if tok in self._HINT_MAP and self._HINT_MAP[tok] not in out:
+                out.append(self._HINT_MAP[tok])
+        if not out:
+            out.append("read the worked example below — the task follows the same shape")
+        return out[:4]
+
+    def _render_task_panel(self):
+        """The right-hand TASK panel: the assignment explained in detail,
+        suggestions (never the answer), and worked examples whose code lines
+        are clickable — click any line to hear what it does."""
         c = self._current()
-        cards = self._examples_cards(c)
         try:
             panel_w = self.query_one("#side-examples", Vertical).size.width or 0
         except Exception:
             panel_w = 0
-        # content budget: border + padding + line-number gutter + scrollbar. Fall
-        # back to a comfortable width before the layout settles, so code lines
-        # never over-wrap into a dangling fragment.
-        w = panel_w - 10 if panel_w > 28 else 34
-        self._ex_cards = cards
-        self._ex_w = w
-        # total output values across cards drives the silent spit-out animation
-        total = 0
-        for card in cards:
-            out = self._example_output(card["code"], card["stdin"])
-            total += len([v for v in out.split("\n") if v != ""])
-        self._ex_total = total
-        self._ex_reveal = 0
-        self._ex_blink = True
-        self._ex_render()
-        self._stop_ex_anim()
-        if total:
-            # reveal one value every 0.5s (NO sound), blinking the range bounds
-            self._ex_anim_timer = self.set_interval(0.5, self._ex_anim_tick)
+        w = panel_w - 6 if panel_w > 30 else 42
+
+        t = Text()
+        t.append("THE TASK", style="bold #fbbf24")
+        t.append("\n\n")
+        t.append(c["title"], style="bold #f0f0f5")
+        t.append("\n\n")
+        prompt = re.sub(r"[`*_#>~]", "", c.get("prompt", "")).strip()
+        for ln in _wrap_words(prompt, w):
+            t.append(ln, style="#d5d5d5")
+            t.append("\n")
+        if c.get("stdin"):
+            t.append("\n")
+            t.append("the program will receive this typed input:",
+                     style="dim")
+            t.append("\n")
+            t.append(f"  {c['stdin']!r}", style="#7dd3fc")
+        values = self._goal_values(c)
+        if values and not c.get("predict"):
+            t.append("\n\n")
+            t.append("TARGET OUTPUT", style="bold #22c55e")
+            t.append("\n")
+            for v in values[:6]:
+                t.append(f"  ▸ {v}", style="#22c55e")
+                t.append("\n")
+        t.append("\n\n")
+        t.append("🧠 SUGGESTIONS — ideas you'll need, never the answer",
+                 style="bold #c4b5fd")
+        t.append("\n")
+        for h in self._task_suggestions(c):
+            t.append("  • ", style="dim")
+            t.append(h, style="#a5b4fc")
+            t.append("\n")
+        t.append("\n")
+        t.append("WORKED EXAMPLE — same ideas, different problem",
+                 style="bold #f9a8d4")
+        t.append("\n")
+        t.append("click any line to hear what it does", style="dim")
+        self.query_one("#side-inner", Static).update(t)
+
+        # clickable example lines (unique ids per render — same-cycle
+        # remounts must never collide)
+        code = example_code(c.get("example", ""))[1]
+        lines = [ln for ln in code.split("\n") if ln.strip()]
+        container = self.query_one("#ex-lines", Vertical)
+        gen = getattr(self, "_exline_gen", 0)
+        for old in list(container.children):
+            if getattr(old, "id", "").startswith("exline-"):
+                old.remove()
+        for i, ln in enumerate(lines[:14]):
+            expl = self._line_expl(ln)
+            container.mount(ExLine(i + 1, ln, expl, gen))
+        self._exline_gen = gen + 1
         self.query_one("#side-examples-title", TabLabel).update(
-            f"[bold]{len(cards)} EXAMPLES[/] — {c['title']}  ·  [reverse]F8[/] open/close · click to hide")
+            f"[bold]TASK[/] — {c['title']}   ·   [reverse]F8[/] hide · "
+            f"[reverse]CHECK[/] runs your code")
+
+    def _render_side_examples(self):
+        self._render_task_panel()
 
     def _ex_render(self):
         """Rebuild the examples wall with the current reveal/blink state."""
