@@ -13021,6 +13021,8 @@ class TutorApp(App):
         self._ghost_fill_s = 0               # blank span start in the code
         self._ghost_fill_e = 0               # blank span end in the code
         self._ghost_fill_is_num = False      # True when the blank expects a number
+        self._ghost_fill_cursor = 0          # insertion index within the blank
+        self._ghost_fill_mode = "insert"     # "insert" or "normal" (Esc toggles)
         self._ghost_goal_out = ""            # expected output, shown during fade/blind
         self._ghost_used_hint = False       # true once the user peeked at the answer
         self._ghost_mastery_streak = 0      # clean blind completions in a row
@@ -15476,7 +15478,8 @@ class TutorApp(App):
                 self._hide_profile()
             return
         ch = event.character
-        # ---- FILL mode: type any value into the blank, Enter runs it ---------
+        # ---- FILL mode: a constrained vim-ish blank — you only edit the blank,
+        # never the pre-filled text. Esc = normal, arrows move, i/a = insert ----
         if self._ghost_fill:
             if key == "enter":
                 event.stop(); event.prevent_default()
@@ -15486,11 +15489,35 @@ class TutorApp(App):
                     return
                 self._ghost_run_fill()
                 return
+            if key == "escape":
+                event.stop(); event.prevent_default()
+                self._ghost_fill_mode = "normal"
+                self._ghost_render()
+                return
+            if key in ("left", "right"):
+                event.stop(); event.prevent_default()
+                d = -1 if key == "left" else 1
+                self._ghost_fill_cursor = max(0, min(
+                    len(self._ghost_fill_input), self._ghost_fill_cursor + d))
+                self._ghost_render()
+                return
+            if key in ("i", "a") and self._ghost_fill_mode == "normal":
+                event.stop(); event.prevent_default()
+                if key == "a":
+                    self._ghost_fill_cursor = min(len(self._ghost_fill_input),
+                                                  self._ghost_fill_cursor + 1)
+                self._ghost_fill_mode = "insert"
+                self._ghost_render()
+                return
             if key == "backspace":
                 event.stop(); event.prevent_default()
-                self._ghost_fill_input = self._ghost_fill_input[:-1]
-                play_key()
-                self._ghost_render()
+                if self._ghost_fill_cursor > 0:
+                    self._ghost_fill_input = (
+                        self._ghost_fill_input[:self._ghost_fill_cursor - 1]
+                        + self._ghost_fill_input[self._ghost_fill_cursor:])
+                    self._ghost_fill_cursor -= 1
+                    play_key()
+                    self._ghost_render()
                 return
             if ch and not key.startswith("ctrl+"):
                 event.stop(); event.prevent_default()
@@ -15499,11 +15526,15 @@ class TutorApp(App):
                 if self._ghost_fill_is_num and not (ch.isdigit() or ch == "."):
                     self._ghost_render()
                     return
-                self._ghost_fill_input += ch
+                self._ghost_fill_mode = "insert"
+                self._ghost_fill_input = (
+                    self._ghost_fill_input[:self._ghost_fill_cursor] + ch
+                    + self._ghost_fill_input[self._ghost_fill_cursor:])
+                self._ghost_fill_cursor += 1
                 play_key()
                 self._ghost_render()
                 return
-            # other keys (F5, Esc, ctrl+h/l, Tab) fall through to normal handling
+            # other keys (F5, ctrl+h/l, Tab) fall through to normal handling
         # ---- window nav (ctrl+h / ctrl+l) + hint toggle (F5) -------------
         # these are the "Super/Caps + h/l" equivalent: a modifier so they never
         # collide with the vim h/l keys you'll use in the real editor
@@ -16073,7 +16104,7 @@ class TutorApp(App):
         code = self._ghost_render_code()
         console = self._ghost_render_console()
         foot = {
-            "fill": "type any value into the blank · backspace to edit · Enter to run",
+            "fill": "type into the blank · ←/→ move · Esc = normal · i/a = insert · Enter to run",
             "watch": "just read it · Enter to run",
             "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
@@ -16113,6 +16144,10 @@ class TutorApp(App):
     def _ghost_mode_status(self):
         """(mode, color) for the vim chrome — INSERT while typing, NORMAL the
         rest of the time, so the window reads like a real editor."""
+        if self._ghost_fill:
+            if self._ghost_fill_mode == "insert":
+                return "INSERT", "#a6e3a1"
+            return "NORMAL", "#89b4fa"
         if self._ghost_phase == "type" and not self._ghost_done:
             return "INSERT", "#a6e3a1"
         return "NORMAL", "#89b4fa"
@@ -16232,11 +16267,12 @@ class TutorApp(App):
         return None, None, False
 
     def _ghost_render_fill(self):
-        """FILL mode: the code with the blank value replaced by whatever the user
-        typed (highlighted) and a cursor — they can enter any value/name."""
+        """FILL mode: the code with one editable blank, everything else is
+        normal (non-editable) text. The cursor is a vim-style reverse BLOCK."""
         code = self._ghost_target
         s, e = self._ghost_fill_s, self._ghost_fill_e
         val = self._ghost_fill_input
+        cur = self._ghost_fill_cursor
         t = Text()
         pos = 0
         for i, line in enumerate(code.split("\n")):
@@ -16247,13 +16283,18 @@ class TutorApp(App):
             if s < line_end and e > pos:
                 ls = max(0, s - pos)
                 le = min(len(line), e - pos)
+                # pre-filled text BEFORE the blank — normal, non-editable
                 t.append(line[:ls], style="#cdd6f4")
-                # the blank is a bold '|' block — no underscores, no padding.
-                # typed value is normal text; spaces appear only when typed.
-                if val:
-                    t.append(val, style="#e6e6f0")
-                t.append("|" if self._ghost_blink_on else " ",
-                         style="bold #1e1e2e on #facc15")
+                # the blank: typed value + a vim reverse-bold BLOCK cursor that
+                # covers the char at the insert point (or a block space if empty)
+                for k, vch in enumerate(val):
+                    if k == cur:
+                        t.append(vch, style="reverse bold")
+                    else:
+                        t.append(vch, style="#e6e6f0")
+                if cur >= len(val):
+                    t.append(" ", style="reverse bold")
+                # pre-filled text AFTER the blank — normal, non-editable
                 t.append(line[le:], style="#cdd6f4")
             else:
                 t.append(line, style="#cdd6f4")
