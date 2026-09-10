@@ -13035,7 +13035,8 @@ class TutorApp(App):
         if event.button.id == "task-check":
             # the CHECK button is the mouse-friendly path to run+submit —
             # identical to typing :submit in the editor command line
-            if self.mode == "challenge" and self.started:
+            if (self.mode == "challenge" and self.started
+                    and not self.lesson_gate):
                 self._run_and_submit()
             return
         if event.button.id == "name-save":
@@ -15574,21 +15575,37 @@ class TutorApp(App):
                                  self._dev_next, self._dev_render, "_dev_adv_timer")
             return
         if lesson.get("kind") == "challenge":
-            # multi-step challenge: mark off any toolbox step this command hits,
-            # so the phased highlight advances to the next thing to write.
+            # multi-step challenge: mark off toolbox steps — but ONLY when the
+            # command actually worked.  A half-typed tool that errored must
+            # not show a success checkmark.
             tools = lesson.get("tools", [])
             newly = [i for i, tool in enumerate(tools)
-                     if i not in self._dev_chal_done and self._dev_tool_matches(tool, cmd)]
+                     if i not in self._dev_chal_done
+                     and self._dev_tool_matches(tool, cmd)
+                     and not err]
             if newly:
                 for i in newly:
                     self._dev_chal_done.add(i)
                 done_n = len(self._dev_chal_done)
                 if done_n >= len(tools):
-                    self._dev_msg = "✓ every tool used — now finish it"
+                    self._dev_msg = "✓ every tool done right — finish it"
                 else:
-                    self._dev_msg = f"✓ {done_n}/{len(tools)} tools — next one is highlighted"
+                    self._dev_msg = f"✓ {done_n}/{len(tools)} — the ▸ one is next"
                 self._dev_msg_kind = "win"
                 self._dev_render()
+                return
+            if err:
+                # teach the failure instead of a generic "try again": the
+                # error plus WHERE the missing piece lives
+                errmsg = " ".join(str(e) for e in err[:2])
+                self._dev_attempts += 1
+                self._dev_msg = (f"✗ {errmsg} — the missing detail is in the "
+                                 f"CLOUD panel on the right. Add it and try "
+                                 f"again.")
+                self._dev_msg_kind = "hint"
+                play_ghost_error()
+                self._dev_render()
+                self._dev_ghost_blink_again()
                 return
         self._dev_attempts += 1
         self._dev_msg = self._dev_wrong_hint(lesson, cmd)
@@ -15882,7 +15899,8 @@ class TutorApp(App):
                     else:
                         t.append(tool, style="#6b7280")
                 t.append("   ")
-                t.append("→ write the highlighted one, then continue", style="dim")
+                t.append("→ the ▸ step is next — type it in full, with the details "
+                         "from the right panel", style="dim")
             else:
                 t.append("challenge — you've got this.", style="bold #fbbf24")
             return t
@@ -18208,6 +18226,14 @@ class TutorApp(App):
         t.append(center("◢                    ◣", "dim"))
         self.query_one("#gate", Static).update(t)
         self.query_one("#gate", Static).add_class("visible")
+        # the CHECK button keeps focus after being clicked — an Enter on the
+        # next gate would re-press IT instead of opening the challenge.
+        # Blur it (and the editor) so Enter always reaches the gate bindings.
+        try:
+            self.query_one("#task-check", Button).blur()
+        except Exception:
+            pass
+        self.query_one("#editor", VimEditor).blur()
 
     def _start_lesson(self):
         self._play_steps(self._build_lesson_steps(self._current()))
