@@ -14437,7 +14437,117 @@ class TutorApp(App):
         self._render_gate()
         self._update_guide()
         if self.voice_on:
-            speak(f"Task {self._flat_index() + 1}: {c['title']}. Press enter to dive in, w to watch the lesson, or l to listen.")
+            speak(self._task_tts(c))
+
+    # ---- varied, phase-aware TTS ----------------------------------------- #
+    # The same concept is never said the same way twice: each topic has several
+    # natural human phrasings that rotate, and early challenges get the full
+    # idea while later repeats get it short ("less is best").
+
+    _CONCEPT_PHRASES = {
+        "print": [
+            "print sends whatever's inside to the screen — that's how you see a result.",
+            "print is the show-me command: it makes text appear on screen.",
+            "print takes what you give it and displays it for you.",
+        ],
+        "variables": [
+            "a variable is a name that holds a value — a equals four means a IS four.",
+            "the equals sign drops a value into a name so you can reuse it.",
+            "naming a value with = stores it for later.",
+        ],
+        "conditionals": [
+            "an if asks a question; when it's true, the indented part runs.",
+            "if is a fork in the road — it picks the path only when the condition holds.",
+            "if and else let the program choose based on what's true.",
+        ],
+        "loops": [
+            "a loop repeats a block once per item, so you don't write it over and over.",
+            "for walks a list and runs the body each time around.",
+            "while keeps running as long as its condition stays true.",
+        ],
+        "lists": [
+            "a list holds several values in a row, like a box with slots.",
+            "square brackets make a list — an ordered set of items.",
+            "a list is an ordered collection you can grow and change.",
+        ],
+        "strings": [
+            "a string is text — letters in quotes, and you can slice and change it.",
+            "text lives in a string; quotes wrap it, and you can reach each letter.",
+            "strings are how the program stores words, and slicing picks pieces out.",
+        ],
+        "functions": [
+            "def makes a named block of code you can call whenever you need it.",
+            "a function packages a task behind a name — call it to run that task.",
+            "def is a recipe; calling it cooks the recipe on demand.",
+        ],
+        "dicts": [
+            "a dict pairs keys with values, like a label on a drawer.",
+            "curly braces make a dict — look something up by its key.",
+            "a dict maps names to values; the key finds the value.",
+        ],
+        "input": [
+            "input pauses and waits for the user to type something.",
+            "input reads what the person types and hands it back as text.",
+            "input is the ask-the-user command — it waits, then returns their words.",
+        ],
+        "classes": [
+            "look at the class — it's a blueprint, and objects are built from it.",
+            "a class is a template; each object made from it carries its own data.",
+            "class describes a thing, and instances are the actual things.",
+        ],
+        "files": [
+            "open reads or writes a file on disk — your data can outlive the run.",
+            "files let the program store and load data between runs.",
+            "open a file to save or read what's on the disk.",
+        ],
+        "json": [
+            "json turns data into text you can save or send, and back again.",
+            "json dumps a dict into text and loads it back into a dict.",
+            "json is the common format for passing data around.",
+        ],
+    }
+
+    _TTS_OPENERS = [
+        "Here's the idea:",
+        "So the key thing here:",
+        "The bit that matters:",
+        "Right, here's what to notice:",
+        "Okay — the important part:",
+    ]
+
+    _TTS_GO_TAIL = [
+        "Enter to dive in.",
+        "Press enter when you're ready.",
+        "Enter to start writing.",
+        "Hit enter and go.",
+    ]
+
+    def _task_tts(self, c) -> str:
+        """A short, natural, non-repetitive intro. Early challenges say the
+        concept in detail; later repeats say it briefly and differently."""
+        idx = self._flat_index()
+        title = c["title"]
+        topic = c.get("topic", "")
+        rot = self.p.setdefault("tts_rot", {})
+        n = rot.get(topic, 0)
+        rot[topic] = n + 1
+        save_progress(self.p)
+
+        early = idx < 10
+        opener = self._TTS_OPENERS[n % len(self._TTS_OPENERS)]
+        tail = self._TTS_GO_TAIL[n % len(self._TTS_GO_TAIL)]
+        concept = self._CONCEPT_PHRASES.get(topic, [])
+
+        if early and concept:
+            # phase 1: name the task AND explain the important idea naturally
+            phrase = concept[n % len(concept)]
+            return f"{opener} {title}. {phrase} {tail}"
+        if concept and n % 3 == 0:
+            # later, but every so often re-anchor with a fresh angle
+            phrase = concept[(n + 1) % len(concept)]
+            return f"{title}. {phrase} {tail}"
+        # later repeat: just the task, phrased briefly
+        return f"{title}. {tail}"
 
     def _goal_values(self, c) -> list[str]:
         """The target output as a short list of values, for the GOAL diagram."""
