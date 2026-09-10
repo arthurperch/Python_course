@@ -12986,8 +12986,12 @@ class TutorApp(App):
         self._ghost_blind_reveal = 0        # how much of the blind section is shown
         self._ghost_fade = False            # FADE recall mode (faint purple ghost, silent)
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
-        self._ghost_reveal = 0              # "show code" countdown (0 = hidden)
+        self._ghost_reveal = 0               # "show code" countdown (0 = hidden)
         self._ghost_reveal_timer = None
+        self._ghost_fill = False             # FILL mode: blank a value, user types it
+        self._ghost_fill_input = ""          # what the user typed into the blank
+        self._ghost_fill_s = 0               # blank span start in the code
+        self._ghost_fill_e = 0               # blank span end in the code
         self._ghost_used_hint = False       # true once the user peeked at the answer
         self._ghost_mastery_streak = 0      # clean blind completions in a row
         self._ghost_shake_cool = False      # cooldown gate on the error shake
@@ -15209,6 +15213,10 @@ class TutorApp(App):
             return 0, "write"
         watch = max(1, n // 3)            # first third: watch & run
         if idx < watch:
+            # the very first rep is a FILL — blank a value and let the user
+            # type any value/name to see the output change, not just press enter
+            if idx == 0 and self._ghost_fill_blank(self._ghost_target) != (None, None):
+                return 0, "fill"
             return L, "watch"
         write_from = n - max(1, n // 3)   # last third: write it all
         if idx >= write_from:
@@ -15274,6 +15282,13 @@ class TutorApp(App):
         # ---- learning ramp: watch -> finish -> write -> change (see, do, change) ----
         self._ghost_pos, self._ghost_mode = self._ghost_start_pos(idx, len(self._ghost_examples))
         self._ghost_done = self._ghost_pos >= len(self._ghost_target)
+        # FILL mode: blank out a value and let the user type any value/name
+        if self._ghost_mode == "fill":
+            self._ghost_fill = True
+            self._ghost_fill_input = ""
+            self._ghost_fill_s, self._ghost_fill_e = self._ghost_fill_blank(self._ghost_target)
+        else:
+            self._ghost_fill = False
         # say one short useful thing about THIS example; announce the ramp level
         # the first time it changes, so the progression is explained as you go
         if self.voice_on:
@@ -15372,6 +15387,25 @@ class TutorApp(App):
             return
         key = event.key
         ch = event.character
+        # ---- FILL mode: type any value into the blank, Enter runs it ---------
+        if self._ghost_fill:
+            if key == "enter":
+                event.stop(); event.prevent_default()
+                self._ghost_run_fill()
+                return
+            if key == "backspace":
+                event.stop(); event.prevent_default()
+                self._ghost_fill_input = self._ghost_fill_input[:-1]
+                play_key()
+                self._ghost_render()
+                return
+            if ch and not key.startswith("ctrl+"):
+                event.stop(); event.prevent_default()
+                self._ghost_fill_input += ch
+                play_key()
+                self._ghost_render()
+                return
+            # other keys (F5, Esc, ctrl+h/l, Tab) fall through to normal handling
         # ---- window nav (ctrl+h / ctrl+l) + hint toggle (F5) -------------
         # these are the "Super/Caps + h/l" equivalent: a modifier so they never
         # collide with the vim h/l keys you'll use in the real editor
@@ -15925,6 +15959,7 @@ class TutorApp(App):
             return
         n = len(self._ghost_examples)
         mode_label = {
+            "fill": "FILL IT  —  type your own value, Enter to run and see the output",
             "watch": "WATCH & RUN  —  it's written, press Enter to run",
             "finish": "FINISH IT  —  I started, you finish the rest",
             "write": "WRITE IT ALL  —  you're locked in, type it out",
@@ -15941,6 +15976,7 @@ class TutorApp(App):
         code = self._ghost_render_code()
         console = self._ghost_render_console()
         foot = {
+            "fill": "type any value into the blank · backspace to edit · Enter to run",
             "watch": "just read it · Enter to run",
             "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
@@ -16083,6 +16119,54 @@ class TutorApp(App):
         title = title or getattr(self, "_ghost_title", "drill.py")
         self._ghost_fill_pane("", title, code, title)
 
+    def _ghost_fill_blank(self, code):
+        """Find the first string value (inside the quotes) or a number to blank
+        out for a 'fill the value' drill. Quotes stay — the user types the value
+        between them. Returns (start, end) or (None, None)."""
+        m = re.search(r'(?<=")[^"]*(?=")|(?<=\')[^\']*(?=\')|\b\d+\b', code)
+        if m and m.start() != m.end():
+            return m.start(), m.end()
+        return None, None
+
+    def _ghost_render_fill(self):
+        """FILL mode: the code with the blank value replaced by whatever the user
+        typed (highlighted) and a cursor — they can enter any value/name."""
+        code = self._ghost_target
+        s, e = self._ghost_fill_s, self._ghost_fill_e
+        val = self._ghost_fill_input
+        t = Text()
+        pos = 0
+        for i, line in enumerate(code.split("\n")):
+            if i:
+                t.append("\n")
+            t.append(f"{i+1:>3} ", style="#7f849c")
+            line_end = pos + len(line)
+            if s < line_end and e > pos:
+                ls = max(0, s - pos)
+                le = min(len(line), e - pos)
+                t.append(line[:ls], style="#cdd6f4")
+                shown = val if val else "___"
+                t.append(shown, style="bold #facc15")
+                t.append("█", style="bold #facc15" if self._ghost_blink_on else "bold #a3a380")
+                t.append(line[le:], style="#cdd6f4")
+            else:
+                t.append(line, style="#cdd6f4")
+            pos = line_end + 1
+        return t
+
+    def _ghost_run_fill(self):
+        """Run the code with the user's value substituted into the blank."""
+        code = self._ghost_target
+        s, e = self._ghost_fill_s, self._ghost_fill_e
+        val = self._ghost_fill_input or code[s:e]   # empty → keep the original
+        filled = code[:s] + val + code[e:]
+        self._ghost_fill = False
+        self._ghost_target = filled
+        self._ghost_pos = len(filled)
+        self._ghost_done = True
+        self._ghost_phase = "type"
+        self._ghost_run()
+
     def _ghost_visible(self, ch):
         """Render a character visibly even when it's a space or newline, so a
         missed/wrong space isn't an invisible blank."""
@@ -16126,6 +16210,8 @@ class TutorApp(App):
         self._ghost_render()
 
     def _ghost_render_code(self):
+        if self._ghost_fill:
+            return self._ghost_render_fill()
         t = Text()
         pos = self._ghost_pos
         idx = 0
