@@ -12718,6 +12718,7 @@ class TutorApp(App):
         self._ghost_blind_from = None       # pos to write blind from (None = normal)
         self._ghost_blind_reveal = 0        # how much of the blind section is shown
         self._ghost_mastery_streak = 0      # clean blind completions in a row
+        self._ghost_shake_cool = False      # cooldown gate on the error shake
         self._ghost_a_code = None           # side A code (stashed for the split view)
         self._ghost_a_out = ""              # side A output (stashed likewise)
         self._ghost_compare_flash = False   # split-screen bold flash on/off
@@ -14835,9 +14836,14 @@ class TutorApp(App):
 
     def _ghost_consume_indent(self):
         if self._ghost_at_indent():
+            # one Tab = one 4-space indent level; a deeper indent needs more
+            # Tabs (the button shows ×N), so press it once per level
+            n = 4
             while (self._ghost_pos < len(self._ghost_target)
-                   and self._ghost_target[self._ghost_pos] == " "):
+                   and self._ghost_target[self._ghost_pos] == " "
+                   and n > 0):
                 self._ghost_pos += 1
+                n -= 1
             play_key()
             self._ghost_render()
 
@@ -15009,9 +15015,17 @@ class TutorApp(App):
             self._ghost_render()
 
     def _ghost_shake(self):
-        """Subtly jolt just the CODE text on a wrong key — ±1 column, a couple
-        of quick frames. Only #ghost-code moves; the header, console, and footer
-        stay still so it reads as the text trembling, not the screen shaking."""
+        """A gentle ±1-column tremble on a wrong key, with a cooldown so rapid
+        mistakes don't turn into a blur — only #ghost-code moves, and only after
+        a short delay since the last shake."""
+        if getattr(self, "_ghost_shake_cool", False):
+            return   # cooldown — let the last shake finish before the next
+        self._ghost_shake_cool = True
+
+        def _cool():
+            self._ghost_shake_cool = False
+
+        self.set_timer(0.4, _cool)
         if self._ghost_shake_timer is not None:
             self._ghost_shake_timer.stop()
             self._ghost_shake_timer = None
@@ -15030,7 +15044,7 @@ class TutorApp(App):
                     self._ghost_shake_timer.stop()
                     self._ghost_shake_timer = None
 
-        self._ghost_shake_timer = self.set_interval(0.06, _frame)
+        self._ghost_shake_timer = self.set_interval(0.14, _frame)
 
     def _ghost_start_blink(self):
         self._ghost_blink_on = True
@@ -15532,15 +15546,11 @@ class TutorApp(App):
             j = 0
             while j < typed_n:
                 if (start + j) in self._ghost_errors:
-                    # BOTH shown at once: the wrong char in bold red (what you
-                    # typed) then the correct ghost char in bold yellow (what it
-                    # should have been) — spaces rendered as a visible '·' so a
-                    # missed space isn't invisible
+                    # the wrong char in bold red (underlined) — just red, not a
+                    # red+yellow pair. Spaces rendered as '·' so they're visible.
                     wrong = self._ghost_errors[start + j]
                     t.append(self._ghost_visible(wrong),
                              style="bold underline #ff5555")
-                    t.append(self._ghost_visible(line[j]),
-                             style="bold #facc15")
                     j += 1
                 else:
                     run_start = j
@@ -15556,12 +15566,16 @@ class TutorApp(App):
             need_tab = (start <= pos < end and self._ghost_target[pos] == " "
                         and self._ghost_structural(pos))
             if need_tab:
-                # at the indent — a block cursor at the start of the line, then
-                # the dim ghost of the indented code (Tab is the next key)
+                # a flashing purple TAB button — the ghost line STAYS put here;
+                # the button tells you to press Tab (and ×N for a deeper indent)
                 k = 0
                 while k < len(line) and line[k] == " ":
                     k += 1
-                t.append(" ", style="reverse bold")
+                depth = max(1, (k + 3) // 4)   # one Tab per 4-space level
+                on = self._ghost_blink_on
+                btn = " TAB" + (f"×{depth}" if depth > 1 else "") + " "
+                t.append(btn, style="bold #1e1e2e on #d8b4fe" if on
+                         else "bold #d8b4fe")
                 if k < len(line):
                     if blind:
                         t.append("·" * (len(line) - k), style="#3a3a44")
