@@ -610,11 +610,11 @@ GROUPS = [
              "prompt": "Print the BIGGEST number in `nums` — but do it with a loop, not max().",
              "starter": "nums = [4, 9, 2, 7]\n", "expect": ["9"], "need": ["for", "if"], "stdin": "",
              "example": "Same hunt for the smallest:\n```python\nnums = [4, 9, 2, 7]\nbest = nums[0]\nfor x in nums:\n    if x < best:\n        best = x\nprint(best)\n```\n> remember the best one seen so far, and replace it whenever the loop finds better."},
-            {"title": "reverse it", "topic": "strings",
+            {"title": "reverse it", "topic": "slicing",
              "prompt": "Print the string `word` backwards.",
              "starter": "word = \"python\"\n", "expect": ["nohtyp"], "need": ["[::"], "stdin": "",
              "example": "Reverse a different word:\n```python\ns = \"race\"\nprint(s[::-1])\n```\n> the third slice number is the step — a step of -1 walks through the string from the end."},
-            {"title": "every other letter", "topic": "strings",
+            {"title": "every other letter", "topic": "slicing",
              "prompt": "Print every SECOND letter of `s`, starting with the first one.",
              "starter": "s = \"abcdefg\"\n", "expect": ["a", "c", "e", "g"], "need": ["[::"], "stdin": "",
              "example": "Every second letter of a different word:\n```python\ns = \"qwerty\"\nprint(s[::2])\n```\n> a step of 2 jumps one letter at a time — first, third, fifth…"},
@@ -12713,6 +12713,8 @@ class TutorApp(App):
         self._ghost_why_brief = Text()      # collapsed task summary
         self._ghost_compare = None          # "A"/"B" when the step is a compare card
         self._ghost_card = None             # compare card id
+        self._ghost_lab = None              # card id when this step is a WATCH lab
+        self._ghost_lab_revealed = 0        # how many lab variants have been revealed
         self._ghost_a_code = None           # side A code (stashed for the split view)
         self._ghost_a_out = ""              # side A output (stashed likewise)
         self._ghost_compare_flash = False   # split-screen bold flash on/off
@@ -13336,6 +13338,29 @@ class TutorApp(App):
                   "code": "print([n * 2 for n in [1, 2, 3]])"},
             "why": "Both print [2, 4, 6]. The loop builds the list by hand: make an empty list, append each result. The comprehension declares the WHOLE list in one expression — no empty box, no append, no extra bookkeeping. Programmers use comprehensions for the simple transform-a-list case and reach for a loop when the body gets complicated.",
             "rules": "RULES: [RESULT for ITEM in LIST] builds a list. Add `if KEEP` at the end to filter. {K: V for ITEM in LIST} makes a dict, {ITEM for ITEM in LIST} makes a set."},
+        "slicing": {
+            "topic": "strings",
+            "source": "HELLO",
+            "variants": [
+                {"caption": "s[::] — the whole string",
+                 "code": 's = "HELLO"\nprint(s[::])',
+                 "result": "HELLO", "picked": [0, 1, 2, 3, 4]},
+                {"caption": "s[::-1] — reverse it",
+                 "code": 's = "HELLO"\nprint(s[::-1])',
+                 "result": "OLLEH", "picked": [0, 1, 2, 3, 4]},
+                {"caption": "s[::-2] — every 2nd from the end",
+                 "code": 's = "HELLO"\nprint(s[::-2])',
+                 "result": "OLH", "picked": [4, 2, 0]},
+                {"caption": "s[1:4] — positions 1 up to (not incl) 4",
+                 "code": 's = "HELLO"\nprint(s[1:4])',
+                 "result": "ELL", "picked": [1, 2, 3]},
+            ],
+            "why": ("A slice has THREE parts: [START : STOP : STEP]. START = where to "
+                    "begin, STOP = where to stop (NOT included), STEP = how many to jump "
+                    "— and a NEGATIVE step walks backwards. That's why ::-1 reverses: "
+                    "it walks from the end, one letter at a time."),
+            "rules": "s[start : stop : step]  ·  start defaults to 0  ·  stop defaults to the end  ·  step defaults to 1  ·  a negative step reverses the walk",
+        },
     }
 
     # which challenge topics get which comparison card (basic → intermediate)
@@ -13360,6 +13385,7 @@ class TutorApp(App):
         "classes": "init", "objects": "init", "init": "init",
         "dunders": "init", "inheritance": "inheritance", "super": "inheritance",
         "comprehension": "loop_vs_comprehension", "listcomp": "loop_vs_comprehension",
+        "slicing": "slicing", "slice": "slicing", "reverse": "slicing",
     }
 
     def _vim_checkpoint_label(self):
@@ -14557,13 +14583,19 @@ class TutorApp(App):
         if card_id and card_id in self.COMPARE_CARDS and \
                 getattr(self, "group_idx", 0) >= 2:
             card = self.COMPARE_CARDS[card_id]
-            for side in ("a", "b"):
-                sc = card[side]
-                if sc["code"] and sc["code"] not in seen:
-                    seen.add(sc["code"])
-                    codes.append({"code": sc["code"], "stdin": "",
-                                  "prefix": "", "compare_side": side.upper(),
-                                  "card": card_id})
+            if card.get("variants"):
+                # a multi-way WATCH lab: pre-written, no typing — press Enter to
+                # reveal each variant's output and its highlighted letters
+                codes.append({"code": "", "stdin": "", "prefix": "",
+                              "lab": card_id, "card": card_id})
+            else:
+                for side in ("a", "b"):
+                    sc = card[side]
+                    if sc["code"] and sc["code"] not in seen:
+                        seen.add(sc["code"])
+                        codes.append({"code": sc["code"], "stdin": "",
+                                      "prefix": "", "compare_side": side.upper(),
+                                      "card": card_id})
         return codes
 
     def _start_ghost_required(self):
@@ -14697,6 +14729,16 @@ class TutorApp(App):
         self._ghost_change = ex.get("change")   # "change it" metadata, or None
         self._ghost_compare = ex.get("compare_side")  # "A"/"B" in a compare card
         self._ghost_card = ex.get("card")
+        self._ghost_lab = ex.get("lab")               # card id for a WATCH lab
+        if self._ghost_lab:
+            # multi-variant watch lab: nothing to type — press Enter to reveal
+            # each variant's output (with letter highlighting), then compare all
+            self._ghost_phase = "lab"
+            self._ghost_lab_revealed = 0
+            self._ghost_target = ""
+            self._ghost_done = True
+            self._ghost_render()
+            return
         try:
             self._ghost_title = self._current().get("title", "drill") + ".py"
         except Exception:
@@ -14803,6 +14845,22 @@ class TutorApp(App):
             event.stop(); event.prevent_default()
             self._ghost_hints = not self._ghost_hints
             self._ghost_render_hints()
+            return
+        if self._ghost_phase == "lab":
+            # watch lab: Enter reveals the next variant's output; when all are
+            # shown, Enter moves on to the next drill
+            if key == "enter":
+                event.stop(); event.prevent_default()
+                card = self.COMPARE_CARDS[self._ghost_card]
+                if self._ghost_lab_revealed < len(card["variants"]):
+                    self._ghost_lab_revealed += 1
+                    play_menu_blip(min(self._ghost_lab_revealed, 12))
+                    self._ghost_render()
+                else:
+                    self._ghost_next()
+            elif key == "escape":
+                event.stop(); event.prevent_default()
+                self._ghost_next()
             return
         if self._ghost_phase == "compare":
             # the A-vs-B screen: Enter/Esc move on, typing keys do nothing
@@ -15242,6 +15300,9 @@ class TutorApp(App):
             pass
 
     def _ghost_render(self):
+        if self._ghost_phase == "lab":
+            self._ghost_render_lab()
+            return
         if self._ghost_phase == "compare" or self._ghost_compare:
             self._ghost_render_split()
             return
@@ -15307,6 +15368,63 @@ class TutorApp(App):
                 ed.remove_class("active"); wh.add_class("active")
         except Exception:
             pass
+
+    def _ghost_slice_highlight(self, source, picked, result):
+        """Bold the source letters a slice KEPT, dim the ones it skipped, then
+        show the result — so the skip-pattern is visible letter by letter."""
+        t = Text()
+        for i, ch in enumerate(source):
+            if i in picked:
+                t.append(ch, style="bold #facc15")
+            else:
+                t.append(ch, style="#45475a")
+        t.append("  →  ")
+        t.append(result, style="bold #a6e3a1")
+        return t
+
+    def _ghost_render_lab(self):
+        """A multi-variant WATCH lab: nothing to type. The variants are shown in
+        a 2x2 grid; Enter reveals each one's output + highlighted letters."""
+        card = self.COMPARE_CARDS[self._ghost_card]
+        variants = card["variants"]
+        source = card.get("source", "")
+        revealed = self._ghost_lab_revealed
+        head = Text(f"  {card['topic'].upper()} LAB", style="bold magenta")
+        head.append(f"    {revealed}/{len(variants)} ran", style="bold #c4b5fd")
+        self.query_one("#ghost-bufferline", Static).update(head)
+        # 2x2 grid of cells: caption + code + output (highlighted when revealed)
+        cells = []
+        for v in variants:
+            shown = variants.index(v) < revealed
+            cell = Text(v["caption"] + "\n", style="bold #7dd3fc")
+            for j, line in enumerate(v["code"].split("\n")):
+                cell.append(f"{j+1:>2} ", style="#7f849c")
+                cell.append(line, style="#cdd6f4")
+                cell.append("\n")
+            cell.append("\n  ")
+            if shown:
+                cell.append_text(self._ghost_slice_highlight(
+                    source, v["picked"], v["result"]))
+            else:
+                cell.append("▶ press Enter to run", style="bold #7a7a7a")
+            cells.append(cell)
+        # lay the four cells out 2x2
+        grid = Text()
+        grid.append_text(self._ghost_side_by_side(cells[0], cells[1], box=False))
+        grid.append("\n")
+        grid.append_text(self._ghost_side_by_side(cells[2], cells[3], box=False))
+        self.query_one("#ghost-code", Static).update(grid)
+        self.query_one("#ghost-editor-pane-b", Vertical).remove_class("visible")
+        self.query_one("#ghost-console", Static).update(Text(""))
+        why = Text("WHY\n", style="bold yellow")
+        why.append(_wrap_console(card["why"], max(40, self.size.width - 8)),
+                   style="#f0f0f5")
+        why.append("\n" + _wrap_console(card["rules"], max(40, self.size.width - 8)),
+                   style="bold #facc15")
+        self.query_one("#ghost-why", Static).update(why)
+        foot = ("Enter — next drill" if revealed >= len(variants) else
+                "Enter — run the next one")
+        self.query_one("#ghost-foot", Static).update(Text(foot, style="dim"))
 
     def _ghost_fill_pane(self, suffix, title, code, side_label):
         """Fill ONE editor pane (winbar + code + statusline). suffix "" = the
