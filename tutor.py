@@ -702,6 +702,64 @@ GROUPS = [
              "example": "Numbering names:\n```python\nnames = [\"ada\", \"grace\"]\nfor i, n in enumerate(names):\n    print(i, n)\n```\n> enumerate hands you the position AND the item in one step."},
         ],
     },
+    {
+        "id": "files",
+        "name": "FILES & DATA",
+        "challenges": [
+            {"title": "write and read", "topic": "files",
+             "prompt": "Write `hello` into `note.txt`, then read it back out and print it.",
+             "starter": "", "expect": ["hello"], "need": ["open", ".write", ".read"], "stdin": "",
+             "example": "Write then read a different word:\n```python\nf = open(\"msg.txt\", \"w\")\nf.write(\"hi\")\nf.close()\n\nf = open(\"msg.txt\", \"r\")\nprint(f.read())\nf.close()\n```\n> \"w\" writes (wipes), \"r\" reads. Always close when you're done."},
+            {"title": "append it", "topic": "with",
+             "prompt": "Write `hello` into `note.txt`, then APPEND ` world` and print the whole file.",
+             "starter": "", "expect": ["hello world"], "need": ["\"a\"", ".write"], "stdin": "",
+             "example": "Append a new line to a log:\n```python\nwith open(\"log.txt\", \"w\") as f:\n    f.write(\"first\\n\")\nwith open(\"log.txt\", \"a\") as f:\n    f.write(\"new entry\\n\")\nwith open(\"log.txt\") as f:\n    print(f.read())\n```\n> \"a\" adds to the END without erasing what's there."},
+            {"title": "safe write", "topic": "with",
+             "prompt": "Use `with open(...) as f:` to write `done` to `note.txt`, then read and print it. No `.close()` allowed.",
+             "starter": "", "expect": ["done"], "need": ["with", "as f"], "stdin": "",
+             "example": "The same pattern, different word:\n```python\nwith open(\"n.txt\", \"w\") as f:\n    f.write(\"saved\")\nwith open(\"n.txt\") as f:\n    print(f.read())\n```\n> `with` auto-closes the file the moment the indented block ends."},
+            {"title": "dict to text", "topic": "json",
+             "prompt": "Turn the dict `{\"name\": \"bean\", \"age\": 27}` into JSON text with `json.dumps` and print it.",
+             "starter": "import json\n", "expect": ["name", "bean", "age", "27"], "need": ["dumps"], "stdin": "",
+             "example": "Dump a smaller dict:\n```python\nimport json\nprint(json.dumps({\"city\": \"paris\"}))\n```\n> dumps = dict OUT to text. The result is a string."},
+            {"title": "text to dict", "topic": "json",
+             "prompt": "Parse the JSON text `{\"name\": \"bean\"}` with `json.loads`, then print just the name.",
+             "starter": "import json\n", "expect": ["bean"], "need": ["loads"], "stdin": "",
+             "example": "Load a different key:\n```python\nimport json\nd = json.loads('{\"age\": 30}')\nprint(d[\"age\"])\n```\n> loads = text IN to a real dict, so d[\"key\"] works."},
+            {"title": "named day", "topic": "datetime",
+             "prompt": "Print what DAY OF THE WEEK July 4, 2024 was, using `date(2024, 7, 4)` and `strftime(\"%A\")`.",
+             "starter": "from datetime import date\n", "expect": ["thursday"], "need": ["strftime", "%A"], "stdin": "",
+             "example": "Get the year instead:\n```python\nfrom datetime import date\nd = date(2024, 7, 4)\nprint(d.strftime(\"%Y\"))\n```\n> strftime formats a date into text — %A is the full weekday name."},
+            {"title": "in a month", "topic": "datetime",
+             "prompt": "Print the date that is 30 days after January 1, 2024.",
+             "starter": "from datetime import date, timedelta\n", "expect": ["2024-01-31"], "need": ["timedelta"], "stdin": "",
+             "example": "Seven days later:\n```python\nfrom datetime import date, timedelta\nprint(date(2024, 1, 1) + timedelta(days=7))\n```\n> timedelta is a chunk of time you can add to a date."},
+            {"title": "yesterday", "topic": "datetime",
+             "prompt": "Print the day BEFORE March 1, 2024 (watch the leap year).",
+             "starter": "from datetime import date, timedelta\n", "expect": ["2024-02-29"], "need": ["timedelta"], "stdin": "",
+             "example": "Subtract two days:\n```python\nfrom datetime import date, timedelta\nprint(date(2024, 3, 3) - timedelta(days=2))\n```\n> Subtracting timedelta goes backwards — and Python knows about leap years."},
+            {"title": "does it exist", "topic": "pathlib",
+             "prompt": "Write a file `n.txt`, then print whether `Path(\"n.txt\").exists()` is true.",
+             "starter": "from pathlib import Path\n", "expect": ["true"], "need": ["Path", ".exists"], "stdin": "",
+             "example": "Check a different file:\n```python\nfrom pathlib import Path\nprint(Path(\"README\").exists())\n```\n> .exists() answers True/False — is the file really there?"},
+            {"title": "join a path", "topic": "pathlib",
+             "prompt": "Print the path `data/x.txt` by joining a folder and a file with a slash.",
+             "starter": "from pathlib import Path\n", "expect": ["data/x.txt"], "need": ["Path"], "stdin": "",
+             "example": "Join a different folder:\n```python\nfrom pathlib import Path\nprint(Path(\"logs\") / \"app.log\")\n```\n> Path(\"a\") / \"b\" builds a path — no string-splicing."},
+            {"title": "read all lines", "topic": "files",
+             "prompt": "Write three lines to `n.txt`, then print HOW MANY lines it has using `.readlines()`.",
+             "starter": "", "expect": ["3"], "need": ["readlines", "len"], "stdin": "",
+             "example": "Count lines in a two-line file:\n```python\nwith open(\"n.txt\", \"w\") as f:\n    f.write(\"a\\nb\\n\")\nwith open(\"n.txt\") as f:\n    print(len(f.readlines()))\n```\n> .readlines() returns a LIST of lines — len() counts them."},
+            {"title": "shout the file", "topic": "files",
+             "prompt": "Write `hi` to `n.txt`, read it back, and print it in UPPERCASE.",
+             "starter": "", "expect": ["hi"], "need": [".upper", ".read"], "stdin": "",
+             "example": "Upper-case a different read:\n```python\nwith open(\"n.txt\", \"w\") as f:\n    f.write(\"hey\")\nwith open(\"n.txt\") as f:\n    print(f.read().upper())\n```\n> .read() returns a string, so every string method (.upper, .strip…) works on it."},
+            {"title": "save and load", "topic": "json",
+             "prompt": "Save `{\"name\": \"bean\"}` to a file with `json.dump`, then read it back with `json.load` and print the name.",
+             "starter": "import json\n", "expect": ["bean"], "need": ["dump", "load"], "stdin": "",
+             "example": "Save and load a number:\n```python\nimport json\nwith open(\"d.json\", \"w\") as f:\n    json.dump({\"n\": 42}, f)\nwith open(\"d.json\") as f:\n    print(json.load(f)[\"n\"])\n```\n> dump/load (no s) read and write FILES; dumps/loads (with s) work on strings."},
+        ],
+    },
 ]
 
 EXAMPLES = {
@@ -789,6 +847,29 @@ TOPIC_CHEATS = {
              "examples": [("reassign", 'x = 1\nx = 2\nprint(x)  # 2'),
                           ("loop", 'for i in range(3):\n    print(i)  # 0 1 2')],
              "tip": "Trace top to bottom. A variable is whatever it was last set to. print() shows that value."},
+    "files": {"title": "files (open/read/write)",
+              "examples": [("write", 'with open("n.txt", "w") as f:\n    f.write("hi")'),
+                           ("read", 'with open("n.txt", "r") as f:\n    print(f.read())')],
+              "tip": "open(path, mode). \"w\" writes (wipes), \"r\" reads, \"a\" appends. with auto-closes."},
+    "with": {"title": "with — auto-close",
+             "examples": [("write", 'with open("n.txt", "w") as f:\n    f.write("x")')],
+             "tip": "with open(...) as f: opens AND closes the file for you."},
+    "json": {"title": "json (loads/dumps)",
+             "examples": [("dict→text", 'import json\nprint(json.dumps({"a": 1}))'),
+                          ("text→dict", 'import json\nd = json.loads(\'{"a": 1}\')\nprint(d["a"])')],
+             "tip": "dumps = dict→string. loads = string→dict. The s means 'string'."},
+    "datetime": {"title": "datetime",
+                 "examples": [("today", "from datetime import date\nprint(date.today())"),
+                              ("+30 days", "from datetime import date, timedelta\nprint(date.today() + timedelta(days=30))")],
+                 "tip": "date.today() = today. timedelta(days=n) = a chunk of time."},
+    "pathlib": {"title": "pathlib (Path)",
+                "examples": [("exists", "from pathlib import Path\nprint(Path(\"x.txt\").exists())"),
+                             ("join", 'from pathlib import Path\nprint(Path("data") / "x.txt")')],
+                "tip": "Path(\"a\") / \"b\" joins paths. .exists() checks, .read_text() reads."},
+    "random": {"title": "random",
+               "examples": [("dice", "import random\nprint(random.randint(1, 6))"),
+                            ("pick", 'import random\nprint(random.choice(["a", "b"]))')],
+               "tip": "randint(a,b) rolls a number. choice() picks one. shuffle() mixes."},
     "custom": {"title": "common patterns",
                "examples": [("print", 'print("hi")'),
                             ("loop", 'for i in range(5):\n    print(i)')],
@@ -1447,6 +1528,90 @@ LESSONS = {
         ],
         "outro": "You got this. Read the prompt, take the smallest step, run it, repeat.",
     },
+    "files": {
+        "title": "Files — Talking to the Disk",
+        "intro": "Everything you save — notes, save-games, logs — lives in a FILE on the disk. Python can open files, read them, and write to them. This is where programs stop being calculators and start being real tools.",
+        "points": [
+            ("open() then close()", "open(\"name.txt\", \"w\") gives you a handle on the file. \"w\" means WRITE (it wipes what was there), \"r\" means READ, \"a\" means APPEND (add to the end). Always close it when done."),
+            ("write() puts text in", "f.write(\"hello\") writes the text into the file. It writes exactly what you hand it — no automatic newline."),
+            ("read() gets it back", "open(\"name.txt\", \"r\") then f.read() hands you the whole file's text as one big string."),
+        ],
+        "examples": [
+            {"caption": "write a line", "code": 'with open("note.txt", "w") as f:\n    f.write("hello")\nwith open("note.txt") as f:\n    print(f.read())'},
+            {"caption": "read it back", "code": 'f = open("note.txt", "r")\nprint(f.read())\nf.close()'},
+        ],
+        "outro": "open → read/write → close. Files are just text on the disk you can reach out and touch.",
+    },
+    "with": {
+        "title": "with — The Safe Way to Open Files",
+        "intro": "Remembering to close a file is easy to forget — and a file left open can lose data or crash. `with open(...) as f:` opens AND auto-closes the file for you, even if something goes wrong.",
+        "points": [
+            ("with = auto-close", "with open(\"note.txt\", \"w\") as f: opens the file, and the moment the indented block ends, Python closes it for you. No f.close() to forget."),
+            ("as f names it", "`as f` gives the open file a name (f). Inside the block, f.write() and f.read() work exactly like before."),
+            ("Always prefer with", "Real Python code uses with for every file. It's the professional default — one less bug to make."),
+        ],
+        "examples": [
+            {"caption": "write with auto-close", "code": 'with open("note.txt", "w") as f:\n    f.write("safe write")\nwith open("note.txt") as f:\n    print(f.read())'},
+            {"caption": "read with auto-close", "code": 'with open("note.txt", "r") as f:\n    print(f.read())'},
+        ],
+        "outro": "with open(...) as f: is the only way you'll open files in real code. Open, work, auto-close.",
+    },
+    "json": {
+        "title": "JSON — Data That Any Program Can Read",
+        "intro": "JSON is a text format for storing data (dictionaries, lists) that every language understands. It's how apps, websites and APIs talk to each other. json.loads() reads it in, json.dumps() writes it out.",
+        "points": [
+            ("dumps() = dict → text", "json.dumps({\"name\": \"bean\"}) turns a dictionary into a JSON STRING you can save to a file or send over the internet."),
+            ("loads() = text → dict", "json.loads('{\"name\": \"bean\"}') takes JSON TEXT and turns it back into a real Python dictionary you can use."),
+            ("It's all strings", "dumps ends in 's' = string. loads ends in 's' = from string. (dump/load without the s work on files directly.)"),
+        ],
+        "examples": [
+            {"caption": "dict to JSON text", "code": 'import json\nprint(json.dumps({"name": "bean", "age": 27}))'},
+            {"caption": "JSON text to dict", "code": 'import json\nd = json.loads(\'{"name": "bean"}\')\nprint(d["name"])'},
+        ],
+        "outro": "dumps → out to text. loads → in from text. JSON is the world's shared data language.",
+    },
+    "datetime": {
+        "title": "Dates & Times — datetime",
+        "intro": "Real programs need to know WHEN. The datetime module gives you today's date, the current time, and lets you do math on time — like 'what's 30 days from now?'",
+        "points": [
+            ("today() and now()", "datetime.date.today() is today's date; datetime.datetime.now() is this exact second. Both come from the datetime module."),
+            ("strftime() formats it", ".strftime(\"%Y-%m-%d\") turns a date into text in any shape — %Y is the 4-digit year, %m month, %d day."),
+            ("timedelta() adds days", "date.today() + timedelta(days=30) is 30 days from now. timedelta is the 'chunk of time' you add or subtract."),
+        ],
+        "examples": [
+            {"caption": "today in YYYY-MM-DD", "code": "from datetime import date\nprint(date.today().strftime(\"%Y-%m-%d\"))"},
+            {"caption": "30 days from now", "code": "from datetime import date, timedelta\nprint(date.today() + timedelta(days=30))"},
+        ],
+        "outro": "date for days, datetime for the full moment, timedelta for the gap between.",
+    },
+    "pathlib": {
+        "title": "Paths — pathlib",
+        "intro": "Working with folders and file locations by hand is a mess of slashes and strings. pathlib gives you Path objects that know how to check existence, read text, and list directories — cleanly.",
+        "points": [
+            ("Path() makes a path", "from pathlib import Path; Path(\"note.txt\") is a path object. Path(\"data\") / \"x.txt\" joins folders with a slash — no string-fiddling."),
+            ("exists() checks", "path.exists() answers True/False — is the file really there? Check before you open."),
+            ("read_text() reads", "Path(\"note.txt\").read_text() opens + reads + closes the whole file in one call."),
+        ],
+        "examples": [
+            {"caption": "does it exist?", "code": "from pathlib import Path\nprint(Path(\"note.txt\").exists())"},
+            {"caption": "join a folder + file", "code": "from pathlib import Path\np = Path(\"data\") / \"x.txt\"\nprint(p)"},
+        ],
+        "outro": "Path objects make files and folders first-class citizens — no more slash soup.",
+    },
+    "random": {
+        "title": "Randomness — random",
+        "intro": "Games, shuffles, dice rolls, picking a winner — all need randomness. The random module makes your program unpredictable on purpose.",
+        "points": [
+            ("randint(a, b) rolls dice", "random.randint(1, 6) gives a whole number from 1 to 6, both ends included."),
+            ("choice() picks one", "random.choice([\"heads\", \"tails\"]) picks one item from a list at random."),
+            ("shuffle() mixes a list", "random.shuffle(cards) rearranges the list in place — the same cards, a new order."),
+        ],
+        "examples": [
+            {"caption": "a dice roll", "code": "import random\nprint(random.randint(1, 6))"},
+            {"caption": "pick a winner", "code": "import random\nprint(random.choice([\"ada\", \"grace\", \"bean\"]))"},
+        ],
+        "outro": "randint for numbers, choice for one pick, shuffle for a new order.",
+    },
 }
 
 
@@ -1747,17 +1912,21 @@ def _number_meaning(code: str, node) -> str:
 
 
 def run_code(code: str, stdin: str = "25\n") -> tuple[str, str]:
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(code)
-        path = f.name
-    try:
-        r = subprocess.run(["python3", path], capture_output=True, text=True,
-                           timeout=15, input=stdin)
-        return r.stdout, r.stderr
-    except subprocess.TimeoutExpired:
-        return "", "[timed out after 15s — infinite loop?]"
-    finally:
-        Path(path).unlink(missing_ok=True)
+    # run in a throwaway dir so file-writing challenges (open/write) never
+    # touch the user's real working directory
+    with tempfile.TemporaryDirectory() as d:
+        with tempfile.NamedTemporaryFile("w", suffix=".py", dir=d,
+                                         delete=False) as f:
+            f.write(code)
+            path = f.name
+        try:
+            r = subprocess.run(["python3", path], capture_output=True, text=True,
+                               timeout=15, input=stdin, cwd=d)
+            return r.stdout, r.stderr
+        except subprocess.TimeoutExpired:
+            return "", "[timed out after 15s — infinite loop?]"
+        finally:
+            Path(path).unlink(missing_ok=True)
 
 
 def run_lesson_code(code: str, stdin: str = "") -> tuple[str, str]:
@@ -12683,6 +12852,22 @@ class TutorApp(App):
                   "code": "fruits = [\"kiwi\", \"fig\"]\nfor i, f in enumerate(fruits):\n    print(i, f)"},
             "why": "Both print 0 kiwi then 1 fig. range(len()) is the manual way — you must remember fruits[i] yourself and it's easy to get wrong. enumerate hands you BOTH the position and the item in one step, so there's nothing to forget. Programmers reach for enumerate whenever a loop needs the index.",
             "rules": "RULES: enumerate(list) gives back (index, item) pairs — for i, f in ... unpacks the pair into two names. len() counts how many items, range() counts the numbers."},
+        "open_modes": {
+            "topic": "files",
+            "a": {"caption": "\"w\" — write: wipes and starts fresh",
+                  "code": "with open(\"n.txt\", \"w\") as f:\n    f.write(\"new\")\nwith open(\"n.txt\") as f:\n    print(f.read())"},
+            "b": {"caption": "\"a\" — append: adds to the end",
+                  "code": "with open(\"n.txt\", \"a\") as f:\n    f.write(\"new\")\nwith open(\"n.txt\") as f:\n    print(f.read())"},
+            "why": "\"w\" erases whatever was there and writes fresh — the file ends up as just 'new'. \"a\" keeps the old content and tacks 'new' on the end. Programmers use \"w\" for a fresh save and \"a\" for logs, journals, and anything that must never lose its history.",
+            "rules": "RULES: open(path, mode) — the second argument is the MODE. \"w\" = wipe then write, \"a\" = append, \"r\" = read (the default). with open(...) as f: auto-closes."},
+        "json_loads_dumps": {
+            "topic": "json",
+            "a": {"caption": "dumps() — dict OUT to JSON text",
+                  "code": "import json\ns = json.dumps({\"name\": \"bean\"})\nprint(s)\nprint(type(s).__name__)"},
+            "b": {"caption": "loads() — JSON text IN to a dict",
+                  "code": "import json\nd = json.loads('{\"name\": \"bean\"}')\nprint(d[\"name\"])\nprint(type(d).__name__)"},
+            "why": "dumps takes a Python dict and turns it OUT into a JSON string (you can see it's str). loads takes a JSON string and turns it INto a real dict (so d[\"name\"] works). One direction is for saving/sending, the other for reading/receiving. The 's' in both = 'string'.",
+            "rules": "RULES: dumps(dict) → string. loads(string) → dict. JSON strings use double quotes for keys and values. After loads, it's a normal dict — d[\"key\"] works."},
     }
 
     # which challenge topics get which comparison card (basic → intermediate)
@@ -12701,6 +12886,8 @@ class TutorApp(App):
         "moddiv": "moddiv", "math": "moddiv",
         "concat": "append_vs_concat",
         "enumerate": "index_vs_enumerate",
+        "files": "open_modes", "with": "open_modes",
+        "json": "json_loads_dumps",
     }
 
     def _vim_checkpoint_label(self):
