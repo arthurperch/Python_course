@@ -16525,27 +16525,20 @@ class TutorApp(App):
             # typed portion: correct runs syntax-colored + BOLD (bigger focus),
             # error chars red
             j = 0
-            hit_miss = False
             while j < typed_n:
                 if (start + j) in self._ghost_errors:
-                    # ONE missed char: show the CORRECT character in red (not the
-                    # wrong char, not a dot), then '…' collapses everything after —
-                    # you must go back to the last correct char and fix it first
+                    # the CORRECT char in red — the user knows they missed it,
+                    # but the rest of the ghost text STAYS visible (no collapsing)
                     t.append(self._ghost_visible(self._ghost_target[start + j]),
                              style="bold underline #ff5555")
-                    t.append("…", style="bold #ff5555")
-                    hit_miss = True
-                    break
-                run_start = j
-                while j < typed_n and (start + j) not in self._ghost_errors:
                     j += 1
-                ct = _code_text(line[run_start:j])
-                ct.stylize("bold")
-                t.append_text(ct)
-            if hit_miss:
-                # a miss is pending — stop the line here; fix it before continuing
-                idx = end + 1
-                continue
+                else:
+                    run_start = j
+                    while j < typed_n and (start + j) not in self._ghost_errors:
+                        j += 1
+                    ct = _code_text(line[run_start:j])
+                    ct.stylize("bold")
+                    t.append_text(ct)
             # structural prompts: an explicit Enter/Tab the user performs next
             blind = self._ghost_blind_from is not None
             need_enter = (pos == end and end < len(self._ghost_target)
