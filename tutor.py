@@ -14973,13 +14973,15 @@ class TutorApp(App):
                         codes.append({"code": sc["code"], "stdin": "",
                                       "prefix": "", "compare_side": side.upper(),
                                       "card": card_id})
-        # the mastery finale: write the WHOLE thing blind (no ghost) — a mistake
-        # reveals the first part and restarts; two clean runs in a row = mastered
-        if getattr(self, "group_idx", 0) >= 2:
-            main = example_code(self._current().get("example", ""))[1]
-            if main:
+        # the recall ramp: FADE steps on EVERY course — 5 purple-disappearing
+        # recalls that go gradually harder. Each one's hint starts deep purple
+        # and decays a bit faster than the last (strength 1.0 → 0.2).
+        main = example_code(self._current().get("example", ""))[1]
+        if main:
+            for strength in (1.0, 0.8, 0.6, 0.4, 0.2):
                 codes.append({"code": main, "stdin": "", "prefix": "",
-                              "fade": True})
+                              "fade": True, "fade_strength": strength})
+            if getattr(self, "group_idx", 0) >= 2:
                 codes.append({"code": main, "stdin": "", "prefix": "",
                               "blind": True})
         return codes
@@ -15124,6 +15126,7 @@ class TutorApp(App):
         self._ghost_blind_reveal = 0
         self._ghost_mastery_streak = 0
         self._ghost_fade = bool(ex.get("fade"))       # FADE recall mode
+        self._ghost_fade_strength = ex.get("fade_strength", 1.0)
         self._ghost_fade_wrong = 0
         self._ghost_used_hint = False                 # fresh per step
         self._ghost_reveal = 0
@@ -16082,7 +16085,8 @@ class TutorApp(App):
                     if self._ghost_reveal > 0:
                         color = "#cba6f7"
                     else:
-                        prog = self._ghost_pos / max(1, len(self._ghost_target))
+                        prog = min(1.0, (self._ghost_pos / max(1, len(self._ghost_target)))
+                                   / max(0.05, self._ghost_fade_strength))
                         color = self._fade_purple(prog)
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
