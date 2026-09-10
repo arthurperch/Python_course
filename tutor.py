@@ -15712,6 +15712,16 @@ class TutorApp(App):
             return "⇥"
         return ch
 
+    def _fade_purple(self, t):
+        """Progressive ghost colour: t in [0,1]. 0 = a deep, clearly-visible
+        purple hint; 1 = invisible (matches the editor background). As the user
+        writes more, the hint fades away to nothing."""
+        t = max(0.0, min(1.0, t))
+        r = int(0x9a - (0x9a - 0x1e) * t)
+        g = int(0x8a - (0x8a - 0x1e) * t)
+        b = int(0xd4 - (0xd4 - 0x2e) * t)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
     def _ghost_render_code(self):
         t = Text()
         pos = self._ghost_pos
@@ -15784,6 +15794,11 @@ class TutorApp(App):
                 # the normal dim ghost
                 rest = line[typed_n:]
                 if self._ghost_fade:
+                    # PROGRESSIVE fade: the purple hint starts deep and fades to
+                    # invisible as the user writes more, so only the first lines
+                    # get a visible hint and the last lines are recalled cold.
+                    prog = self._ghost_pos / max(1, len(self._ghost_target))
+                    color = self._fade_purple(prog)
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
@@ -15791,7 +15806,7 @@ class TutorApp(App):
                             t.append(" ", style="reverse bold" if cur else "#585b70")
                         else:
                             t.append(ch, style="reverse bold #cba6f7" if cur
-                                     else "#6d5c9e")
+                                     else color)
                 elif blind:
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
