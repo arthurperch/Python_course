@@ -14204,9 +14204,11 @@ class TutorApp(App):
                                   "prefix": ex.get("prefix", ""), "change": ch})
         # the finale: an A-vs-B comparison when this topic has one — type
         # side A, see its output, then side B, then the split-screen explains
-        # why a programmer picks one over the other
+        # why a programmer picks one over the other. Only from INTERMEDIATE
+        # onward — a total beginner in BASIC shouldn't meet a "vs" screen yet.
         card_id = self.COMPARE_TOPICS.get(topic)
-        if card_id and card_id in self.COMPARE_CARDS:
+        if card_id and card_id in self.COMPARE_CARDS and \
+                getattr(self, "group_idx", 0) >= 2:
             card = self.COMPARE_CARDS[card_id]
             for side in ("a", "b"):
                 sc = card[side]
@@ -14730,19 +14732,26 @@ class TutorApp(App):
                  style="bold #7a7a7a")
         return t
 
-    def _ghost_side_by_side(self, left, right):
-        """Merge two Texts line by line into fixed-width columns with a
-        clean │ divider that lines up on every row."""
-        L = _lines_of(left)
-        R = _lines_of(right)
-        half = max(20, (self.size.width - 18) // 2)
+    def _ghost_side_by_side(self, left, right, box=False):
+        """Two columns, side by side. `box=True` frames each column as its own
+        code window (equal width, so the borders form a straight divider);
+        otherwise a plain fixed-width column split for the console."""
+        if box:
+            half = max(22, (self.size.width - 18) // 2)
+            L = _lines_of(_box_lines(_lines_of(left), min_width=half))
+            R = _lines_of(_box_lines(_lines_of(right), min_width=half))
+            gap = "  "
+        else:
+            L = _lines_of(left)
+            R = _lines_of(right)
+            half = max(22, (self.size.width - 18) // 2)
+            gap = "   "
         t = Text()
         for i in range(max(len(L), len(R))):
-            lt = L[i] if i < len(L) else Text("")
+            lt = L[i] if i < len(L) else Text(" " * (half + 2))
             rt = R[i] if i < len(R) else Text("")
-            lw = lt.cell_len
             t.append_text(lt)
-            t.append(" " * max(0, half - lw) + " │ ", style="dim")
+            t.append(gap, style="dim")
             t.append_text(rt)
             t.append("\n")
         return t
@@ -14833,9 +14842,9 @@ class TutorApp(App):
 
         self.query_one("#ghost-head", Static).update(head)
         self.query_one("#ghost-code", Static).update(
-            self._ghost_side_by_side(lc, rc))
+            self._ghost_side_by_side(lc, rc, box=True))
         self.query_one("#ghost-console", Static).update(
-            self._ghost_side_by_side(left_o, right_o))
+            self._ghost_side_by_side(left_o, right_o, box=True))
         self.query_one("#ghost-why", Static).update(why_t)
         self.query_one("#ghost-foot", Static).update(foot)
 
@@ -14948,12 +14957,12 @@ class TutorApp(App):
                 k = 0
                 while k < len(line) and line[k] == " ":
                     k += 1
-                t.append("⇥ TAB", style=prompt_style)
+                t.append(" ⇥", style=prompt_style)
                 if k < len(line):
                     t.append(line[k:], style="#5a5a5a")
             elif need_enter:
                 # whole line typed — blink an Enter prompt on the right of this line
-                t.append("   ⏎ ENTER", style=prompt_style)
+                t.append(" ⏎", style=prompt_style)
             elif typed_n < len(line) and start <= pos < end:
                 t.append(line[typed_n], style="reverse bold")   # next char to type
                 t.append(line[typed_n + 1:], style="#5a5a5a")   # ghost (dim)
