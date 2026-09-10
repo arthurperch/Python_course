@@ -922,6 +922,52 @@ GROUPS = [
              "example": "A list of birds:\n```python\nclass Duck:\n    def speak(self):\n        print(\"quack\")\n\nclass Owl:\n    def speak(self):\n        print(\"hoot\")\n\nfor b in [Duck(), Owl()]:\n    b.speak()\n```\n> Different objects, same method name — a loop calls speak() on each, and each does its own thing."},
         ],
     },
+    {
+        "id": "comprehensions",
+        "name": "COMPREHENSIONS",
+        "challenges": [
+            {"title": "double them", "topic": "comprehension",
+             "prompt": "Turn `[1, 2, 3]` into `[2, 4, 6]` using a LIST COMPREHENSION: `[n * 2 for n in nums]`.",
+             "starter": "nums = [1, 2, 3]\n", "expect": ["2", "4", "6"], "need": ["for", "n * 2"], "stdin": "",
+             "example": "Triple them instead:\n```python\nnums = [1, 2, 3]\nprint([n * 3 for n in nums])\n```\n> A comprehension is a loop folded into one line: [RESULT for ITEM in LIST]."},
+            {"title": "only the evens", "topic": "comprehension",
+             "prompt": "Keep only the even numbers from `[1, 2, 3, 4, 5, 6]` with a comprehension that has an `if`.",
+             "starter": "nums = [1, 2, 3, 4, 5, 6]\n", "expect": ["2", "4", "6"], "need": ["for", "if", "%"], "stdin": "",
+             "example": "Keep the odds:\n```python\nprint([n for n in range(1, 6) if n % 2 == 1])\n```\n> Add `if CONDITION` at the end to filter — [RESULT for ITEM in LIST if KEEP]."},
+            {"title": "uppercase them", "topic": "comprehension",
+             "prompt": "Turn `[\"hi\", \"yo\"]` into `[\"HI\", \"YO\"]` with a comprehension.",
+             "starter": "words = [\"hi\", \"yo\"]\n", "expect": ["hi", "yo"], "need": ["for", ".upper"], "stdin": "",
+             "example": "Lowercase them:\n```python\nprint([w.lower() for w in [\"HI\", \"YO\"]])\n```\n> The RESULT can be any expression — a method call, math, anything."},
+            {"title": "word lengths", "topic": "comprehension",
+             "prompt": "Turn `[\"apple\", \"kiwi\"]` into `[5, 4]` — a list of their lengths.",
+             "starter": "words = [\"apple\", \"kiwi\"]\n", "expect": ["5", "4"], "need": ["for", "len"], "stdin": "",
+             "example": "Count letters of one word:\n```python\nprint([len(w) for w in [\"hi\", \"hey\"]])\n```\n> len() inside the comprehension measures each item."},
+            {"title": "a dict comprehension", "topic": "comprehension",
+             "prompt": "Turn `[\"kiwi\", \"fig\"]` into `{\"kiwi\": 4, \"fig\": 3}` — a dict of each word to its length.",
+             "starter": "words = [\"kiwi\", \"fig\"]\n", "expect": ["kiwi", "fig", "4", "3"], "need": ["for", "len"], "stdin": "",
+             "example": "Map numbers to squares:\n```python\nprint({n: n * n for n in [1, 2]})\n```\n> A dict comprehension: {KEY: VALUE for ITEM in LIST}."},
+            {"title": "a set comprehension", "topic": "comprehension",
+             "prompt": "Get the UNIQUE letters of `\"banana\"` as a set, using a set comprehension.",
+             "starter": "", "expect": ["b", "a", "n"], "need": ["for", "{"], "stdin": "",
+             "example": "Unique letters of another word:\n```python\nprint({c for c in \"hi\"})\n```\n> {ITEM for ITEM in THING} builds a SET — duplicates vanish automatically."},
+            {"title": "sort by length", "topic": "comprehension",
+             "prompt": "Sort `[\"pear\", \"kiwi\", \"fig\"]` by their LENGTH using `sorted(..., key=len)`.",
+             "starter": "words = [\"pear\", \"kiwi\", \"fig\"]\n", "expect": ["fig", "kiwi", "pear"], "need": ["sorted", "key", "len"], "stdin": "",
+             "example": "Sort numbers by size:\n```python\nprint(sorted([3, 1, 2]))\n```\n> sorted(key=...) sorts by whatever the key function measures — here, length."},
+            {"title": "squares in one line", "topic": "comprehension",
+             "prompt": "Print the squares of 1 through 5 as a list, all in one comprehension.",
+             "starter": "", "expect": ["1", "4", "9", "16", "25"], "need": ["for", "**"], "stdin": "",
+             "example": "Cubes instead:\n```python\nprint([n ** 3 for n in range(1, 4)])\n```\n> n ** 2 is n-squared — the comprehension builds the whole list at once."},
+            {"title": "flatten a loop", "topic": "comprehension",
+             "prompt": "Rewrite this the comprehension way — turn `[1, 2, 3]` into a list of `\"number: 1\"`, `\"number: 2\"`, `\"number: 3\"`.",
+             "starter": "nums = [1, 2, 3]\n", "expect": ["number: 1", "number: 2", "number: 3"], "need": ["for"], "stdin": "",
+             "example": "Tag each item:\n```python\nprint([\"id \" + str(n) for n in [7, 8]])\n```\n> The RESULT can build a string from the item — str(n) turns a number into text."},
+            {"title": "filter and transform", "topic": "comprehension",
+             "prompt": "From `[1, 2, 3, 4, 5, 6]`, keep the evens AND double them — one comprehension with an `if`.",
+             "starter": "nums = [1, 2, 3, 4, 5, 6]\n", "expect": ["4", "8", "12"], "need": ["for", "if", "*"], "stdin": "",
+             "example": "Triple the odds:\n```python\nprint([n * 3 for n in range(1, 7) if n % 2 == 1])\n```\n> Filter with if, transform in the result — both in one line."},
+        ],
+    },
 ]
 
 EXAMPLES = {
@@ -1055,6 +1101,10 @@ TOPIC_CHEATS = {
     "inheritance": {"title": "inheritance",
                     "examples": [("inherit + override", "class Animal:\n    def speak(self):\n        print(\"sound\")\n\nclass Dog(Animal):\n    def speak(self):\n        print(\"woof\")\n\nDog().speak()")],
                     "tip": "class Child(Parent): inherits Parent's methods. Redefine one to OVERRIDE it. super() calls the parent."},
+    "comprehension": {"title": "comprehensions",
+                      "examples": [("double them", "print([n * 2 for n in [1, 2, 3]])"),
+                                   ("filter", "print([n for n in range(6) if n % 2 == 0])")],
+                      "tip": "[RESULT for ITEM in LIST] builds a list in one line. Add `if KEEP` to filter. {K:V ...} = dict, {X ...} = set."},
     "custom": {"title": "common patterns",
                "examples": [("print", 'print("hi")'),
                             ("loop", 'for i in range(5):\n    print(i)')],
@@ -1889,6 +1939,21 @@ LESSONS = {
             {"caption": "dog inherits, cat overrides", "code": "class Animal:\n    def speak(self):\n        print(\"sound\")\n\nclass Dog(Animal):\n    pass\n\nclass Cat(Animal):\n    def speak(self):\n        print(\"meow\")\n\nDog().speak()\nCat().speak()"},
         ],
         "outro": "Child IS-A Parent. Inherit to share, override to change, super() to extend.",
+    },
+
+    "comprehension": {
+        "title": "Comprehensions — Loops in One Line",
+        "intro": "A comprehension is a for-loop folded into a single line. Where a loop builds a list step by step, a comprehension declares the whole list at once — less typing, less bookkeeping, and it reads like the answer.",
+        "points": [
+            ("The shape", "[RESULT for ITEM in LIST] — for every ITEM in the LIST, compute RESULT and collect them into a new list."),
+            ("Filter with if", "Add `if KEEP` at the end: [n for n in nums if n > 0] keeps only the items that pass the test."),
+            ("Dict and set versions", "{KEY: VALUE for ITEM in LIST} builds a dict. {ITEM for ITEM in LIST} builds a set (duplicates vanish)."),
+        ],
+        "examples": [
+            {"caption": "double every number", "code": "print([n * 2 for n in [1, 2, 3]])"},
+            {"caption": "keep the evens", "code": "print([n for n in range(1, 7) if n % 2 == 0])"},
+        ],
+        "outro": "A loop builds; a comprehension declares. [RESULT for ITEM in LIST] is the whole loop in one line.",
     },
 }
 
@@ -12428,6 +12493,8 @@ class TutorApp(App):
     #lesson.visible { display: block; }
     #gate { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; overflow: auto; }
     #gate.visible { display: block; }
+    #map { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #0a0a0a; display: none; overflow: auto; }
+    #map.visible { display: block; }
     #ghost { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; align-horizontal: center; align-vertical: middle; }
     #ghost.visible { display: block; }
     #ghost-head { width: 100%; text-align: center; }
@@ -12546,6 +12613,7 @@ class TutorApp(App):
         Binding("f7", "review", "Review", show=False),
         Binding("f12", "quick_check", "Check", show=False),
         Binding("m", "toggle_music", "Music", show=False),
+        Binding("g", "map", "Map", show=False),
         Binding("y", "quit_save", "SaveQuit", show=False),
         Binding("e", "lesson", "Lesson", show=False),
         Binding("w", "gate_watch", "Watch", show=False),
@@ -12637,6 +12705,7 @@ class TutorApp(App):
         self._py_review_mode = False      # in a PYTHON REVIEW session
         self._py_review_queue = []        # [(group_idx, ch_idx), ...] due today
         self._py_review_i = 0
+        self._map_visible = False         # the curriculum-map overlay is up
         self._ghost_last_mode = None        # last announced mode (for the TTS cue)
         self._ghost_result_tip_text = ""   # spoken once the output reveal finishes
         self._ex_anim_timer = None    # worked-examples output spit-out animation
@@ -12841,6 +12910,7 @@ class TutorApp(App):
         yield Static("", id="status", classes="hidden")
         yield Static("", id="lesson")
         yield Static("", id="gate")
+        yield Static("", id="map")
         with GhostWriter(id="ghost"):
             yield Static("", id="ghost-head")
             yield Static("", id="ghost-code")
@@ -13003,6 +13073,78 @@ class TutorApp(App):
         t.append("▱" * (width - fill), style="#333333")
         return t
 
+    # ---- curriculum map ------------------------------------------------- #
+    def action_map(self):
+        """g — open/close the whole-journey map (from the menu)."""
+        if self._map_visible:
+            self._hide_map()
+        elif self.mode == "menu":
+            self._show_map()
+
+    def _show_map(self):
+        self._map_visible = True
+        self.query_one("#map", Static).update(self._render_map())
+        self.query_one("#map", Static).add_class("visible")
+
+    def _hide_map(self):
+        self._map_visible = False
+        self.query_one("#map", Static).remove_class("visible")
+        self._render_menu()
+
+    def _render_map(self):
+        w = max(64, self.size.width - 8)
+        t = Text()
+        title = "◤  YOUR JOURNEY  ◥"
+        t.append(" " * max(0, (w - len(title)) // 2))
+        t.append(title, style="bold magenta")
+        t.append("\n\n")
+        # ---- the four big tracks -----------------------------------------
+        t.append("THE BIG TRACKS\n", style="bold #facc15")
+        dev_step = self.p.get("dev_step", 0) if isinstance(self.p.get("dev_step"), int) else 0
+        dev_done = dev_step >= len(DEV_LESSONS)
+        build_step = self.p.get("build_step", 0) if isinstance(self.p.get("build_step"), int) else 0
+        build_done = build_step >= len(SHELL_LESSONS)
+        net_done = bool(self.p.get("net_course_done"))
+        vim_done = self._vim_done
+
+        def _track(name, done, total, color, note=""):
+            row = Text()
+            row.append("  " + name, style=f"bold {color}")
+            row.append(" " * max(0, 24 - len(name)))
+            row.append_text(self._bar_text(done, total, 18))
+            row.append(f" {done}/{total}" if total > 1 else " " * 6)
+            if done >= total and total > 0:
+                row.append("  ✓", style="bold green")
+            if note:
+                row.append("  " + note, style="dim")
+            row.append("\n")
+            return row
+
+        t.append_text(_track("CLOUD & DEVOPS", dev_step, len(DEV_LESSONS), "#7dd3fc",
+                             "resume: " + (self._dev_checkpoint_label() if not dev_done else "done")))
+        t.append_text(_track("BUILD STUFF", build_step, len(SHELL_LESSONS), "#7ee787"))
+        t.append_text(_track("NETWORK+", 1 if net_done else 0, 1, "#ffa657",
+                             "5 modules · 563 questions" if not net_done else "done"))
+        t.append_text(_track("VIM / NEOVIM", 1 if vim_done else 0, 1, "#d8b4fe"))
+        t.append("\n")
+        # ---- the python path --------------------------------------------
+        t.append("PYTHON PATH\n", style="bold #facc15")
+        for gi, g in enumerate(GROUPS):
+            done, total = self._group_progress(gi)
+            t.append_text(_track(g["name"], done, total, "#f9a8d4"))
+        # ---- footer -----------------------------------------------------
+        py_done, py_total = self._overall_progress()
+        due = len(self._py_due_topics())
+        streak = self.p.get("streak", 0)
+        t.append("\n")
+        f = Text()
+        f.append(f"  python {py_done}/{py_total}  ·  {due} due today  ·  streak {streak}",
+                 style="bold #cdd6f4")
+        f.append("\n\n")
+        f.append("  Enter / Esc — back to the menu", style="dim")
+        t.append_text(f)
+        return t
+
     def _render_progress(self):
         done, total = self._overall_progress()
         pct = round(done / total * 100) if total else 0
@@ -13163,6 +13305,14 @@ class TutorApp(App):
                   "code": "class Animal:\n    def speak(self):\n        print(\"sound\")\n\nclass Dog(Animal):\n    pass\n\nclass Cat(Animal):\n    def speak(self):\n        print(\"meow\")\n\nDog().speak()\nCat().speak()"},
             "why": "When two classes do the same thing, copy-paste means every fix must be made twice. Inheritance lets Dog and Cat SHARE the base Animal's speak() for free — and Cat overrides just the one bit it wants to change. A subclass IS-A its parent; it inherits everything, then tweaks what differs.",
             "rules": "RULES: class Child(Parent): makes Child inherit Parent's methods. super().__init__(...) calls the parent's setup. A method the child defines again OVERRIDES the parent's."},
+        "loop_vs_comprehension": {
+            "topic": "comprehension",
+            "a": {"caption": "a for loop — three lines",
+                  "code": "out = []\nfor n in [1, 2, 3]:\n    out.append(n * 2)\nprint(out)"},
+            "b": {"caption": "a comprehension — one line",
+                  "code": "print([n * 2 for n in [1, 2, 3]])"},
+            "why": "Both print [2, 4, 6]. The loop builds the list by hand: make an empty list, append each result. The comprehension declares the WHOLE list in one expression — no empty box, no append, no extra bookkeeping. Programmers use comprehensions for the simple transform-a-list case and reach for a loop when the body gets complicated.",
+            "rules": "RULES: [RESULT for ITEM in LIST] builds a list. Add `if KEEP` at the end to filter. {K: V for ITEM in LIST} makes a dict, {ITEM for ITEM in LIST} makes a set."},
     }
 
     # which challenge topics get which comparison card (basic → intermediate)
@@ -13186,6 +13336,7 @@ class TutorApp(App):
         "assert": "assert_vs_if", "test": "assert_vs_if",
         "classes": "init", "objects": "init", "init": "init",
         "dunders": "init", "inheritance": "inheritance", "super": "inheritance",
+        "comprehension": "loop_vs_comprehension", "listcomp": "loop_vs_comprehension",
     }
 
     def _vim_checkpoint_label(self):
@@ -13474,7 +13625,7 @@ class TutorApp(App):
         if note:
             t.append(note, style="bold yellow")
             t.append("\n")
-        t.append("\nEnter — open a series   ·   j/k — move   ·   q — quit",
+        t.append("\nEnter — open a series   ·   j/k — move   ·   g — map   ·   q — quit",
                  style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
         self._snap_menu_scroll(sel_line)
@@ -13894,6 +14045,9 @@ class TutorApp(App):
             return   # CLOUD & DEVOPS overlay owns the keyboard; Esc there exits it
         if self._net_on:
             return   # NETWORK+ overlay owns the keyboard; Esc there exits it
+        if self._map_visible:
+            self._hide_map()
+            return
         if self._lesson_on:
             self._finish_lesson()
             return
@@ -13937,6 +14091,9 @@ class TutorApp(App):
         return n + self.ch_idx
 
     def action_start(self):
+        if self._map_visible:
+            self._hide_map()
+            return
         if self._ghost_on:
             return   # ghost overlay owns the keyboard until dismissed
         if self._vim_on:
