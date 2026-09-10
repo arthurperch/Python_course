@@ -13277,6 +13277,15 @@ class TutorApp(App):
             self.started = True
             self._render_challenge()
             return
+        if self.last == "fail":
+            # Enter closes the fail visual replay so the editor comes back
+            try:
+                if self.query_one("#visual", Static).has_class("visible"):
+                    self._close_visual()
+                    self.query_one("#editor", VimEditor).focus()
+            except Exception:
+                pass
+            return
         if self.last == "pass":
             self._advance_after_pass()
 
@@ -17794,7 +17803,8 @@ class TutorApp(App):
         t.append("  press Enter", style="dim")
         self.query_one("#output", Static).update(t)
         self._update_guide()
-        # let the result sit on screen so it's clearly visible, THEN celebrate
+        # the verdict just landed — green border flash, then celebrate
+        self._flash_output_border("#22c55e")
         win, _ = self._sounds_for(self._flat_index())
         self._cancel_celebrate()   # clear any prior pending celebration first
         self._pending_win = win
@@ -17858,10 +17868,20 @@ class TutorApp(App):
         challenge_stat(self.p, self._current()["title"])["wrong"] += 1
         save_progress(self.p)
         self.last = "fail"
-        _, fail = self._sounds_for(key)
-        if fail and self.music_on:
-            play_file(fail, volume=self._fx_volume())
+        # NOTE: the fail SOUND waits for _finalize_fail / _visual_finish_fail —
+        # it plays AFTER the run animation finishes, as the verdict lands.
         a = self.attempts[key]
+        if self._current().get("visual"):
+            # visual challenges replay their boxes to the count the code
+            # actually produced, then stamp the ✗ — seeing the wrong count
+            # is the lesson itself
+            if out.strip():
+                self._start_output_reveal(
+                    out.rstrip("\n"),
+                    lambda: self._start_visual_fail(out))
+            else:
+                self._start_visual_fail(out)
+            return
         if out.strip() and not _looks_like_traceback(hint):
             # stream the (non-crashing) output first, then stamp the verdict
             self._start_output_reveal(out.rstrip("\n"),
@@ -17869,8 +17889,46 @@ class TutorApp(App):
         else:
             self._finalize_fail(topic, out, hint, a)
 
+    def _flash_output_border(self, color: str, times: int = 3):
+        """Pulse the output box border (the verdict flash): the completion
+        stamp blinks 3 times so the pass/fail is impossible to miss."""
+        self._flash_n = times
+        self._flash_color = color
+        self._flash_count = 0
+        t = getattr(self, "_flash_timer", None)
+        if t is not None:
+            t.stop()
+        self._flash_timer = self.set_interval(0.16, self._flash_border_tick)
+
+    def _flash_border_tick(self):
+        try:
+            box = self.query_one("#output", Static)
+        except Exception:
+            t = getattr(self, "_flash_timer", None)
+            if t is not None:
+                t.stop()
+                self._flash_timer = None
+            return
+        self._flash_count += 1
+        on = self._flash_count % 2 == 1
+        try:
+            box.styles.border_top = (("solid", self._flash_color) if on
+                                     else ("solid", "$primary"))
+        except Exception:
+            pass
+        if self._flash_count >= self._flash_n * 2:
+            t = getattr(self, "_flash_timer", None)
+            if t is not None:
+                t.stop()
+                self._flash_timer = None
+
     def _finalize_fail(self, topic, out, hint, a):
         play_console_result(False)
+        # the verdict just landed — now the fail sound + a red border flash
+        _, fail = self._sounds_for(self._flat_index())
+        if fail and self.music_on:
+            play_file(fail, volume=self._fx_volume())
+        self._flash_output_border("#f87171")
         crash = _looks_like_traceback(hint)
         why = translate_error(hint) if crash else ""
         out = _wrap_console(out.rstrip("\n"), self._output_w()) if out else ""
@@ -19742,10 +19800,87 @@ class TutorApp(App):
 
     def _visual_finish(self):
         self._update_guide()
+        self._flash_output_border("#22c55e")
         win, _ = self._sounds_for(self._flat_index())
         self._cancel_celebrate()
         self._pending_win = win
         self._celebrate_pass()
+
+    # -- the same animated boxes, but for a FAIL: they fill to whatever the
+    #    code actually produced (red), then stamp the ✗ ------------------- #
+
+    def _start_visual_fail(self, out):
+        spec = self._current().get("visual")
+        self._vis_spec = spec
+        self._vis_kind = spec.get("kind", "counter")
+        self._vis_n = int(spec.get("n", 6))
+        got = len([l for l in (out or "").splitlines() if l.strip()])
+        self._vis_got = max(0, min(got, self._vis_n))
+        self._vis_step = 0
+        self.query_one("#output", Static).update(
+            Text((out or "(no output)").rstrip("\n"), style="green"))
+        self.query_one("#visual", Static).add_class("visible")
+        self._visual_render_fail()
+        t = getattr(self, "_vis_timer", None)
+        if t is not None:
+            t.stop()
+        self._vis_timer = self.set_interval(0.4, self._visual_tick_fail)
+
+    def _visual_tick_fail(self):
+        if self._vis_step < self._vis_got:
+            self._vis_step += 1
+            play_menu_blip(min(self._vis_step, 12))
+            self._visual_render_fail()
+            return
+        t = self._vis_timer
+        if t is not None:
+            t.stop()
+        self._vis_timer = None
+        self._visual_finish_fail()
+
+    def _visual_render_fail(self):
+        kind = self._vis_kind
+        n = self._vis_n
+        step = self._vis_step
+        got = self._vis_got
+        t = Text()
+        t.append("\n" * max(0, self.size.height // 5))
+        t.append(f"  {self._current()['title']}", style="bold yellow")
+        t.append("\n\n\n")
+        t.append("  ")
+        if kind == "progress":
+            t.append("|", style="bold")
+            for i in range(n):
+                if i < step:
+                    t.append("█", style="bold #f87171")   # what your code DID
+                elif i < got:
+                    t.append("█", style="bold #f87171")
+                else:
+                    t.append("░", style="bold #3a3a3a")   # what was still needed
+            t.append("|", style="bold")
+            t.append(f"  {got}/{n}", style="bold #f87171")
+        else:  # counter
+            for i in range(1, n + 1):
+                if i <= got:
+                    t.append(f" {i} ", style="bold black on #f87171")
+                else:
+                    t.append(f" {i} ", style="bold #555555")
+                if i < n:
+                    t.append(" → ", style="dim")
+        t.append("\n\n")
+        t.append(f"  ✗ your code lit {got} of {n} — fix it and run again",
+                 style="bold #f87171")
+        t.append("\n")
+        t.append("  (Enter closes this)", style="dim")
+        self.query_one("#visual", Static).update(t)
+
+    def _visual_finish_fail(self):
+        play_console_result(False)
+        _, fail = self._sounds_for(self._flat_index())
+        if fail and self.music_on:
+            play_file(fail, volume=self._fx_volume())
+        self._flash_output_border("#f87171")
+        self._update_guide()
 
     def _close_visual(self):
         t = getattr(self, "_vis_timer", None)
