@@ -12867,6 +12867,8 @@ class TutorApp(App):
         self._ghost_lab_revealed = 0        # how many lab variants have been revealed
         self._ghost_blind_from = None       # pos to write blind from (None = normal)
         self._ghost_blind_reveal = 0        # how much of the blind section is shown
+        self._ghost_fade = False            # FADE recall mode (faint purple ghost, silent)
+        self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
         self._ghost_mastery_streak = 0      # clean blind completions in a row
         self._ghost_shake_cool = False      # cooldown gate on the error shake
         self._ghost_a_code = None           # side A code (stashed for the split view)
@@ -14760,6 +14762,8 @@ class TutorApp(App):
             main = example_code(self._current().get("example", ""))[1]
             if main:
                 codes.append({"code": main, "stdin": "", "prefix": "",
+                              "fade": True})
+                codes.append({"code": main, "stdin": "", "prefix": "",
                               "blind": True})
         return codes
 
@@ -14858,6 +14862,8 @@ class TutorApp(App):
         # instruction + before/after output, not the typing difficulty
         if self._ghost_examples[idx].get("change"):
             return 0, "change"
+        if self._ghost_examples[idx].get("fade"):
+            return 0, "fade"
         if self._ghost_examples[idx].get("blind"):
             return 0, "blind"
         if n <= 1:
@@ -14900,6 +14906,8 @@ class TutorApp(App):
         self._ghost_blind_from = None                 # reset unless this step is blind
         self._ghost_blind_reveal = 0
         self._ghost_mastery_streak = 0
+        self._ghost_fade = bool(ex.get("fade"))       # FADE recall mode
+        self._ghost_fade_wrong = 0
         if self._ghost_lab:
             # multi-variant watch lab: nothing to type — press Enter to reveal
             # each variant's output (with letter highlighting), then compare all
@@ -15106,6 +15114,19 @@ class TutorApp(App):
             self._ghost_pos += 1
             play_key()
         else:
+            if self._ghost_fade:
+                # FADE recall mode is silent: a miss doesn't advance and there's
+                # no red, no sound, no shake — just a harder recall. Two misses
+                # in a row reset the current line once (a forgiveness).
+                self._ghost_fade_wrong += 1
+                if self._ghost_fade_wrong >= 2:
+                    ls = self._ghost_target.rfind("\n", 0, p) + 1
+                    self._ghost_pos = ls
+                    self._ghost_errors = {k: v for k, v in self._ghost_errors.items()
+                                          if k < ls}
+                    self._ghost_fade_wrong = 0
+                self._ghost_render()
+                return
             if self._ghost_blind_from is not None:
                 # BLIND drill: a mistake reveals the first part of the answer
                 # and restarts the whole blind section — no partial credit
@@ -15541,6 +15562,8 @@ class TutorApp(App):
             "finish": "FINISH IT  —  I started, you finish the rest",
             "write": "WRITE IT ALL  —  you're locked in, type it out",
             "change": "CHANGE IT  —  I edited one thing, type it and see the output change",
+            "fade": "RECALL  —  the ghost fades as you type; letters only, spaces stay",
+            "blind": "BLIND  —  write it from memory, no ghost",
         }.get(self._ghost_mode, "GHOST WRITE")
         if self._ghost_required:
             head = Text(f"SYNTAX DRILL  {self._ghost_idx + 1}/{n}  —  {mode_label}",
@@ -15555,6 +15578,8 @@ class TutorApp(App):
             "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
             "change": "type the changed code · Enter = new line · Tab = indent · Enter at the end = run",
+            "fade": "recall each char · spaces stay · Enter = new line · Tab = indent · silent on miss",
+            "blind": "write from memory · two clean runs in a row = mastered",
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
@@ -15751,10 +15776,20 @@ class TutorApp(App):
                 # (Enter is the next key)
                 t.append(" ", style="reverse bold")
             elif typed_n < len(line):
-                # the rest of the line: dim ghost normally; in a BLIND drill the
-                # content is hidden (·) except the revealed first part
+                # the rest of the line — three styles: FADE (faint-purple ghost
+                # that only letters/symbols need recalling), BLIND (hidden ·), or
+                # the normal dim ghost
                 rest = line[typed_n:]
-                if blind:
+                if self._ghost_fade:
+                    for k, ch in enumerate(rest):
+                        a = start + typed_n + k
+                        cur = (a == pos and a < end)
+                        if ch == " ":
+                            t.append(" ", style="reverse bold" if cur else "#585b70")
+                        else:
+                            t.append(ch, style="reverse bold #cba6f7" if cur
+                                     else "#6d5c9e")
+                elif blind:
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
