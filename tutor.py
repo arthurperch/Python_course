@@ -15444,6 +15444,17 @@ class TutorApp(App):
         title = title or getattr(self, "_ghost_title", "drill.py")
         self._ghost_fill_pane("", title, code, title)
 
+    def _ghost_visible(self, ch):
+        """Render a character visibly even when it's a space or newline, so a
+        missed/wrong space isn't an invisible blank."""
+        if ch == " ":
+            return "·"
+        if ch == "\n":
+            return "↵"
+        if ch == "\t":
+            return "⇥"
+        return ch
+
     def _ghost_render_code(self):
         t = Text()
         pos = self._ghost_pos
@@ -15471,11 +15482,15 @@ class TutorApp(App):
             j = 0
             while j < typed_n:
                 if (start + j) in self._ghost_errors:
-                    # the wrong letter is drawn in bright red + underlined, on the
-                    # NORMAL background — no solid block to hide it. (A bg fill
-                    # renders opaque in the terminal and swallows the glyph.)
-                    t.append(self._ghost_errors[start + j],
+                    # BOTH shown at once: the wrong char in bold red (what you
+                    # typed) then the correct ghost char in bold yellow (what it
+                    # should have been) — spaces rendered as a visible '·' so a
+                    # missed space isn't invisible
+                    wrong = self._ghost_errors[start + j]
+                    t.append(self._ghost_visible(wrong),
                              style="bold underline #ff5555")
+                    t.append(self._ghost_visible(line[j]),
+                             style="bold #facc15")
                     j += 1
                 else:
                     run_start = j
