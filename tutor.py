@@ -12694,6 +12694,24 @@ class VolumeBar(Static):
         self.app._volume_changed(self)
 
 
+class ProfileIcon(Static):
+    """Always-visible blue profile icon in the top bar. Click it (any time) to
+    open the name/settings popout."""
+
+    def _icon_markup(self) -> str:
+        return "[bold #7dd3fc on #1e3a5f](◉)[/]"
+
+    def repaint(self) -> None:
+        self.update(Text.from_markup(self._icon_markup()))
+
+    def on_mount(self) -> None:
+        self.repaint()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app.action_profile()
+
+
 class VolumeIcon(Static):
     """Always-visible clickable volume icon in the top bar. Shows the mute state
     — (♪) when everything is audible, (✕) when either channel is muted — and
@@ -12760,6 +12778,8 @@ class TutorApp(App):
     #map.visible { display: block; }
     #jump { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #0a0a0a; display: none; overflow: auto; }
     #jump.visible { display: block; }
+    #profile-popout { layer: overlay; width: 46; dock: top; offset-x: 100%; offset-y: 1; height: auto; padding: 1 2; border: tall #7dd3fc; background: #11111b; display: none; }
+    #profile-popout.visible { display: block; }
     #ghost { layer: overlay; width: 100%; height: 100%; padding: 1 1; background: #1e1e2e; display: none; }
     #ghost.visible { display: block; }
     #ghost-bufferline { height: 1; background: #181825; padding: 0 1; }
@@ -12863,6 +12883,14 @@ class TutorApp(App):
     #menu-name-row Button { width: 10; }
     #menu-name-hint { height: 1; padding: 0 1; }
     #menu-settings-title { height: 1; padding: 1 1 0 1; text-style: bold; color: $text; }
+    #profile-popout-title { height: 1; text-style: bold; }
+    #profile-name-row { height: 3; }
+    #profile-name-row Input { width: 1fr; min-width: 14; }
+    #profile-name-row Button { width: 10; }
+    #profile-name-hint { height: 1; }
+    #profile-settings-title { height: 1; text-style: bold; color: $text; }
+    #profile-popout Checkbox { height: 1; }
+    #profile-popout-close { height: 1; color: $text-muted; }
     #menu-keys Checkbox { margin: 0 1; height: 1; }
     #menu-help { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
     """
@@ -13006,6 +13034,7 @@ class TutorApp(App):
         self._py_review_i = 0
         self._map_visible = False         # the curriculum-map overlay is up
         self._jump_visible = False        # the Ctrl+Enter jump overlay is up
+        self._profile_visible = False     # the blue ◉ profile/settings popout is up
         self._jump_level = 0              # 0 = pick a course, 1 = pick a challenge
         self._jump_sel = 0                # cursor in the jump overlay
         self._jump_course = 0             # course chosen in level 1
@@ -13159,6 +13188,7 @@ class TutorApp(App):
         yield Header(show_clock=True)
         with Horizontal(id="topbar-row"):
             yield Static("", id="topbar")
+            yield ProfileIcon(id="profile-icon")
             yield VolumeIcon(id="volume-icon")
         # menu view (shown on launch)
         yield Static("", id="menu-banner")
@@ -13171,19 +13201,22 @@ class TutorApp(App):
                 with VerticalScroll(id="menu-preview-scroll"):
                     yield Static("", id="menu-preview-inner")
             with VerticalScroll(id="menu-keys"):
-                yield Static("YOUR NAME", id="menu-name-title")
-                with Horizontal(id="menu-name-row"):
-                    yield Input(placeholder="your name", id="name-input")
-                    yield Button("Save", id="name-save", variant="primary")
-                yield Static("", id="menu-name-hint")
-                yield Static("SETTINGS", id="menu-settings-title")
-                yield Checkbox("Voice  (reads aloud)", id="set-voice", value=True)
-                yield Checkbox("Writing TTS  (reads each line as you type)", id="set-write-tts", value=False)
-                yield Checkbox("Music  (win/fail sounds)", id="set-music", value=True)
-                yield Checkbox("Key sounds  (typing + blips)", id="set-keys", value=True)
-                yield Checkbox("Hints  (underline mistakes)", id="set-hints", value=True)
                 yield Static("", id="menu-keys-inner")
         yield Static("", id="menu-help")
+        # profile popout (name + settings) — opened via the blue ◉ icon, any time
+        with Vertical(id="profile-popout", classes="hidden"):
+            yield Static("PROFILE", id="profile-popout-title")
+            with Horizontal(id="profile-name-row"):
+                yield Input(placeholder="your name", id="name-input")
+                yield Button("Save", id="name-save", variant="primary")
+            yield Static("", id="profile-name-hint")
+            yield Static("SETTINGS", id="profile-settings-title")
+            yield Checkbox("Voice  (reads aloud)", id="set-voice", value=True)
+            yield Checkbox("Writing TTS  (reads each line as you type)", id="set-write-tts", value=False)
+            yield Checkbox("Music  (win/fail sounds)", id="set-music", value=True)
+            yield Checkbox("Key sounds  (typing + blips)", id="set-keys", value=True)
+            yield Checkbox("Hints  (underline mistakes)", id="set-hints", value=True)
+            yield Static("Esc or click ◉ to close", id="profile-popout-close")
         # challenge view (hidden until a challenge is selected)
         with Horizontal(id="body", classes="hidden"):
             with VerticalScroll(id="challenge-box"):
@@ -13386,6 +13419,12 @@ class TutorApp(App):
         t.append("▱" * (width - fill), style="#333333")
         return t
 
+    def _clip(self, s, w):
+        """Truncate with an ellipsis so menu rows never wrap or break."""
+        if len(s) <= w:
+            return s
+        return s[: max(0, w - 1)] + "…"
+
     # ---- curriculum map ------------------------------------------------- #
     def action_map(self):
         """g — open/close the whole-journey map (from the menu)."""
@@ -13413,6 +13452,30 @@ class TutorApp(App):
             self._hide_jump()
         else:
             self._show_jump()
+
+    # ---- profile popout (blue ◉ in the corner) ---------------------------- #
+    def action_profile(self):
+        """Toggle the name/settings popout — reachable from any screen."""
+        if self._profile_visible:
+            self._hide_profile()
+        else:
+            self._show_profile()
+
+    def _show_profile(self):
+        self._profile_visible = True
+        self._sync_profile()
+        self.query_one("#profile-popout").add_class("visible")
+
+    def _hide_profile(self):
+        self._profile_visible = False
+        self.query_one("#profile-popout").remove_class("visible")
+
+    def _sync_profile(self):
+        name = (self.p.get("name") or "").strip() or "no name set"
+        self.query_one("#profile-popout-title", Static).update(
+            Text(f"PROFILE — {name}", style="bold #7dd3fc"))
+        self.query_one("#profile-name-hint", Static).update(
+            Text("save your name for the tutor to greet you", style="dim"))
 
     def _show_jump(self):
         self._jump_visible = True
@@ -14015,7 +14078,7 @@ class TutorApp(App):
                 line.append("▸ ", style="dim")
                 line.append(name, style=f"bold {color}")
                 line.append("  ")
-                line.append(desc, style="dim")
+                line.append(self._clip(desc, 24), style="dim")
                 if status:
                     line.append("  ")
                     line.append(status,
@@ -14082,7 +14145,7 @@ class TutorApp(App):
                 line.append("✗ ", style="red")
             else:
                 line.append("· ", style="dim")
-            line.append(c["title"], style="bold" if sel else "")
+            line.append(self._clip(c["title"], 40), style="bold" if sel else "")
             if sel:
                 line.stylize("reverse")
                 sel_line = line_no
@@ -14351,7 +14414,7 @@ class TutorApp(App):
         self.p["name"] = name
         save_progress(self.p)
         set_current_name(name)
-        hint = self.query_one("#menu-name-hint", Static)
+        hint = self.query_one("#profile-name-hint", Static)
         if name:
             hint.update(f"[green]saved — your examples now use '{name}'[/]")
             if self.voice_on:
@@ -14476,6 +14539,9 @@ class TutorApp(App):
             _center_screen(body, self.size.width, self.size.height - 1))
 
     def action_menu(self):
+        if self._profile_visible:
+            self._hide_profile()
+            return
         if self._ghost_on:
             return   # ghost overlay owns the keyboard; Esc there dismisses it
         if self._vim_on:
@@ -15404,6 +15470,11 @@ class TutorApp(App):
         if not self._ghost_on:
             return
         key = event.key
+        if self._profile_visible:
+            if key == "escape":
+                event.stop(); event.prevent_default()
+                self._hide_profile()
+            return
         ch = event.character
         # ---- FILL mode: type any value into the blank, Enter runs it ---------
         if self._ghost_fill:
@@ -15479,11 +15550,10 @@ class TutorApp(App):
             return
         if key == "escape":
             event.stop(); event.prevent_default()
-            if self._ghost_required:
-                self._ghost_nudge_show()   # locked in — must finish
-            else:
-                self._ghost_dismiss()
-                self.query_one("#editor", VimEditor).focus()
+            # Esc always exits the ghost — even the mandatory drill. The user
+            # can bail at any time and go straight to the challenge editor.
+            self._ghost_dismiss()
+            self.query_one("#editor", VimEditor).focus()
             return
         if key == "enter":
             event.stop(); event.prevent_default()
