@@ -3515,6 +3515,38 @@ def play_hint() -> None:
         pass
 
 
+_HINT_IMG_TEXT = None
+
+
+def _hint_image_text():
+    """Render hint.png (the circled meme) as half-block pixel art, cached, for
+    the fade 'show code' hint button. Falls back to '' if rich-pixels is absent."""
+    global _HINT_IMG_TEXT
+    if _HINT_IMG_TEXT is not None:
+        return _HINT_IMG_TEXT
+    try:
+        from rich_pixels import Pixels
+        from PIL import Image
+        from rich.console import Console
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hint.png")
+        img = Image.open(path).convert("RGBA")
+        w = 16
+        h = max(1, int(img.height * w / img.width))
+        img2 = img.resize((w, h), Image.Resampling.LANCZOS)
+        p = Pixels.from_image(img2)
+        con = Console(width=w)
+        t = Text()
+        for i, line in enumerate(con.render_lines(p)):
+            if i:
+                t.append("\n")
+            for seg in line:
+                t.append(seg.text, style=seg.style)
+        _HINT_IMG_TEXT = t
+    except Exception:
+        _HINT_IMG_TEXT = Text("")
+    return _HINT_IMG_TEXT
+
+
 def play_ghost_error() -> None:
     """A comedic 'womp' for a mistyped ghost letter — three quick descending blips."""
     try:
@@ -12797,7 +12829,7 @@ class TutorApp(App):
     #ghost-why { width: 34%; border: tall #313244; padding: 1 1; background: #181825; }
     #ghost-why.active { border: tall #89b4fa; }
     #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
-    #ghost-foot { height: 1; padding: 0 1; }
+    #ghost-foot { height: auto; min-height: 1; padding: 0 1; }
     #vim { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #vim.visible { display: block; }
     #vim-head { width: 100%; text-align: center; }
@@ -16114,22 +16146,27 @@ class TutorApp(App):
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
-        # the "show code" hint button: a flickering circle + a countdown ABOVE
-        # it while the purple reveal is showing, and a spent state afterwards
+        # the "show code" hint button: the circled hint.png image + a countdown
+        # ABOVE it while the purple reveal is showing, and a spent state after
         if self._ghost_fade:
             flick = self._ghost_blink_on
+            img = _hint_image_text()
             if self._ghost_reveal > 0:
                 f = Text()
                 f.append(f"   {self._ghost_reveal}   ", style="bold #1e1e2e on #cba6f7")
                 f.append("\n")
-                f.append("●", style="bold #cba6f7" if flick else "bold #6d5c9e")
-                f.append("  code shown — remember it", style="bold #cba6f7" if flick else "#6d5c9e")
+                f.append_text(img)
+                f.append("\n code shown — remember it", style="bold #cba6f7" if flick else "#6d5c9e")
                 foot = f
             elif self._ghost_used_hint:
-                foot = Text("○  hint used", style="dim")
+                f = Text()
+                f.append_text(img)
+                f.append("\n hint used", style="dim")
+                foot = f
             else:
-                b = Text("●", style="bold #cba6f7" if flick else "bold #6d5c9e")
-                b.append("  show code for 3s", style="bold #cba6f7" if flick else "#6d5c9e")
+                b = Text()
+                b.append_text(img)
+                b.append("\n show code for 3s", style="bold #cba6f7" if flick else "#6d5c9e")
                 b.append("   [h]", style="bold #7f849c")
                 foot = b
         # render each region into its OWN widget, so the code box can shake on
