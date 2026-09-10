@@ -18276,14 +18276,20 @@ class TutorApp(App):
         t.append(center("◢                    ◣", "dim"))
         self.query_one("#gate", Static).update(t)
         self.query_one("#gate", Static).add_class("visible")
-        # the CHECK button keeps focus after being clicked — an Enter on the
-        # next gate would re-press IT instead of opening the challenge.
-        # Blur it (and the editor) so Enter always reaches the gate bindings.
+        # After a pass, SOME widget still holds keyboard focus (the CHECK
+        # button after a click, the :submit command bar after the vim way,
+        # or the editor itself) — and a focused widget swallows Enter, so
+        # the gate would ignore it forever. Blur everything and hand the
+        # keyboard back to the app bindings.
+        for wid in ("#task-check", "#cmd", "#editor"):
+            try:
+                self.query_one(wid).blur()
+            except Exception:
+                pass
         try:
-            self.query_one("#task-check", Button).blur()
+            self.set_focus(None)
         except Exception:
             pass
-        self.query_one("#editor", VimEditor).blur()
 
     def _start_lesson(self):
         self._play_steps(self._build_lesson_steps(self._current()))
