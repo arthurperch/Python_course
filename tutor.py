@@ -12814,7 +12814,11 @@ class TutorApp(App):
     #profile-popout.visible { display: block; }
     #ghost { layer: overlay; width: 100%; height: 100%; padding: 1 1; background: #1e1e2e; display: none; }
     #ghost.visible { display: block; }
-    #ghost-bufferline { height: 1; background: #181825; padding: 0 1; }
+    #ghost-top { height: 1; background: #181825; }
+    #ghost-bufferline { height: 1; padding: 0 1; width: 1fr; }
+    #ghost-exit-btn { width: 4; min-width: 4; height: 1; }
+    #ghost-exit-popup { layer: overlay; width: 46; height: 9; background: #181825; border: thick #f38ba8; display: none; padding: 1 2; }
+    #ghost-exit-popup.visible { display: block; }
     #ghost-main { height: 1fr; }
     #ghost-editor-pane { width: 1fr; border: tall #313244; background: #1e1e2e; }
     #ghost-editor-pane.active { border: tall #89b4fa; }
@@ -12899,11 +12903,11 @@ class TutorApp(App):
     .hidden { display: none; }
     Confetti { layer: overlay; width: 100%; height: 100%; display: none; }
     #menu-banner { height: auto; padding: 0 2; }
-    #menu-progress { height: 1; padding: 0 2; background: $boost; text-style: bold; }
+    #menu-progress { height: 1; padding: 0 2; background: $boost; text-style: bold; margin: 0 2; border: round $primary; }
     #menu-body { height: 1fr; }
-    #menu-list { width: 1fr; padding: 1 2; }
+    #menu-list { width: 1fr; padding: 1 3; }
     #menu-list-inner { width: 1fr; height: auto; }
-    #menu-preview { width: 42%; border-left: solid $primary; background: $boost; padding: 0; }
+    #menu-preview { width: 24%; border-right: solid $primary; background: $boost; padding: 0; }
     #menu-preview-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
     #menu-preview-scroll { height: 1fr; }
     #menu-preview-inner { height: auto; padding: 1 2; }
@@ -13048,6 +13052,8 @@ class TutorApp(App):
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
         self._ghost_reveal = 0               # "show code" countdown (0 = hidden)
         self._ghost_reveal_timer = None
+        self._ghost_exit_confirm = False     # the Y/N leave-ghost popup is up
+        self._ghost_normal_mode = False      # Esc toggles vim normal mode (typing blocked)
         self._ghost_fill = False             # FILL mode: blank a value, user types it
         self._ghost_fill_input = ""          # what the user typed into the blank
         self._ghost_fill_s = 0               # blank span start in the code
@@ -13228,12 +13234,12 @@ class TutorApp(App):
         yield Static("", id="menu-banner")
         yield Static("", id="menu-progress")
         with Horizontal(id="menu-body"):
-            with VerticalScroll(id="menu-list"):
-                yield Static("", id="menu-list-inner")
             with Vertical(id="menu-preview"):
                 yield Static("PREVIEW", id="menu-preview-title")
                 with VerticalScroll(id="menu-preview-scroll"):
                     yield Static("", id="menu-preview-inner")
+            with VerticalScroll(id="menu-list"):
+                yield Static("", id="menu-list-inner")
             with VerticalScroll(id="menu-keys"):
                 yield Static("", id="menu-keys-inner")
         yield Static("", id="menu-help")
@@ -13284,7 +13290,9 @@ class TutorApp(App):
         yield Static("", id="map")
         yield Static("", id="jump")
         with GhostWriter(id="ghost"):
-            yield Static("", id="ghost-bufferline")
+            with Horizontal(id="ghost-top"):
+                yield Static("", id="ghost-bufferline")
+                yield Button(" ✕ ", id="ghost-exit-btn", variant="error")
             with Horizontal(id="ghost-main"):
                 with Vertical(id="ghost-editor-pane"):
                     yield Static("", id="ghost-winbar")
@@ -13297,6 +13305,7 @@ class TutorApp(App):
                 yield Static("", id="ghost-why")
             yield Static("", id="ghost-console")
             yield Static("", id="ghost-foot")
+        yield Static("", id="ghost-exit-popup")
         with VimTrainer(id="vim"):
             yield Static("", id="vim-head")
             with Vertical(id="vim-body"):
@@ -13648,12 +13657,12 @@ class TutorApp(App):
     def _render_progress(self):
         done, total = self._overall_progress()
         pct = round(done / total * 100) if total else 0
-        fill = round(done / total * 40) if total else 0
+        width = max(12, self.size.width - 28)
+        fill = round(done / total * width) if total else 0
         t = Text()
-        t.append("PROGRESS  ", style="dim")
         t.append("▰" * fill, style="green")
-        t.append("▱" * (40 - fill), style="#333333")
-        t.append(f"   {done}/{total}  {pct}%", style="bold")
+        t.append("▱" * (width - fill), style="#333333")
+        t.append(f"  {done}/{total}  {pct}%", style="bold #cdd6f4")
         self.query_one("#menu-progress", Static).update(t)
 
     # ---- A-vs-B comparison cards for the dual ghost-writing drills ------------ #
@@ -14467,6 +14476,9 @@ class TutorApp(App):
             return
         if event.button.id == "name-save":
             self._save_name()
+            return
+        if event.button.id == "ghost-exit-btn":
+            self._ghost_exit_ask()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "name-input":
@@ -15504,6 +15516,14 @@ class TutorApp(App):
         if not self._ghost_on:
             return
         key = event.key
+        if getattr(self, "_ghost_exit_confirm", False):
+            # Y/N confirmation for leaving the ghost
+            event.stop(); event.prevent_default()
+            if key == "y":
+                self._ghost_exit_yes()
+            else:
+                self._ghost_exit_no()
+            return
         if self._profile_visible:
             if key == "escape":
                 event.stop(); event.prevent_default()
@@ -15613,10 +15633,13 @@ class TutorApp(App):
             return
         if key == "escape":
             event.stop(); event.prevent_default()
-            # Esc always exits the ghost — even the mandatory drill. The user
-            # can bail at any time and go straight to the challenge editor.
-            self._ghost_dismiss()
-            self.query_one("#editor", VimEditor).focus()
+            # Esc toggles vim normal mode — it does NOT exit the ghost. Leaving
+            # is the red ✕ button in the corner (with a Y/N confirmation).
+            if self._ghost_fill:
+                self._ghost_fill_mode = "normal" if self._ghost_fill_mode == "insert" else "insert"
+            else:
+                self._ghost_normal_mode = not self._ghost_normal_mode
+            self._ghost_render()
             return
         if key == "enter":
             event.stop(); event.prevent_default()
@@ -15642,6 +15665,12 @@ class TutorApp(App):
             return
         if ch and not key.startswith("ctrl+"):
             event.stop(); event.prevent_default()
+            # vim normal mode blocks typing — 'i' or 'a' drops back to insert
+            if getattr(self, "_ghost_normal_mode", False):
+                if ch in ("i", "a"):
+                    self._ghost_normal_mode = False
+                    self._ghost_render()
+                return
             self._ghost_type(ch)
 
     def _ghost_type(self, ch):
@@ -16093,7 +16122,34 @@ class TutorApp(App):
         self._ghost_gen += 1
         self._ghost_stop_timers()
         self.query_one("#ghost", GhostWriter).remove_class("visible")
+        self._ghost_exit_confirm = False
+        self.query_one("#ghost-exit-popup", Static).remove_class("visible")
         self._update_guide()
+
+    # ---- exit warning: a Y/N popup, NOT the Esc key -------------------- #
+    # Esc is reserved for vim normal-mode; leaving the ghost is a deliberate
+    # mouse click on the red ✕ button, confirmed with Y (or N to stay).
+
+    def _ghost_exit_ask(self):
+        """Show the 'leave ghost writing?' confirmation popup."""
+        self._ghost_exit_confirm = True
+        pop = self.query_one("#ghost-exit-popup", Static)
+        t = Text()
+        t.append("\n   LEAVE GHOST WRITING?\n\n", style="bold #f38ba8")
+        t.append("   Your progress on this drill will be lost.\n\n", style="#cdd6f4")
+        t.append("   [Y] leave      [N] stay\n", style="bold #f9e2af")
+        pop.update(t)
+        pop.add_class("visible")
+
+    def _ghost_exit_yes(self):
+        self.query_one("#ghost-exit-popup", Static).remove_class("visible")
+        self._ghost_exit_confirm = False
+        self._ghost_dismiss()
+        self.query_one("#editor", VimEditor).focus()
+
+    def _ghost_exit_no(self):
+        self._ghost_exit_confirm = False
+        self.query_one("#ghost-exit-popup", Static).remove_class("visible")
 
     def _ghost_stop_timers(self):
         for attr in ("_ghost_out_timer", "_ghost_blink_timer", "_ghost_nudge_timer",
@@ -16184,6 +16240,8 @@ class TutorApp(App):
         if self._ghost_fill:
             if self._ghost_fill_mode == "insert":
                 return "INSERT", "#a6e3a1"
+            return "NORMAL", "#89b4fa"
+        if getattr(self, "_ghost_normal_mode", False):
             return "NORMAL", "#89b4fa"
         if self._ghost_phase == "type" and not self._ghost_done:
             return "INSERT", "#a6e3a1"
