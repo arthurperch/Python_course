@@ -5488,6 +5488,284 @@ class GitRepo:
 
 # ---- docker (simulated) ------------------------------------------------------
 
+class K8sEnv:
+    """A tiny offline Kubernetes: deployments, pods, services, rollouts.
+    `run(rest)` behaves like kubectl — desired state, self-healing, rolling
+    updates — so the lessons read like a real cluster."""
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.deployments = {}   # name -> {image, replicas, ready, rev}
+        self.pods = {}          # name -> {owner|None, image, status, restarts}
+        self.services = {}      # name -> {type, port}
+        self.healed = 0         # pods the controller replaced after deletion
+        self.next = 1
+
+    def _sync(self, name):
+        """Realize the desired state: pods match the deployment's replicas.
+        This is the 'self-healing' magic — delete a pod, it comes back."""
+        d = self.deployments[name]
+        d["ready"] = d["replicas"]
+        self.pods = {k: v for k, v in self.pods.items()
+                     if v.get("owner") != name}
+        for i in range(d["replicas"]):
+            pn = f"{name}-{i:02d}"
+            self.pods[pn] = {"owner": name, "image": d["image"],
+                             "status": "Running", "restarts": 0}
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["kubectl: missing command"]
+        cmd = parts[0]
+        if cmd == "get":
+            return self._get(parts[1:])
+        if cmd == "create" and parts[1:2] == ["deployment"]:
+            name = parts[2]
+            img = "nginx"
+            if "--image" in parts:
+                img = parts[parts.index("--image") + 1].split("=")[-1]
+            self.deployments[name] = {"image": img, "replicas": 1,
+                                      "ready": 1, "rev": 1}
+            self._sync(name)
+            return [f"deployment.apps/{name} created"], []
+        if cmd == "run":
+            name = parts[1]
+            img = "nginx"
+            if "--image" in parts:
+                img = parts[parts.index("--image") + 1].split("=")[-1]
+            self.pods[name] = {"owner": None, "image": img,
+                               "status": "Running", "restarts": 0}
+            return [f"pod/{name} created"], []
+        if cmd == "scale":
+            # kubectl scale deployment web --replicas=3
+            # kubectl scale deployment/web --replicas=3
+            if "/" in parts[1]:
+                name = parts[1].split("/")[-1]
+            elif parts[1].startswith("deploy"):
+                name = parts[2] if len(parts) > 2 else ""
+            else:
+                name = parts[1].split("/")[-1]
+            if name not in self.deployments:
+                return [], [f'Error from server (NotFound): deployments.apps '
+                            f'"{name}" not found']
+            replicas = int(parts[parts.index("--replicas") + 1].split("=")[-1]) \
+                if "--replicas" in parts else \
+                int(next((p for p in parts if p.startswith("--replicas=")),
+                         "--replicas=1").split("=")[-1])
+            self.deployments[name]["replicas"] = replicas
+            self._sync(name)
+            return [f"deployment.apps/{name} scaled"], []
+        if cmd == "expose":
+            # kubectl expose deployment web --port=80 --type=LoadBalancer
+            if "/" in parts[1]:
+                name = parts[1].split("/")[-1]
+            elif parts[1].startswith("deploy"):
+                name = parts[2] if len(parts) > 2 else ""
+            else:
+                name = parts[1].split("/")[-1]
+            port = "80"
+            if "--port" in parts:
+                port = parts[parts.index("--port") + 1].split("=")[-1]
+            elif any(p.startswith("--port=") for p in parts):
+                port = next(p for p in parts if p.startswith("--port=")).split("=")[-1]
+            stype = "ClusterIP"
+            if "--type" in parts:
+                stype = parts[parts.index("--type") + 1].split("=")[-1]
+            elif any(p.startswith("--type=") for p in parts):
+                stype = next(p for p in parts if p.startswith("--type=")).split("=")[-1]
+            self.services[name] = {"type": stype, "port": port}
+            return [f"service/{name} exposed"], []
+        if cmd == "set":
+            # kubectl set image deployment web app=img:v2
+            # kubectl set image deployment/web app=img:v2
+            if "deployment" in parts:
+                di = parts.index("deployment")
+                if "/" in parts[di]:
+                    name = parts[di].split("/")[-1]
+                else:
+                    name = parts[di + 1] if di + 1 < len(parts) else ""
+            else:
+                name = parts[2].split("/")[-1]
+            img = parts[-1].split("=")[-1]
+            d = self.deployments.get(name)
+            if not d:
+                return [], [f'Error from server (NotFound): deployments.apps '
+                            f'"{name}" not found']
+            d["image"] = img
+            d["rev"] += 1
+            self._sync(name)
+            return [f"deployment.apps/{name} image updated"], []
+        if cmd == "rollout":
+            return self._rollout(parts[1:])
+        if cmd == "describe":
+            return self._describe(parts[1:])
+        if cmd == "logs":
+            return self._logs(parts[1:])
+        if cmd == "delete":
+            return self._delete(parts[1:])
+        if cmd == "apply":
+            return self._apply(parts[1:])
+        return [], [f"kubectl: '{cmd}' is not supported in this lab"]
+
+    def _get(self, args):
+        kind = args[0] if args else "pods"
+        if kind == "nodes":
+            return ["NAME        STATUS   ROLES           AGE   VERSION",
+                    "minikube    Ready    control-plane   3d    v1.31.0"], []
+        if kind == "pods":
+            if not self.pods:
+                return ["No resources found in default namespace."], []
+            out = ["NAME                    READY   STATUS    RESTARTS   AGE"]
+            for pn in sorted(self.pods):
+                p = self.pods[pn]
+                out.append(f"{pn:<24} 1/1     {p['status']:<9} "
+                           f"{p['restarts']}          12m")
+            return out, []
+        if kind in ("deployments", "deploy"):
+            if not self.deployments:
+                return ["No resources found in default namespace."], []
+            out = ["NAME   READY   UP-TO-DATE   AVAILABLE   AGE"]
+            for n in sorted(self.deployments):
+                d = self.deployments[n]
+                out.append(f"{n:<7} {d['ready']}/{d['replicas']}     "
+                           f"{d['replicas']}            {d['ready']}          "
+                           f"13m")
+            return out, []
+        if kind in ("services", "svc"):
+            if not self.services:
+                return ["No resources found in default namespace."], []
+            out = ["NAME   TYPE           CLUSTER-IP   EXTERNAL-IP   "
+                   "PORT(S)   AGE"]
+            for n in sorted(self.services):
+                s = self.services[n]
+                ext = "<pending>" if s["type"] == "LoadBalancer" else "<none>"
+                out.append(f"{n:<7} {s['type']:<15} 10.96.0.1    {ext:<13} "
+                           f"{s['port']}/TCP   10m")
+            return out, []
+        return [], [f'error: the server doesn\'t have a resource type '
+                    f'"{kind}"']
+
+    def _rollout(self, args):
+        if not args:
+            return [], ["kubectl rollout: use status | undo | history"]
+        kind = args[0]
+        # kubectl rollout status deployment web
+        # kubectl rollout status deployment/web
+        if len(args) > 1 and "/" in args[1]:
+            name = args[1].split("/")[-1]
+        else:
+            name = args[2] if len(args) > 2 else ""
+        d = self.deployments.get(name)
+        if not d:
+            return [], [f'Error from server (NotFound): deployments.apps '
+                        f'"{name}" not found']
+        if kind == "status":
+            return [f'Waiting for deployment "{name}" rollout to finish: '
+                    f'{d["replicas"]} out of {d["replicas"]} new replicas '
+                    f'have been updated...',
+                    f'deployment "{name}" successfully rolled out'], []
+        if kind == "undo":
+            d["rev"] = max(1, d["rev"] - 1)
+            d["ready"] = d["replicas"]
+            return [f"deployment.apps/{name} rolled back"], []
+        if kind == "history":
+            out = [f"deployment.apps/{name}", "REVISION  CHANGE-CAUSE"]
+            for r in range(d["rev"], 0, -1):
+                out.append(f"{r}         <none>")
+            return out, []
+        return [], ["kubectl rollout: use status | undo | history"]
+
+    def _describe(self, args):
+        if len(args) < 2:
+            return [], ["kubectl describe: provide deployment/NAME"]
+        name = args[1].split("/")[-1]
+        d = self.deployments.get(name)
+        if not d:
+            return [], [f'Error from server (NotFound): deployments.apps '
+                        f'"{name}" not found']
+        return [f"Name:                   {name}",
+                "Namespace:              default",
+                f"Replicas:               {d['replicas']} desired | "
+                f"{d['ready']} updated | {d['ready']} available",
+                f"Image:                  {d['image']}",
+                f"Revision:               {d['rev']}",
+                "Conditions:",
+                "  Type           Status  Reason",
+                "  ----           ------  ------",
+                "  Available      True    MinimumReplicasAvailable"], []
+
+    def _logs(self, args):
+        name = args[0].split("/")[-1] if args else ""
+        d = self.deployments.get(name)
+        img = d["image"] if d else "app:latest"
+        if "v2" in img:
+            return ["[2026-09-09 18:00:01] serving v2 — new feature live",
+                    "[2026-09-09 18:00:02] GET / 200 12ms",
+                    "[2026-09-09 18:00:03] GET /health 200 2ms"], []
+        return ["[2026-09-09 17:59:58] serving v1",
+                "[2026-09-09 17:59:59] GET / 200 15ms",
+                "[2026-09-09 18:00:00] GET /health 200 2ms"], []
+
+    def _delete(self, args):
+        if len(args) < 2:
+            return [], ["kubectl delete: provide TYPE NAME"]
+        kind = args[0]
+        name = args[1].split("/")[-1]
+        if kind.startswith("deploy"):
+            if name in self.deployments:
+                del self.deployments[name]
+                self.pods = {k: v for k, v in self.pods.items()
+                             if v.get("owner") != name}
+                return [f'deployment.apps "{name}" deleted'], []
+        elif kind.startswith("service"):
+            if name in self.services:
+                del self.services[name]
+                return [f'service "{name}" deleted'], []
+        elif kind.startswith("pod"):
+            if name in self.pods:
+                owner = self.pods[name].get("owner")
+                del self.pods[name]
+                if owner:
+                    self.healed += 1    # the control loop replaces it
+                    self._sync(owner)   # self-healing: the replica returns
+                return [f'pod "{name}" deleted'], []
+        return [], [f'Error from server (NotFound): {kind} "{name}" not found']
+
+    def _apply(self, args):
+        fname = None
+        if "-f" in args:
+            fname = args[args.index("-f") + 1]
+        if not fname:
+            return [], ["kubectl apply: provide -f FILE"]
+        p = self.fs._resolve(fname)
+        content = self.fs.files.get(p)
+        if not content:
+            return [], [f'error: the path "{fname}" does not exist']
+        kind = re.search(r"^kind:\s*(\w+)", content, re.M)
+        name = re.search(r"^\s{2}name:\s*(\S+)", content, re.M)
+        if not kind or not name:
+            return [], ["error: unable to parse the manifest"]
+        kind, name = kind.group(1), name.group(1)
+        if kind == "Deployment":
+            img = re.search(r"image:\s*(\S+)", content)
+            reps = re.search(r"replicas:\s*(\d+)", content)
+            self.deployments[name] = {
+                "image": img.group(1) if img else "nginx",
+                "replicas": int(reps.group(1)) if reps else 1,
+                "ready": int(reps.group(1)) if reps else 1, "rev": 1}
+            self._sync(name)
+            return [f"deployment.apps/{name} created"], []
+        if kind == "Service":
+            port = re.search(r"port:\s*(\d+)", content)
+            stype = re.search(r"type:\s*(\w+)", content)
+            self.services[name] = {"type": stype.group(1) if stype
+                                   else "ClusterIP",
+                                   "port": port.group(1) if port else "80"}
+            return [f"service/{name} created"], []
+        return [], [f'error: unsupported kind "{kind}" in this lab']
+
+
 class DockerEnv:
     def __init__(self, fs):
         self.fs = fs
@@ -6509,6 +6787,7 @@ class CloudLab:
         self.tf = TerraformEnv(self.fs)
         self.ansible = AnsibleEnv(self.fs)
         self.pipeline = Pipeline(self.fs)
+        self.k8s = K8sEnv(self.fs)
         self.history = []
 
     def run(self, cmdline):
@@ -6532,6 +6811,8 @@ class CloudLab:
             return self.tf.run(rest)
         if cmd in ("ansible-playbook", "ansible"):
             return self.ansible.run(rest)
+        if cmd == "kubectl":
+            return self.k8s.run(rest)
         if cmd == "ci":
             return self.pipeline.run(rest)
         if cmd == "python3" and self._uses_boto3(cmdline):
@@ -7504,7 +7785,211 @@ DEV_LESSONS = [
      "why": "Green! Your latest commit passes. You just closed the loop: break it, catch it, fix it — automatically.",
      "on_win": "Green. That's CI in action: your tests guard every commit."},
 
-    # ==== MODULE 8 · Capstone: Ship It ====================================
+    # ==== MODULE 8 · Kubernetes ===========================================
+    {"module": "Kubernetes", "kind": "info", "title": "why Kubernetes",
+     "say": "Containers are easy — until you run fifty of them. Someone has to decide which machine each one lives on, restart the dead ones, scale the busy ones, and roll out new versions without dropping a single request. That someone is Kubernetes. This is the biggest single step from developer to platform engineer.",
+     "why": "Kubernetes is a container orchestrator: you declare the DESIRED state — three copies of my app, always up — and a control loop constantly reconciles reality to match. It schedules pods onto nodes, replaces anything that dies, and does rolling updates. That desired-state loop is the idea that powers every modern cloud."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "meet the cluster",
+     "expect": ["kubectl get nodes"], "cmd_hint": "kubectl get nodes",
+     "say": "You control Kubernetes through kubectl — cube control. First, list the machines that make up this cluster.",
+     "why": "A cluster is a set of nodes — real or virtual machines that actually run the containers. kubectl is the remote control for the whole fleet: every command asks the cluster's API what the state is or tells it what state you want.",
+     "on_win": "That's a one-node cluster. Real clusters have hundreds — and the commands never change."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "launch a deployment",
+     "verify": lambda c: c.startswith("kubectl create deployment web") and "--image" in c,
+     "cmd_hint": "kubectl create deployment web --image=app:latest",
+     "say": "Now run your app on the cluster. Create a deployment called web from the image app latest — a deployment is the standard way to run a long-lived service.",
+     "why": "A Deployment is the unit of work in Kubernetes: it says 'keep N copies of this image running'. It wraps pods (the actual running containers) with a controller that watches them. Create the deployment and the controller immediately makes the first pod for you.",
+     "on_win": "Deployment created — and somewhere on the cluster, your first pod is booting."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "watch the pods",
+     "expect": ["kubectl get pods"], "cmd_hint": "kubectl get pods",
+     "say": "List the pods and watch your app come to life.",
+     "why": "Pods are the smallest schedulable thing in Kubernetes — one or more containers sharing a network identity. The deployment created one for you. 'Running' plus '1/1 ready' means the container passed its health checks and is serving.",
+     "on_win": "There it is — web dash zero zero, running. Your app lives on the cluster now."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "scale out",
+     "verify": lambda c: c.startswith("kubectl scale deployment web") and "--replicas" in c and "3" in c,
+     "cmd_hint": "kubectl scale deployment web --replicas=3",
+     "say": "Traffic is spiking. Scale the web deployment up to three copies.",
+     "why": "Horizontal scaling: one command changes the desired replica count from one to three, and the controller does the rest — scheduling two new pods across the cluster. This is the entire reason Kubernetes exists: capacity becomes a number you set, not machines you build.",
+     "on_win": "Three replicas. On real infrastructure that would be three new machines' worth of capacity — in one command."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "check the deployment",
+     "expect": ["kubectl get deployments"], "cmd_hint": "kubectl get deployments",
+     "say": "Check the deployment's status — how many copies do you have, and are they all available?",
+     "why": "The READY column reads desired/actual: three of three means the real world caught up with what you asked for. If a node died, you'd see three desired but two ready — and the controller would already be healing it.",
+     "on_win": "Three of three. The cluster has caught up with your intent."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "expose it",
+     "verify": lambda c: c.startswith("kubectl expose deployment web") and "--type" in c,
+     "cmd_hint": "kubectl expose deployment web --port=80 --type=LoadBalancer",
+     "say": "Pods come and go, so their addresses change constantly. Give the outside world one stable door to your app: expose the deployment as a load balancer on port eighty.",
+     "why": "A Service is a stable network identity: one address that always points at SOME healthy pod behind it. LoadBalancer type asks the cloud provider to give you a real external IP. The service keeps routing to live pods even as they're replaced — this decoupling is why rolling updates can be zero-downtime.",
+     "on_win": "Exposed. One address now fronts all three replicas — clients never see pod churn."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "see the service",
+     "expect": ["kubectl get services", "kubectl get svc"], "cmd_hint": "kubectl get services",
+     "say": "List your services and find the load balancer you just created.",
+     "why": "The service table shows the stable entry point and its type. A real cloud takes a moment to hand out the external IP (you'll see 'pending' here — that's the simulated version of provisioning). ClusterIP is private-only; LoadBalancer is your front door.",
+     "on_win": "There's your front door — one IP, three pods, zero client changes."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "roll out v2",
+     "verify": lambda c: ("kubectl set image" in c and "web" in c and "app:v2" in c),
+     "cmd_hint": "kubectl set image deployment web app=app:v2",
+     "say": "Your team finished version two. Roll it out to the running deployment — with no downtime.",
+     "why": "set image changes the container image the deployment should run. The controller then performs a ROLLING update: it starts new v2 pods and only removes old v1 pods once replacements are healthy, a few at a time. Users never see a gap — this is how real production releases happen.",
+     "on_win": "The rollout began. Some pods are v1, some are v2 — and traffic keeps flowing the whole time."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "watch the rollout",
+     "verify": lambda c: c.startswith("kubectl rollout status") and "web" in c,
+     "cmd_hint": "kubectl rollout status deployment web",
+     "say": "Watch the rollout finish — ask Kubernetes how the update is going.",
+     "why": "rollout status follows the update to completion: it reports how many new replicas are up until the whole deployment has switched over. In production you'd never release and walk away — you watch this exact command.",
+     "on_win": "Successfully rolled out. Every pod is v2, and not one request was dropped."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "read the logs",
+     "verify": lambda c: c.startswith("kubectl logs") and "web" in c,
+     "cmd_hint": "kubectl logs deployment/web",
+     "say": "Now read the app's logs straight from the cluster — no SSH, no servers to find.",
+     "why": "kubectl logs streams the standard output of the pod's containers. When you can't log into machines anymore because there are hundreds of them, this is how you debug: one command, any pod, anywhere in the fleet.",
+     "on_win": "Version two is talking — you can see the new feature serving requests."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "roll it back",
+     "verify": lambda c: c.startswith("kubectl rollout undo") and "web" in c,
+     "cmd_hint": "kubectl rollout undo deployment web",
+     "say": "Version two has a bug you didn't catch. This is why we keep history: roll the deployment back to the previous version.",
+     "why": "rollout undo rewinds to the last working revision — no re-building, no re-typing, one command. This is the senior-engineer reflex: ship fast BECAUSE rolling back is cheap. The deployment controller keeps a revision history exactly for this moment.",
+     "on_win": "Rolled back. The bad version is gone and users never saw an error page. That's the power move."},
+
+    {"module": "Kubernetes", "kind": "write", "title": "declare the app",
+     "file": "deploy.yaml",
+     "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  replicas: 2\n  selector:\n    matchLabels:\n      app: api\n  template:\n    metadata:\n      labels:\n        app: api\n    spec:\n      containers:\n      - name: api\n        image: app:latest\n",
+     "lines": [("apiVersion: apps/v1", "which version of the Kubernetes API this manifest speaks"),
+               ("kind: Deployment", "the type of object — a Deployment controller"),
+               ("name: api", "the object's name on the cluster"),
+               ("replicas: 2", "desired state: always two copies running"),
+               ("selector: matchLabels", "how the controller finds the pods it owns"),
+               ("template:", "the pod recipe — containers, image, ports"),
+               ("image: app:latest", "the container image every replica runs")],
+     "say": "Real teams don't run ad-hoc commands — they write the desired state as a YAML manifest and check it into git. Type out the deployment manifest for an app called api with two replicas. Follow the ghost.",
+     "why": "This is declarative configuration, the heart of GitOps: the file IS the source of truth. Anyone can read exactly what production should look like, changes are reviewed like code, and 'kubectl apply' makes reality match the file — today and after every incident.",
+     "on_win": "A complete manifest. From now on, the file is the system of record — not someone's terminal history."},
+
+    {"module": "Kubernetes", "kind": "run", "title": "apply the manifest",
+     "verify": lambda c: c.startswith("kubectl apply") and "-f" in c,
+     "cmd_hint": "kubectl apply -f deploy.yaml",
+     "say": "Make the cluster match your manifest — apply the file you just wrote.",
+     "why": "apply is the declarative verb: it diffs the file against the cluster's actual state and does whatever is needed to reconcile them — create, update, scale. Run it once or run it a thousand times, the result is the same: reality equals the file. That idempotence is what makes automation safe.",
+     "on_win": "The api deployment exists with two replicas — straight from the file, exactly like production teams ship."},
+
+    {"module": "Kubernetes", "kind": "challenge", "title": "prove self-healing",
+     "say": "Kubernetes' greatest trick: it heals itself. Delete one of the api pods — kill it on purpose — then list the pods. Watch what happens.",
+     "why": "The deployment controller's control loop never sleeps: actual state drifted (a pod died), so it immediately starts a replacement. You deleted a pod and Kubernetes made a new one before you could blink. This is why cloud engineers say machines are cattle, not pets.",
+     "tools": ["kubectl get pods", "kubectl delete pod api-00", "kubectl get pods"],
+     "replay": ["kubectl apply -f deploy.yaml"],
+     "verify_lab": lambda lab: lab.k8s.healed >= 1},
+
+    # ==== MODULE 9 · AWS VPC Networking ====================================
+    {"module": "AWS VPC Networking", "kind": "info", "title": "your slice of the cloud",
+     "say": "Everything in AWS lives inside a Virtual Private Cloud — your own private, isolated slice of Amazon's network. You choose the address space, you slice it into subnets, and you decide exactly what can talk to what. Understanding the VPC is what separates someone who clicks around the console from someone who architects.",
+     "why": "A VPC is a software-defined network: a block of private IP space (like 10.0.0.0/16) that belongs to you alone. Inside it you create subnets (smaller slices), route tables (traffic maps), and security rules. Every EC2 instance, database, and lambda lives in a VPC — even if you never touched one, you've been paying for one all along."},
+
+    {"module": "AWS VPC Networking", "kind": "write", "title": "define the network",
+     "file": "main.tf",
+     "content": "resource \"aws_vpc\" \"main\" {\n  cidr_block = \"10.0.0.0/16\"\n}\n\nresource \"aws_subnet\" \"public\" {\n  vpc_id     = aws_vpc.main.id\n  cidr_block = \"10.0.1.0/24\"\n}\n",
+     "lines": [("resource \"aws_vpc\" \"main\"", "the VPC itself — your private slice of AWS"),
+               ("cidr_block = \"10.0.0.0/16\"", "65,536 addresses, all yours, none public"),
+               ("resource \"aws_subnet\" \"public\"", "a subnet inside the VPC — the public-facing slice"),
+               ("vpc_id = aws_vpc.main.id", "wire the subnet to the VPC (a Terraform reference)"),
+               ("cidr_block = \"10.0.1.0/24\"", "256 addresses of the /16, sliced off for this subnet")],
+     "say": "Architect your cloud like a city: first the city itself — a VPC with a big address block — then one neighborhood inside it: a public subnet. Type out the Terraform that describes both.",
+     "why": "Infrastructure as code: the network is a file, not a diagram someone drew once. Terraform reads this, plans the changes, and builds real resources — VPCs, subnets, routes — with the same declarative logic Kubernetes uses. Change the file, run apply, and the cloud follows.",
+     "on_win": "The network is now code — reviewable, versionable, and rebuildable from scratch in minutes."},
+
+    {"module": "AWS VPC Networking", "kind": "run", "title": "init terraform",
+     "expect": ["terraform init"], "cmd_hint": "terraform init",
+     "say": "First time using Terraform in a project? Initialize it — tell it to set up its working state.",
+     "why": "terraform init downloads the provider plugins (the AWS driver) and prepares the backend where state will be stored. Every fresh project needs it once. It's the 'npm install' of infrastructure.",
+     "on_win": "Initialized. Terraform now knows how to talk to AWS."},
+
+    {"module": "AWS VPC Networking", "kind": "run", "title": "plan the changes",
+     "expect": ["terraform plan"], "cmd_hint": "terraform plan",
+     "say": "Before anything gets built, see what Terraform WOULD do. Generate the plan.",
+     "why": "plan is the dry run: Terraform diffs your files against reality and prints every resource it would create, change, or destroy. Reading the plan before applying is the single most important safety habit in infrastructure — this is where you catch the mistake that would have deleted the database.",
+     "on_win": "One VPC and one subnet to add — no surprises. That's the whole point of planning."},
+
+    {"module": "AWS VPC Networking", "kind": "run", "title": "build it",
+     "verify": lambda c: c.startswith("terraform apply"),
+     "cmd_hint": "terraform apply",
+     "say": "The plan looks right. Make it real — apply it.",
+     "why": "apply executes the plan: resources are created in dependency order (subnet after VPC, because the subnet references the VPC's id). Terraform records everything in state so next time it only changes what actually drifted. Infrastructure with memory.",
+     "on_win": "Your VPC and public subnet exist. Real production networks are built with exactly this loop: write, plan, apply."},
+
+    {"module": "AWS VPC Networking", "kind": "write", "title": "add a private subnet",
+     "file": "subnet.tf",
+     "content": "resource \"aws_subnet\" \"private\" {\n  vpc_id     = aws_vpc.main.id\n  cidr_block = \"10.0.2.0/24\"\n}\n",
+     "lines": [("resource \"aws_subnet\" \"private\"", "a second subnet — this one will hold databases, not web servers"),
+               ("vpc_id = aws_vpc.main.id", "same VPC, second neighborhood"),
+               ("cidr_block = \"10.0.2.0/24\"", "another /24 — public stuff in .1.0, private stuff in .2.0")],
+     "say": "Best practice: public resources face the internet, databases hide behind them. Add a second subnet for the private layer — a new file, a new slice of your address space.",
+     "why": "Network segmentation is defense in depth: web servers in the public subnet, databases in the private one, and route tables + security groups decide who may cross. Even if the web layer is compromised, the data layer sits in a neighborhood with no door to the internet.",
+     "on_win": "A private subnet for the data layer. This public/private split is the shape of nearly every real AWS deployment."},
+
+    {"module": "AWS VPC Networking", "kind": "run", "title": "plan the addition",
+     "expect": ["terraform plan"], "cmd_hint": "terraform plan",
+     "say": "You changed the files. See what Terraform wants to do now.",
+     "why": "Run plan again and notice what it does NOT say: it does not rebuild the VPC. Terraform computes only the DELTA — one subnet to add. That's stateful infrastructure management: it remembers what exists and changes only what must change.",
+     "on_win": "One to add, zero to change, zero to destroy. The VPC is untouched — only the new subnet gets built."},
+
+    {"module": "AWS VPC Networking", "kind": "run", "title": "apply the addition",
+     "verify": lambda c: c.startswith("terraform apply"),
+     "cmd_hint": "terraform apply",
+     "say": "Apply again and grow the network by exactly one subnet.",
+     "why": "Idempotence again: the same apply command, the same loop — write, plan, apply — scales from one subnet to an entire multi-account estate. Teams run this loop a hundred times a week, in CI, with reviews.",
+     "on_win": "Done. Your VPC now has public and private layers — the classic two-tier network."},
+
+    # ==== MODULE 10 · SRE: Production Operations ===========================
+    {"module": "SRE: Production Operations", "kind": "info", "title": "SLOs: promise what you measure",
+     "say": "Senior engineers don't promise 'always up' — they promise a number. An SLI is what you measure, like requests that succeed. An SLO is the promise built on it: ninety-nine point nine percent succeed, measured monthly. The difference between guessing and engineering is the decimal point.",
+     "why": "SLI = Service Level Indicator (the metric: error rate, latency, uptime). SLO = Service Level Objective (the target: 99.9% over 30 days). SLA = the contract with customers (what you owe if you miss). Defining these forces clarity: what does 'working' actually mean, and how much failure can the business absorb?"},
+
+    {"module": "SRE: Production Operations", "kind": "info", "title": "error budgets",
+     "say": "An error budget is the permission slip hidden inside your SLO. Ninety nine point nine percent uptime means zero point one percent of the month is yours to spend on failures — bad deploys, experiments, maintenance. No budget left? Freeze features until reliability recovers.",
+     "why": "This is the insight that ends the war between devs and ops: instead of arguing about whether to ship, both sides watch one number. Ship risky changes while budget remains; when it burns down, the system itself says 'stop shipping, fix reliability'. It turns an argument into arithmetic."},
+
+    {"module": "SRE: Production Operations", "kind": "info", "title": "blameless postmortems",
+     "say": "After every outage, write the postmortem — but not to find who to fire. The blameless postmortem assumes everyone did their best with the information they had, then asks: what about the SYSTEM let a reasonable mistake become an outage? Fix that.",
+     "why": "Human error is a symptom, not a cause — the system failed to absorb a predictable mistake. A good postmortem names the contributing factors, the timeline, the impact, and the action items with owners and dates. Organizations that punish mistakes just teach people to hide them; blameless ones teach the system to improve."},
+
+    {"module": "SRE: Production Operations", "kind": "write", "title": "write the runbook",
+     "file": "runbook.md",
+     "content": "# Web service runbook\n\n## symptom: 5xx spike\n1. check logs: kubectl logs deployment/web\n2. check releases: kubectl rollout history deployment/web\n3. roll back: kubectl rollout undo deployment/web\n\n## symptom: slow responses\n1. check replicas: kubectl get deployments\n2. scale out: kubectl scale deployment web --replicas=3\n\n## last resort\nescalate to on-call via pager\n",
+     "lines": [("# Web service runbook", "every service gets one — written calmly, before the 2am page"),
+               ("## symptom: 5xx spike", "organize by SYMPTOM, not by component — the pager says '5xx', not 'pod'"),
+               ("kubectl rollout undo", "the first move for a bad release: roll back, then investigate"),
+               ("## symptom: slow responses", "a different symptom, a different play"),
+               ("kubectl scale deployment web --replicas=3", "capacity first — scale out before you debug"),
+               ("## last resort", "runbooks end with the human path: who to wake, when to stop self-helping")],
+     "say": "The runbook is what separates a calm on-call from a panicked one. Write the runbook for the web service: what to do for a spike in server errors, what to do for slowness, and where the last resort leads. Follow the ghost.",
+     "why": "At 2am nobody reasons well — that's what the runbook is for: pre-decided actions, ordered, each one safe. Symptom-based entries mean the pager message tells you which section to open. This is also how you on-board: runbooks are executable documentation of the system's failure modes.",
+     "on_win": "A real runbook. The next incident starts with a document, not with fear."},
+
+    {"module": "SRE: Production Operations", "kind": "info", "title": "kill the toil",
+     "say": "Toil is work that's manual, repetitive, automatable, and grows with the system — resizing disks by hand, clicking through the console, running the same five commands every deploy. Senior engineers treat toil as a bug: every hour of it automated is an hour of it gone FOREVER.",
+     "why": "SRE's rule of thumb: keep toil below half your time. The fix is automation — scripts, pipelines, self-service tooling — plus the discipline to never do the same manual task twice without writing it down. If you did it by hand twice, the third time must be code. That's how small teams run systems that would otherwise need ten people."},
+
+    {"module": "SRE: Production Operations", "kind": "challenge", "title": "the midnight page",
+     "say": "It's 2 AM and your pager just went off: the web deployment is serving errors after a bad release, and traffic is spiking. You have your runbook. Fix it: roll back the bad release, then scale out to three replicas to ride the spike.",
+     "why": "The whole job in one scenario: a bad release plus a traffic spike, at the worst hour. The runbook's answer is rollback-then-scale — the bad version goes away instantly, then capacity absorbs the load. Calm, ordered, reversible actions. You just did in seconds what a panicked engineer might fumble for an hour.",
+     "tools": ["kubectl rollout undo deployment web", "kubectl scale deployment web --replicas=3", "kubectl get deployments"],
+     "replay": ["kubectl create deployment web --image=app:latest", "kubectl set image deployment web app=app:v2"],
+     "verify_lab": lambda lab: (lab.k8s.deployments.get("web", {}).get("rev", 0) == 1 and
+                                lab.k8s.deployments.get("web", {}).get("replicas", 0) >= 3 and
+                                lab.k8s.deployments.get("web", {}).get("ready", 0) >= 3)},
+
+    # ==== MODULE 11 · Capstone: Ship It ====================================
     {"module": "Capstone: Ship It", "kind": "info", "title": "the full stack",
      "say": "You've learned every piece. Now combine them: package an app with docker, describe its servers with terraform, deploy it with ansible, and guard it with a pipeline.",
      "why": "This is the capstone — a full 3-tier deployment using everything: docker to package, terraform for the servers, ansible to configure them, CI to guard every change. This is what an engineer actually does."},
@@ -14736,6 +15221,20 @@ class TutorApp(App):
         if module_first is not None:
             resume = module_first
         else:
+            # one-time migration: the Kubernetes / VPC / SRE modules were
+            # inserted before the capstone, so old saved indexes (85+) shift
+            # by exactly DEV_INSERT_AT_SHIFT lessons
+            if not self.p.get("dev_migrated_v2"):
+                self.p["dev_migrated_v2"] = True
+                shift = 29
+                cp = self.p.get("dev_checkpoint")
+                if isinstance(cp, dict) and isinstance(cp.get("idx"), int) \
+                        and cp["idx"] >= 85:
+                    cp["idx"] += shift
+                step = self.p.get("dev_step")
+                if isinstance(step, int) and step >= 85:
+                    self.p["dev_step"] = step + shift
+                save_progress(self.p)
             cp = self.p.get("dev_checkpoint")
             if isinstance(cp, dict) and isinstance(cp.get("idx"), int):
                 if 0 <= cp["idx"] < len(DEV_LESSONS):
