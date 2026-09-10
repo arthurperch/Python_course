@@ -12973,6 +12973,9 @@ class TutorApp(App):
         self._ghost_blind_reveal = 0        # how much of the blind section is shown
         self._ghost_fade = False            # FADE recall mode (faint purple ghost, silent)
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
+        self._ghost_reveal = 0              # "show code" countdown (0 = hidden)
+        self._ghost_reveal_timer = None
+        self._ghost_used_hint = False       # true once the user peeked at the answer
         self._ghost_mastery_streak = 0      # clean blind completions in a row
         self._ghost_shake_cool = False      # cooldown gate on the error shake
         self._ghost_a_code = None           # side A code (stashed for the split view)
@@ -15122,6 +15125,11 @@ class TutorApp(App):
         self._ghost_mastery_streak = 0
         self._ghost_fade = bool(ex.get("fade"))       # FADE recall mode
         self._ghost_fade_wrong = 0
+        self._ghost_used_hint = False                 # fresh per step
+        self._ghost_reveal = 0
+        if self._ghost_reveal_timer:
+            self._ghost_reveal_timer.stop()
+            self._ghost_reveal_timer = None
         if self._ghost_lab:
             # multi-variant watch lab: nothing to type — press Enter to reveal
             # each variant's output (with letter highlighting), then compare all
@@ -15253,6 +15261,12 @@ class TutorApp(App):
             event.stop(); event.prevent_default()
             self._ghost_hints = not self._ghost_hints
             self._ghost_render_hints()
+            return
+        if key == "h" and self._ghost_fade:
+            # "show code for 5s" peek — reveal the answer in purple for 5 seconds,
+            # with a countdown, then hide it again (and mark the hint as used)
+            event.stop(); event.prevent_default()
+            self._ghost_start_reveal()
             return
         if self._ghost_phase == "lab":
             # watch lab: Enter reveals the next variant's output; when all are
@@ -15566,11 +15580,35 @@ class TutorApp(App):
                 and self._ghost_card):
             self._ghost_start_compare()
             return
+        # failed the fade recall AND peeked at the answer -> 5 harder reps
+        if self._ghost_fade and self._ghost_used_hint:
+            self._ghost_used_hint = False
+            self._ghost_retrain()
         self._ghost_idx += 1
         if self._ghost_idx >= len(self._ghost_examples):
             self._ghost_finish()
         else:
             self._ghost_begin_example(self._ghost_idx)
+
+    def _ghost_retrain(self):
+        """The user peeked at the answer on a fade recall — add 5 harder reps
+        (3 fresh value-swapped re-writes + 2 more purple-disappearing) right
+        after this step so the topic gets brute-forced into memory."""
+        c = self._current()
+        main = example_code(c.get("example", ""))[1]
+        if not main:
+            return
+        extra = []
+        cur = main
+        for _ in range(3):
+            nv = _ghost_variant(cur, "", "")
+            if nv:
+                cur = nv
+            extra.append({"code": cur, "stdin": "", "prefix": c.get("starter", "")})
+        extra.append({"code": main, "stdin": "", "prefix": "", "fade": True})
+        extra.append({"code": cur, "stdin": "", "prefix": "", "fade": True})
+        self._ghost_examples[self._ghost_idx + 1:self._ghost_idx + 1] = extra
+        self._ghost_render()
 
     def _ghost_start_compare(self):
         """The A-vs-B finale: both sides on screen, outputs bold + flashing,
@@ -15750,7 +15788,7 @@ class TutorApp(App):
 
     def _ghost_stop_timers(self):
         for attr in ("_ghost_out_timer", "_ghost_blink_timer", "_ghost_nudge_timer",
-                     "_ghost_shake_timer", "_ghost_compare_timer"):
+                     "_ghost_shake_timer", "_ghost_compare_timer", "_ghost_reveal_timer"):
             t = getattr(self, attr, None)
             if t is not None:
                 t.stop()
@@ -15792,11 +15830,25 @@ class TutorApp(App):
             "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
             "change": "type the changed code · Enter = new line · Tab = indent · Enter at the end = run",
-            "fade": "recall each char · spaces stay · Enter = new line · Tab = indent · silent on miss",
+            "fade": "recall each char · spaces stay · Enter = new line · Tab = indent · silent on miss · h = show code 5s",
             "blind": "write from memory · two clean runs in a row = mastered",
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
+        # the "show code for 5s" hint: a flickering circular button + countdown,
+        # shown in the footer while a fade recall is in progress
+        if self._ghost_fade:
+            flick = self._ghost_blink_on
+            if self._ghost_reveal > 0:
+                btn = Text("●", style="bold #cba6f7" if flick else "bold #6d5c9e")
+                btn.append(f"  {self._ghost_reveal}  ", style="bold #1e1e2e on #cba6f7")
+                btn.append("   hiding…", style="bold #cba6f7")
+                foot = btn
+            else:
+                btn = Text("◯", style="bold #cba6f7" if flick else "bold #6d5c9e")
+                btn.append("  show code for 5s", style="bold #cba6f7" if flick else "#6d5c9e")
+                btn.append("   [h]", style="bold #7f849c")
+                foot = btn
         # render each region into its OWN widget, so the code box can shake on
         # its own without moving the header, console, or footer.
         self.query_one("#ghost-bufferline", Static).update(head)
@@ -15804,7 +15856,7 @@ class TutorApp(App):
         self._ghost_fill_editor(code)
         self.query_one("#ghost-console", Static).update(
             console if console.cell_len else Text(""))
-        self.query_one("#ghost-foot", Static).update(Text(foot, style="dim"))
+        self.query_one("#ghost-foot", Static).update(foot)
 
     def _ghost_mode_status(self):
         """(mode, color) for the vim chrome — INSERT while typing, NORMAL the
@@ -15933,6 +15985,25 @@ class TutorApp(App):
         b = int(0xd4 - (0xd4 - 0x2e) * t)
         return f"#{r:02x}{g:02x}{b:02x}"
 
+    def _ghost_start_reveal(self):
+        """'show code for 5s' — reveal the answer in purple for 5 seconds with a
+        countdown, then hide it again. Marks the hint as used (5 extra reps)."""
+        self._ghost_used_hint = True
+        self._ghost_reveal = 5
+        if self._ghost_reveal_timer:
+            self._ghost_reveal_timer.stop()
+        self._ghost_reveal_timer = self.set_interval(1.0, self._ghost_reveal_tick)
+        self._ghost_render()
+
+    def _ghost_reveal_tick(self):
+        self._ghost_reveal -= 1
+        if self._ghost_reveal <= 0:
+            self._ghost_reveal = 0
+            if self._ghost_reveal_timer:
+                self._ghost_reveal_timer.stop()
+                self._ghost_reveal_timer = None
+        self._ghost_render()
+
     def _ghost_render_code(self):
         t = Text()
         pos = self._ghost_pos
@@ -16005,11 +16076,14 @@ class TutorApp(App):
                 # the normal dim ghost
                 rest = line[typed_n:]
                 if self._ghost_fade:
-                    # PROGRESSIVE fade: the purple hint starts deep and fades to
-                    # invisible as the user writes more, so only the first lines
-                    # get a visible hint and the last lines are recalled cold.
-                    prog = self._ghost_pos / max(1, len(self._ghost_target))
-                    color = self._fade_purple(prog)
+                    # "show code for 5s" peek: reveal the WHOLE line in purple.
+                    # Otherwise the purple hint starts deep and progressively
+                    # fades to invisible as the user writes more.
+                    if self._ghost_reveal > 0:
+                        color = "#cba6f7"
+                    else:
+                        prog = self._ghost_pos / max(1, len(self._ghost_target))
+                        color = self._fade_purple(prog)
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
