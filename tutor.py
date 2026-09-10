@@ -5912,21 +5912,38 @@ class DockerEnv:
                 out.append(f"{c['id']}  {c['image']}  {st}  {' '.join(c['ports'])}  {name}")
             return out, []
         if cmd == "stop":
-            if args := parts[1:]:
-                for n in args:
-                    if n in self.containers:
-                        self.containers[n]["running"] = False
-                return [a for a in args], []
-            return [], ["docker stop requires a container name"]
+            args = parts[1:]
+            if not args:
+                return [], ["docker stop requires a container name"]
+            out, errs = [], []
+            for n in args:
+                if n in self.containers:
+                    self.containers[n]["running"] = False
+                    out.append(n)
+                else:
+                    errs.append(f"Error: No such container: {n}")
+            return out, errs
         if cmd == "start":
             for n in parts[1:]:
                 if n in self.containers:
                     self.containers[n]["running"] = True
             return parts[1:], []
         if cmd == "rm":
-            for n in parts[1:]:
-                self.containers.pop(n, None)
-            return [], []
+            args = parts[1:]
+            if not args:
+                return [], ["docker rm requires a container name"]
+            out, errs = [], []
+            for n in args:
+                if n not in self.containers:
+                    errs.append(f"Error: No such container: {n}")
+                elif self.containers[n]["running"]:
+                    errs.append(f"Error response from daemon: You cannot remove "
+                                f"a running container {n}. Stop the container "
+                                f"before attempting removal")
+                else:
+                    del self.containers[n]
+                    out.append(n)
+            return out, errs
         if cmd == "rmi":
             for n in parts[1:]:
                 self.images.pop(n, None)
@@ -7248,6 +7265,8 @@ DEV_LESSONS = [
     {"module": "Git Foundations", "kind": "challenge", "title": "commit a change",
      "say": "Make a second commit. First change app.py to print something different, then stage it, then commit it.",
      "why": "The full loop — edit, add, commit — chained together on your own. You've done each piece; now put them in order.",
+     "recall": "the loop is always: edit the file, git add it, git commit with a message.",
+     "hint": "the order is edit → add → commit — a commit needs a message in quotes.",
      "tools": ["echo \"...\" > app.py", "git add app.py", "git commit -m \"...\""],
      "verify_lab": lambda lab: len(lab.git.commits) >= 2,
      "replay": ["echo \"print('changed')\" > app.py", "git add app.py", "git commit -m second"]},
@@ -7305,6 +7324,8 @@ DEV_LESSONS = [
     {"module": "Docker", "kind": "challenge", "title": "stop and clean up",
      "say": "Make the web container disappear entirely — stop it first, then remove it.",
      "why": "Cleanup has an order: a running container must be stopped before you can remove it. You know both commands; now sequence them.",
+     "recall": "docker stop takes the container's name — you named yours web when you ran it, and the CONTAINERS panel on the right shows it. docker rm deletes a stopped container.",
+     "hint": "the running container is called web — you can see it under CONTAINERS in the right panel. The command needs that name on the end.",
      "tools": ["docker stop", "docker rm"],
      "verify_lab": lambda lab: "web" not in lab.docker.containers,
      "replay": ["docker stop web", "docker rm web"]},
@@ -7432,6 +7453,8 @@ DEV_LESSONS = [
     {"module": "EC2 / VPS", "kind": "challenge", "title": "tear it all down",
      "say": "Terminate every server so the CLOUD panel shows them all terminated. You have four, and one command can take them all at once.",
      "why": "Terminating is permanent cleanup, and leaving servers running costs money. One command, every id listed together, does the whole fleet.",
+     "recall": "aws ec2 terminate-instances wants the --instance-ids flag, then every id you own — the CLOUD panel lists them.",
+     "hint": "one terminate command with --instance-ids, then ALL FOUR ids from the CLOUD panel, in one line.",
      "tools": ["aws ec2 terminate-instances --instance-ids", "i-0001 · i-0002 · i-0003 · i-0004"],
      "verify_lab": lambda lab: bool(lab.aws.instances) and all(i["State"]["Name"] == "terminated" for i in lab.aws.instances.values()),
      "replay": ["aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004"]},
@@ -7671,6 +7694,8 @@ DEV_LESSONS = [
     {"module": "Terraform", "kind": "challenge", "title": "rebuild from the files",
      "say": "Bring your bucket and server back after the destroy. The .tf files are still there — plan first, then apply.",
      "why": "The files are the blueprint: plan shows what's missing, apply makes it real. Order matters — you plan before you apply.",
+     "recall": "terraform plan shows the plan, terraform apply makes it real — always plan first.",
+     "hint": "plan first, then apply — the .tf files are already in the project.",
      "tools": ["terraform plan", "terraform apply"],
      "verify_lab": lambda lab: {"aws_s3_bucket.static", "aws_instance.web"} <= set(lab.tf.resources),
      "replay": ["terraform plan", "terraform apply"]},
@@ -7768,6 +7793,8 @@ DEV_LESSONS = [
     {"module": "Ansible", "kind": "challenge", "title": "run it yourself",
      "say": "Install postgres on the db group by running the db.yml playbook you just wrote.",
      "why": "The pattern never changes: ansible-playbook, then the playbook name. You've run playbooks before — now recall the command on your own.",
+     "recall": "ansible-playbook is the command, and the playbook file name goes right after it.",
+     "hint": "the command is ansible-playbook, and the file you just wrote is db.yml.",
      "tools": ["ansible-playbook", "db.yml"],
      "verify_lab": lambda lab: "postgres" in lab.ansible._host_state("db-1")["packages"],
      "replay": ["ansible-playbook db.yml"]},
@@ -7951,6 +7978,8 @@ DEV_LESSONS = [
     {"module": "Kubernetes", "kind": "challenge", "title": "prove self-healing",
      "say": "Kubernetes' greatest trick: it heals itself. Delete one of the api pods — kill it on purpose — then list the pods. Watch what happens.",
      "why": "The deployment controller's control loop never sleeps: actual state drifted (a pod died), so it immediately starts a replacement. You deleted a pod and Kubernetes made a new one before you could blink. This is why cloud engineers say machines are cattle, not pets.",
+     "recall": "kubectl delete pod takes a pod name — get pods lists them (api-00, api-01…). The controller replaces whatever you delete.",
+     "hint": "delete one pod BY NAME (the list from get pods), then get pods again and compare.",
      "tools": ["kubectl get pods", "kubectl delete pod api-00", "kubectl get pods"],
      "replay": ["kubectl apply -f deploy.yaml"],
      "verify_lab": lambda lab: lab.k8s.healed >= 1},
@@ -8047,6 +8076,8 @@ DEV_LESSONS = [
     {"module": "SRE: Production Operations", "kind": "challenge", "title": "the midnight page",
      "say": "It's 2 AM and your pager just went off: the web deployment is serving errors after a bad release, and traffic is spiking. You have your runbook. Fix it: roll back the bad release, then scale out to three replicas to ride the spike.",
      "why": "The whole job in one scenario: a bad release plus a traffic spike, at the worst hour. The runbook's answer is rollback-then-scale — the bad version goes away instantly, then capacity absorbs the load. Calm, ordered, reversible actions. You just did in seconds what a panicked engineer might fumble for an hour.",
+     "recall": "kubectl rollout undo deployment web rewinds the release; kubectl scale deployment web --replicas=3 sets capacity.",
+     "hint": "runbook order: roll back the web deployment first, then scale it to three replicas.",
      "tools": ["kubectl rollout undo deployment web", "kubectl scale deployment web --replicas=3", "kubectl get deployments"],
      "replay": ["kubectl create deployment web --image=app:latest", "kubectl set image deployment web app=app:v2"],
      "verify_lab": lambda lab: (lab.k8s.deployments.get("web", {}).get("rev", 0) == 1 and
@@ -15381,6 +15412,15 @@ class TutorApp(App):
             return
         say = lesson.get("say", "")
         why = lesson.get("why", "")
+        if lesson["kind"] == "challenge":
+            # challenges get a spoken RECALL line first: the key facts from
+            # the lessons you just did, so the blank terminal isn't scary
+            recall = lesson.get("recall", "")
+            text = say + " " + why
+            if recall:
+                text += " Quick recall: " + recall
+            speak(_pers(text))
+            return
         if tier <= 1:
             speak(_pers(say + " " + why))
         elif tier == 2:
@@ -15595,13 +15635,20 @@ class TutorApp(App):
                 self._dev_render()
                 return
             if err:
-                # teach the failure instead of a generic "try again": the
-                # error plus WHERE the missing piece lives
+                # teach the failure, escalating: first the error + where the
+                # missing piece lives, then the exact thing to write
                 errmsg = " ".join(str(e) for e in err[:2])
                 self._dev_attempts += 1
-                self._dev_msg = (f"✗ {errmsg} — the missing detail is in the "
-                                 f"CLOUD panel on the right. Add it and try "
-                                 f"again.")
+                if self._dev_attempts >= 2 and lesson.get("replay"):
+                    self._dev_msg = (f"✗ {errmsg} — okay, no more guessing. "
+                                     f"Copy this: " +
+                                     "  →  ".join(lesson["replay"]))
+                elif lesson.get("hint"):
+                    self._dev_msg = f"✗ {errmsg}. {lesson['hint']}"
+                else:
+                    self._dev_msg = (f"✗ {errmsg} — the missing detail is in the "
+                                     f"CLOUD panel on the right. Add it and try "
+                                     f"again.")
                 self._dev_msg_kind = "hint"
                 play_ghost_error()
                 self._dev_render()
@@ -15624,8 +15671,9 @@ class TutorApp(App):
             if tier == 0:
                 return "not yet — look at the toolbox: which command comes first?"
             if tier == 1:
-                return "check the order — what has to happen before what?"
-            return "use every tool in the toolbox, in the order that makes sense"
+                return lesson.get("hint") or "check the order — what has to happen before what?"
+            return ("no more guessing — copy this: " +
+                    "  →  ".join(lesson.get("replay", [])))
         if tier == 0:
             return "not quite — look at the hint bar above"
         if tier == 1:
