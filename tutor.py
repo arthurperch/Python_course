@@ -3012,6 +3012,146 @@ def toggle_voice_mute() -> bool:
     return _VOICE_MUTED
 
 
+# ---- writing TTS: a separate, optional voice that speaks a quick cue for each
+# line as you type ("a equals 4"). Own volume + toggle (independent of the tutor
+# voice) and it plays through its OWN sequential queue — one cue never cuts off
+# the next, so nothing gets disturbed. --------------------------------------------------
+
+_WRITE_VOL = 0.7
+_WRITE_MUTED = False
+_WRITE_Q = []
+_WRITE_COND = threading.Condition()
+_WRITE_ALIVE = [True]
+
+
+def writing_volume() -> float:
+    return 0.0 if _WRITE_MUTED else _WRITE_VOL
+
+
+def set_writing_volume(vol: float) -> None:
+    global _WRITE_VOL
+    _WRITE_VOL = max(0.0, min(1.0, vol))
+
+
+def toggle_writing_mute() -> bool:
+    global _WRITE_MUTED
+    _WRITE_MUTED = not _WRITE_MUTED
+    return _WRITE_MUTED
+
+
+def _writing_tts_loop() -> None:
+    """Sequential player: each writing cue waits for the previous one to finish,
+    so rapid typing queues the cues in order instead of overlapping."""
+    while _WRITE_ALIVE[0]:
+        with _WRITE_COND:
+            while not _WRITE_Q:
+                _WRITE_COND.wait()
+            text, rate = _WRITE_Q.pop(0)
+        if _tts_engine() == "espeak":
+            amp = int(round(200 * writing_volume()))
+            if amp <= 0:
+                continue
+            speed = max(120, int(180 / rate))
+            try:
+                subprocess.run(["espeak-ng", "-s", str(speed), "-a", str(amp), text],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        else:
+            raw = synthesize(text, rate)
+            if not raw:
+                continue
+            gain = writing_volume()
+            if gain <= 0.0:
+                continue
+            raw = _scale_raw(raw, gain)
+            try:
+                p = subprocess.Popen(["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw"],
+                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                p.stdin.write(raw)
+                p.stdin.close()
+                p.wait()   # hold until THIS cue finishes before the next one
+            except Exception:
+                pass
+
+
+threading.Thread(target=_writing_tts_loop, daemon=True).start()
+
+
+def speak_write(text: str, rate: float = 0.85) -> None:
+    """Enqueue a quick writing cue. `rate` < 1.0 = faster (piper length_scale)."""
+    clean = _prep_tts(text)
+    if not clean:
+        return
+    with _WRITE_COND:
+        _WRITE_Q.append((clean, rate))
+        _WRITE_COND.notify()
+
+
+# ---- code → a short spoken "visualization" cue ----------------------------- #
+# Turns a line you just wrote into a quick phrase for the writing TTS voice,
+# e.g. `a = 4` → "a equals four", `if a > b:` → "if a is greater than b".
+
+_NUM_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+              "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+              "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+              "nineteen"]
+_NUM_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+             "eighty", "ninety"]
+
+
+def _num_words(n: int) -> str:
+    if n < 20:
+        return _NUM_WORDS[n]
+    if n < 100:
+        return _NUM_TENS[n // 10] + (" " + _NUM_WORDS[n % 10] if n % 10 else "")
+    return str(n)
+
+
+def _cue_tokens(expr: str) -> str:
+    """Replace numeric tokens with words and comparison ops with plain words."""
+    out = expr
+    out = re.sub(r'\b(\d+)\b', lambda m: _num_words(int(m.group(1))), out)
+    out = out.replace(">=", " is at least ").replace("<=", " is at most ")
+    out = out.replace("==", " equals ").replace(">", " is greater than ")
+    out = out.replace("<", " is less than ").replace("+", " plus ").replace("=", " equals ")
+    out = out.replace('"', "").replace("'", "")
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def _line_cue(line: str) -> str:
+    """A short phrase describing what a code line does, for the writing voice."""
+    line = line.strip()
+    if not line:
+        return ""
+    m = re.match(r'^if\s+(.+?)\s*:\s*$', line)
+    if m:
+        return "if " + _cue_tokens(m.group(1))
+    m = re.match(r'^elif\s+(.+?)\s*:\s*$', line)
+    if m:
+        return "else if " + _cue_tokens(m.group(1))
+    m = re.match(r'^while\s+(.+?)\s*:\s*$', line)
+    if m:
+        return "while " + _cue_tokens(m.group(1))
+    m = re.match(r'^for\s+(.+?)\s+in\s+(.+?)\s*:\s*$', line)
+    if m:
+        return f"for {m.group(1)} in {_cue_tokens(m.group(2))}"
+    m = re.match(r'^def\s+(\w+)', line)
+    if m:
+        return "define function " + m.group(1)
+    m = re.match(r'^return\s*(.*)$', line)
+    if m:
+        return "return" + (" " + _cue_tokens(m.group(1)) if m.group(1) else "")
+    m = re.match(r'^print\((.+)\)\s*$', line)
+    if m:
+        return "print " + _cue_tokens(m.group(1))
+    m = re.match(r'^([A-Za-z_]\w*)\s*=\s*(.+)$', line)
+    if m and "==" not in line and "<=" not in line and ">=" not in line:
+        return f"{m.group(1)} equals {_cue_tokens(m.group(2))}"
+    return _cue_tokens(line)
+
+
 def toggle_sfx_mute() -> bool:
     global _SFX_MUTED
     _SFX_MUTED = not _SFX_MUTED
@@ -12365,8 +12505,10 @@ class VolumeBar(Static):
     def _row_markup(self, row: int, active: bool) -> str:
         if row == 0:
             vol, muted, label = _VOICE_VOL, _VOICE_MUTED, "VOICE"
-        else:
+        elif row == 1:
             vol, muted, label = _SFX_VOL, _SFX_MUTED, "SFX"
+        else:
+            vol, muted, label = _WRITE_VOL, _WRITE_MUTED, "WRITE"
         filled = int(round(vol * self.METER_W))
         meter = ("█" * filled) + ("░" * (self.METER_W - filled))
         if muted:
@@ -12381,32 +12523,39 @@ class VolumeBar(Static):
     def _bar_markup(self) -> str:
         voice = self._row_markup(0, self._active == 0)
         sfx = self._row_markup(1, self._active == 1)
+        write = self._row_markup(2, self._active == 2)
         hint = "[dim]↑/↓ switch · ←/→ level · m mute · click to set · F4 close[/]"
-        return f"{voice}\n{sfx}\n{hint}"
+        return f"{voice}\n{sfx}\n{write}\n{hint}"
 
     def repaint(self) -> None:
         """Repaint both faders from the current voice/sfx globals."""
         self.update(Text.from_markup(self._bar_markup()))
 
     def _row_vol(self, row: int) -> float:
-        return _VOICE_VOL if row == 0 else _SFX_VOL
+        return _VOICE_VOL if row == 0 else (_SFX_VOL if row == 1 else _WRITE_VOL)
 
     def _set_row_vol(self, row: int, vol: float) -> None:
         if row == 0:
             set_voice_volume(vol); set_voice_mute(False)
-        else:
+        elif row == 1:
             set_sfx_volume(vol); set_sfx_mute(False)
+        else:
+            set_writing_volume(vol)
+            if _WRITE_MUTED:
+                toggle_writing_mute()
 
     def _toggle_row_mute(self, row: int) -> None:
         if row == 0:
             toggle_voice_mute()
-        else:
+        elif row == 1:
             toggle_sfx_mute()
+        else:
+            toggle_writing_mute()
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
         x, y = event.x, event.y
-        row = 0 if y == 0 else 1
+        row = 0 if y == 0 else (1 if y == 1 else 2)
         if self.ICON_X <= x <= self.ICON_X + 2:
             self._toggle_row_mute(row)
         elif self.METER_X <= x < self.METER_X + self.METER_W:
@@ -12416,9 +12565,9 @@ class VolumeBar(Static):
     def on_key(self, event: events.Key) -> None:
         k = event.key
         if k in ("up", "k"):
-            self._active = 0
+            self._active = (self._active - 1) % 3
         elif k in ("down", "j"):
-            self._active = 1
+            self._active = (self._active + 1) % 3
         elif k in ("left", "h"):
             self._set_row_vol(self._active, self._row_vol(self._active) - 0.05)
         elif k in ("right", "l"):
@@ -12664,6 +12813,7 @@ class TutorApp(App):
         self._warmup_idx = 0
         self.attempts: dict[int, int] = {}
         self.voice_on = True
+        self.writing_tts_on = False     # "WRITING TTS" — speaks each line as you type
         self.music_on = True          # "music" = the win/fail celebration mp3s (m toggles)
         self.hints_on = True          # F9 toggles: show/underline the mistake on a fail
         self._settings_guard = False  # suppresses checkbox echoes during programmatic sync
@@ -12896,6 +13046,7 @@ class TutorApp(App):
                 yield Static("", id="menu-name-hint")
                 yield Static("SETTINGS", id="menu-settings-title")
                 yield Checkbox("Voice  (reads aloud)", id="set-voice", value=True)
+                yield Checkbox("Writing TTS  (reads each line as you type)", id="set-write-tts", value=False)
                 yield Checkbox("Music  (win/fail sounds)", id="set-music", value=True)
                 yield Checkbox("Key sounds  (typing + blips)", id="set-keys", value=True)
                 yield Checkbox("Hints  (underline mistakes)", id="set-hints", value=True)
@@ -14003,6 +14154,7 @@ class TutorApp(App):
         self._settings_guard = True
         try:
             self.query_one("#set-voice", Checkbox).value = self.voice_on and bool(self._tts)
+            self.query_one("#set-write-tts", Checkbox).value = self.writing_tts_on
             self.query_one("#set-music", Checkbox).value = self.music_on
             self.query_one("#set-keys", Checkbox).value = key_sounds()
             self.query_one("#set-hints", Checkbox).value = self.hints_on
@@ -14015,6 +14167,8 @@ class TutorApp(App):
         cid = event.checkbox.id
         if cid == "set-voice":
             self.voice_on = event.value
+        elif cid == "set-write-tts":
+            self.writing_tts_on = event.value
         elif cid == "set-music":
             self.music_on = event.value
         elif cid == "set-keys":
@@ -14830,6 +14984,12 @@ class TutorApp(App):
 
     def _ghost_consume_newline(self):
         if self._ghost_at_newline():
+            if self.writing_tts_on:
+                # speak a quick cue for the line just completed, e.g. "a equals 4"
+                ls = self._ghost_target.rfind("\n", 0, self._ghost_pos) + 1
+                cue = _line_cue(self._ghost_target[ls:self._ghost_pos])
+                if cue:
+                    speak_write(cue)
             self._ghost_pos += 1
             play_key()
             self._ghost_render()
@@ -14968,6 +15128,11 @@ class TutorApp(App):
             if self._ghost_blind_from is not None:
                 self._ghost_blind_complete()
                 return
+            if self.writing_tts_on:
+                # cue the final line (no trailing newline) — e.g. "print hello"
+                cue = _line_cue(self._ghost_target.rsplit("\n", 1)[-1])
+                if cue:
+                    speak_write(cue)
             play_menu_blip(3)          # completion cue — you're at the end
             self._ghost_start_blink()
         self._ghost_render()
