@@ -12505,6 +12505,7 @@ class TutorApp(App):
     #ghost-code { height: 1fr; padding: 0 1; background: #1e1e2e; }
     #ghost-statusline { height: 1; background: #313244; padding: 0 1; }
     #ghost-why { width: 34%; border: tall #313244; padding: 1 1; background: #181825; }
+    #ghost-why.active { border: tall #89b4fa; }
     #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
     #ghost-foot { height: 1; padding: 0 1; }
     #vim { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
@@ -12701,6 +12702,10 @@ class TutorApp(App):
         self._ghost_last_tip = None
         self._ghost_mode = "write"          # ramp level: watch | finish | write
         self._ghost_title = "drill.py"      # filename shown in the vim chrome
+        self._ghost_pane = 0                # 0 = editor/A, 1 = hints/B (ctrl+h/l switches)
+        self._ghost_hints = False           # hints auto-collapse; F5 opens them
+        self._ghost_why_full = Text()       # full per-line explanation (F5)
+        self._ghost_why_brief = Text()      # collapsed task summary
         self._ghost_compare = None          # "A"/"B" when the step is a compare card
         self._ghost_card = None             # compare card id
         self._ghost_a_code = None           # side A code (stashed for the split view)
@@ -14717,7 +14722,15 @@ class TutorApp(App):
                        "\" \" text  ·  , separates items  ·  _ joins words  ·  "
                        "Tab = inside the block  ·  : opens the block",
                        style="bold #facc15")
-        self.query_one("#ghost-why", Static).update(why)
+        # store full + a collapsed "task" view — hints auto-hide, F5 opens them
+        self._ghost_why_full = why
+        brief = Text()
+        brief.append("TASK\n", style="bold yellow")
+        brief.append(self._ghost_title.replace(".py", "") + "\n", style="bold #f0f0f5")
+        brief.append(self._ghost_mode_label(), style="dim")
+        brief.append("\n\nF5 — open the hints", style="bold #7f849c")
+        self._ghost_why_brief = brief
+        self._ghost_render_hints()
         self._ghost_render()
 
     def _ghost_structural(self, i):
@@ -14769,6 +14782,19 @@ class TutorApp(App):
             return
         key = event.key
         ch = event.character
+        # ---- window nav (ctrl+h / ctrl+l) + hint toggle (F5) -------------
+        # these are the "Super/Caps + h/l" equivalent: a modifier so they never
+        # collide with the vim h/l keys you'll use in the real editor
+        if key in ("ctrl+h", "ctrl+l"):
+            event.stop(); event.prevent_default()
+            self._ghost_pane = 0 if key == "ctrl+h" else 1
+            self._ghost_render_hints()
+            return
+        if key == "f5":
+            event.stop(); event.prevent_default()
+            self._ghost_hints = not self._ghost_hints
+            self._ghost_render_hints()
+            return
         if self._ghost_phase == "compare":
             # the A-vs-B screen: Enter/Esc move on, typing keys do nothing
             if key in ("enter", "escape"):
@@ -15256,6 +15282,30 @@ class TutorApp(App):
         if self._ghost_phase == "type" and not self._ghost_done:
             return "INSERT", "#a6e3a1"
         return "NORMAL", "#89b4fa"
+
+    def _ghost_mode_label(self):
+        return {
+            "watch": "WATCH & RUN — it's written, press Enter to run",
+            "finish": "FINISH IT — I started, you finish the rest",
+            "write": "WRITE IT ALL — type it out",
+            "change": "CHANGE IT — see the output change",
+        }.get(self._ghost_mode, "GHOST WRITE")
+
+    def _ghost_render_hints(self):
+        """Show the task summary (hints auto-hidden) or the full per-line
+        explanation, and paint the active pane's border."""
+        if self._ghost_phase != "compare":
+            self.query_one("#ghost-why", Static).update(
+                self._ghost_why_full if self._ghost_hints else self._ghost_why_brief)
+        try:
+            ed = self.query_one("#ghost-editor-pane", Vertical)
+            wh = self.query_one("#ghost-why", Static)
+            if self._ghost_pane == 0:
+                ed.add_class("active"); wh.remove_class("active")
+            else:
+                ed.remove_class("active"); wh.add_class("active")
+        except Exception:
+            pass
 
     def _ghost_fill_editor(self, code, title=None):
         """Fill the winbar + code + statusline as REAL widgets (the pane
