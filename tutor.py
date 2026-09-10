@@ -12126,6 +12126,12 @@ class TutorApp(App):
         self._ghost_shake_timer = None
         self._ghost_last_tip = None
         self._ghost_mode = "write"          # ramp level: watch | finish | write
+        self._ghost_compare = None          # "A"/"B" when the step is a compare card
+        self._ghost_card = None             # compare card id
+        self._ghost_a_code = None           # side A code (stashed for the split view)
+        self._ghost_a_out = ""              # side A output (stashed likewise)
+        self._ghost_compare_flash = False   # split-screen bold flash on/off
+        self._ghost_compare_timer = None
         self._ghost_last_mode = None        # last announced mode (for the TTS cue)
         self._ghost_result_tip_text = ""   # spoken once the output reveal finishes
         self._ex_anim_timer = None    # worked-examples output spit-out animation
@@ -12503,7 +12509,106 @@ class TutorApp(App):
         t.append(f"   {done}/{total}  {pct}%", style="bold")
         self.query_one("#menu-progress", Static).update(t)
 
-    # ---- the two menu levels --------------------------------------------- #
+    # ---- A-vs-B comparison cards for the dual ghost-writing drills ------------ #
+    # Each card = two ways to write (near-)equivalent code.  The user ghost-types
+    # side A, sees its output, then side B, then the split screen bolds + flashes
+    # both and explains WHY a programmer picks one over the other.
+    COMPARE_CARDS = {
+        "loops": {
+            "topic": "loops",
+            "a": {"caption": "for — a KNOWN number of times",
+                  "code": "for i in range(3):\n    print(i)"},
+            "b": {"caption": "while — UNTIL a condition is false",
+                  "code": "n = 0\nwhile n < 3:\n    print(n)\n    n += 1"},
+            "why": "Both print 0, 1, 2. Programmers pick FOR when they know the count up front — it reads in one line. They pick WHILE when the stopping point depends on something that changes — like user input or a sensor. for is the default; while is for when you can't know how many times.",
+            "rules": "RULES: for always pairs with a loop variable (i) and range. while MUST change something inside (n += 1) or it never stops. The colon ends the line and TAB opens the block under it."},
+        "functions": {
+            "topic": "functions",
+            "a": {"caption": "def — a named, reusable recipe",
+                  "code": "def double(x):\n    return x * 2\n\nprint(double(5))"},
+            "b": {"caption": "lambda — a tiny one-line function",
+                  "code": "double = lambda x: x * 2\nprint(double(5))"},
+            "why": "Both print 10. def is the real way: it can hold many lines and has a name. lambda is a shortcut for one tiny expression — used where a function is needed for a second, like inside sorted(key=...). If it needs more than one line, lambda is illegal — def wins by default.",
+            "rules": "RULES: def needs a name, a colon, and a TAB-indented body. return hands a value back — print only shows things, return lets you USE them."},
+        "print_vs_return": {
+            "topic": "functions",
+            "a": {"caption": "print — shows a value to you",
+                  "code": "def add(a, b):\n    print(a + b)\n\nadd(2, 3)\nx = add(2, 3)\nprint(\"x is:\", x)"},
+            "b": {"caption": "return — hands the value BACK",
+                  "code": "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\nx = add(2, 3)\nprint(\"x is:\", x)"},
+            "why": "print just paints text on the screen and gives you nothing back — x ends up as None. return gives the value to whoever called the function, so x becomes 5. Real code is built from return; print is only for the human watching.",
+            "rules": "RULES: return stops the function and hands the value back. A function with no return hands back None. print(...) always shows — but never saves."},
+        "list_vs_tuple": {
+            "topic": "lists",
+            "a": {"caption": "list [ ] — can change",
+                  "code": "planets = [\"mars\", \"earth\"]\nplanets.append(\"venus\")\nprint(planets)"},
+            "b": {"caption": "tuple ( ) — locked forever",
+                  "code": "pair = (\"mars\", \"earth\")\nprint(pair)"},
+            "why": "Lists can grow and change — append works. Tuples are frozen after creation — you can't append. Programmers use tuples for fixed facts (coordinates, dates) because nothing can accidentally change them, and lists for collections that evolve. Square brackets = changeable, round brackets = fixed.",
+            "rules": "RULES: [ ] creates the list AND grabs items by position (planets[0]). ( ) groups things and creates a tuple when it holds values separated by commas."},
+        "quotes": {
+            "topic": "strings",
+            "a": {"caption": "f-string — build text with values inside",
+                  "code": "name = \"bean\"\nage = 27\nprint(f\"hi {name}, you are {age}\")"},
+            "b": {"caption": "+ joining — glue pieces together",
+                  "code": "name = \"bean\"\nage = 27\nprint(\"hi \" + name + \", you are \" + str(age))"},
+            "why": "Both print the same sentence. The f-string reads like the real sentence with holes filled in — that's why it's the modern favorite. The + way needs str() around numbers and gets messy fast. Quotes: single and double are identical, but f-strings need the f before the opening quote.",
+            "rules": "RULES: f\"...\" = format — {name} pulls the variable's value into the text. + glues strings only — numbers need str() first. \" and ' are the same thing; the f is what makes {} work."},
+        "equals": {
+            "topic": "variables",
+            "a": {"caption": "= assigns — put a value INTO a box",
+                  "code": "lives = 3\nlives = lives - 1\nprint(lives)"},
+            "b": {"caption": "== compares — are these equal?",
+                  "code": "lives = 3\nprint(lives == 3)\nprint(lives == 0)"},
+            "why": "One = is a command: put the right side into the left side (lives becomes 2). Two == is a question: is the left equal to the right? It answers True or False. Mixing them up is the most famous beginner bug in programming.",
+            "rules": "RULES: = has a variable name on the left, NEVER a comparison. == only appears inside if and while conditions. A variable name is a label: letters, digits, _ — no spaces, and _ joins words (high_score)."},
+        "init": {
+            "topic": "classes",
+            "a": {"caption": "class + __init__ — a template with a setup step",
+                  "code": "class Player:\n    def __init__(self, name):\n        self.name = name\n        self.hp = 100\n\np = Player(\"bean\")\nprint(p.name, p.hp)"},
+            "b": {"caption": "a plain dict — data without behavior",
+                  "code": "p = {\"name\": \"bean\", \"hp\": 100}\nprint(p[\"name\"], p[\"hp\"])"},
+            "why": "Both hold the same two facts. __init__ runs automatically when you build the object — it's the setup ritual, and self means THIS object, so every Player gets its own name and hp. Classes win when the data has behavior (methods like p.attack()); a dict is fine when it's pure data.",
+            "rules": "RULES: __init__ is always called __init__ (two _ on each side = special). self is the first parameter of every method and is the object itself. Class names start with a Capital; variables start lowercase."},
+        "dict_access": {
+            "topic": "dicts",
+            "a": {"caption": "[key] — direct, but crashes if missing",
+                  "code": "menu = {\"tea\": 2, \"cake\": 5}\nprint(menu[\"tea\"])"},
+            "b": {"caption": ".get() — safe, gives a fallback",
+                  "code": "menu = {\"tea\": 2, \"cake\": 5}\nprint(menu.get(\"tea\"))\nprint(menu.get(\"soup\", \"not on menu\"))"},
+            "why": "menu[\"tea\"] is short, but asking for a missing key crashes the program. menu.get(\"soup\", fallback) hands back the fallback instead of crashing. Programmers use [key] when the key must exist, and .get() when it might not — real APIs are full of might-nots, so .get() saves lives.",
+            "rules": "RULES: { } builds the dict — every entry is key: value with a comma between entries. [key] looks up by key. .get(key, fallback) = look up, or give me this instead of an error."},
+        "elifs": {
+            "topic": "conditionals",
+            "a": {"caption": "if / elif — ONE winner among choices",
+                  "code": "score = 7\nif score >= 9:\n    print(\"A\")\nelif score >= 6:\n    print(\"B\")\nelse:\n    print(\"C\")"},
+            "b": {"caption": "if / if — every check runs",
+                  "code": "score = 7\nif score >= 9:\n    print(\"A\")\nif score >= 6:\n    print(\"B\")\nif score < 6:\n    print(\"C\")"},
+            "why": "With elif, Python stops at the first true branch — exactly one grade prints. With separate ifs, every true branch fires — score 7 would print B only here, but a score of 10 would print A and B. elif = pick ONE; a chain of ifs = each question asked on its own.",
+            "rules": "RULES: if starts the chain, elif continues it, else catches the rest. The colon ends each condition, and the TAB-indented block under it is what runs. Only the first matching branch runs in an if/elif/else."},
+        "casting": {
+            "topic": "casting",
+            "a": {"caption": "int() — turn text into a number to do math",
+                  "code": "age = input(\"age? \")\nyears_left = 100 - int(age)\nprint(years_left)"},
+            "b": {"caption": "str() — turn a number into text to print it",
+                  "code": "wins = 3\nprint(\"you have \" + str(wins) + \" wins\")"},
+            "why": "input() always hands you TEXT, even if the user typed 27 — and you can't do 100 - \"27\". int() converts text to a number so math works. Going the other way, \"you have \" + 3 crashes too — str() converts a number to text so it can join a sentence. Convert when the two worlds meet.",
+            "rules": "RULES: int(\"27\") → the number 27. str(3) → the text \"3\". The quotes are the difference: \"27\" is text, 27 is a number. You can't mix them in math or in + joining."},
+    }
+
+    # which challenge topics get which comparison card (basic → intermediate)
+    COMPARE_TOPICS = {
+        "loops": "loops", "while": "loops", "range": "loops",
+        "functions": "functions", "lambda": "functions",
+        "print": "print_vs_return", "return": "print_vs_return",
+        "lists": "list_vs_tuple", "tuples": "list_vs_tuple",
+        "strings": "quotes", "f-strings": "quotes",
+        "variables": "equals",
+        "classes": "init", "objects": "init",
+        "dicts": "dict_access",
+        "conditionals": "elifs", "booleans": "elifs",
+        "casting": "casting", "input": "casting",
+    }
 
     def _vim_checkpoint_label(self):
         """A one-line description of the saved VIM checkpoint, or "" if none."""
@@ -13651,6 +13756,19 @@ class TutorApp(App):
                     seen.add(nc)
                     codes.append({"code": nc, "stdin": ex.get("stdin", ""),
                                   "prefix": ex.get("prefix", ""), "change": ch})
+        # the finale: an A-vs-B comparison when this topic has one — type
+        # side A, see its output, then side B, then the split-screen explains
+        # why a programmer picks one over the other
+        card_id = self.COMPARE_TOPICS.get(topic)
+        if card_id and card_id in self.COMPARE_CARDS:
+            card = self.COMPARE_CARDS[card_id]
+            for side in ("a", "b"):
+                sc = card[side]
+                if sc["code"] and sc["code"] not in seen:
+                    seen.add(sc["code"])
+                    codes.append({"code": sc["code"], "stdin": "",
+                                  "prefix": "", "compare_side": side.upper(),
+                                  "card": card_id})
         return codes
 
     def _start_ghost_required(self):
@@ -13771,6 +13889,7 @@ class TutorApp(App):
 
     def _ghost_begin_example(self, idx):
         self._ghost_stop_timers()
+        self._ghost_idx = idx
         ex = self._ghost_examples[idx]
         self._ghost_target = ex["code"]
         self._ghost_stdin = ex.get("stdin", "")
@@ -13781,6 +13900,8 @@ class TutorApp(App):
         self._ghost_out_i = 0
         self._ghost_spot_tokens = []   # result tokens to flash bold during "ran"
         self._ghost_change = ex.get("change")   # "change it" metadata, or None
+        self._ghost_compare = ex.get("compare_side")  # "A"/"B" in a compare card
+        self._ghost_card = ex.get("card")
         # ---- learning ramp: watch -> finish -> write -> change (see, do, change) ----
         self._ghost_pos, self._ghost_mode = self._ghost_start_pos(idx, len(self._ghost_examples))
         self._ghost_done = self._ghost_pos >= len(self._ghost_target)
@@ -13802,7 +13923,16 @@ class TutorApp(App):
             self._ghost_last_tip = tip
         self._ghost_start_blink()   # blink the ENTER/TAB prompt when one shows
         # the 'why' panel is static per example — set it once, not per keystroke
-        self.query_one("#ghost-why", Static).update(_ghost_why_text(self._ghost_target))
+        why = _ghost_why_text(self._ghost_target)
+        if self.group_idx == 0:
+            # basic drills repeat the punctuation rules every single time —
+            # [ ] ( ) " " , _ Tab and the colon become second nature
+            why.append("\n\n")
+            why.append("SYNTAX RULES:  [ ] grab by position  ·  ( ) call or group  ·  "
+                       "\" \" text  ·  , separates items  ·  _ joins words  ·  "
+                       "Tab = inside the block  ·  : opens the block",
+                       style="bold #facc15")
+        self.query_one("#ghost-why", Static).update(why)
         self._ghost_render()
 
     def _ghost_structural(self, i):
@@ -13854,6 +13984,14 @@ class TutorApp(App):
             return
         key = event.key
         ch = event.character
+        if self._ghost_phase == "compare":
+            # the A-vs-B screen: Enter/Esc move on, typing keys do nothing
+            if key in ("enter", "escape"):
+                event.stop(); event.prevent_default()
+                self._ghost_next()
+            else:
+                event.stop(); event.prevent_default()
+            return
         if key == "escape":
             event.stop(); event.prevent_default()
             if self._ghost_required:
@@ -14077,11 +14215,96 @@ class TutorApp(App):
             self._ghost_result_tip_text = ""
 
     def _ghost_next(self):
+        # stashing side A's code+output before leaving it, so the compare
+        # split screen can show both sides
+        if self._ghost_compare == "A":
+            self._ghost_a_code = self._ghost_target
+            self._ghost_a_out = self._ghost_out_text
+        if (self._ghost_phase == "ran" and self._ghost_compare == "B"
+                and self._ghost_card):
+            self._ghost_start_compare()
+            return
         self._ghost_idx += 1
         if self._ghost_idx >= len(self._ghost_examples):
             self._ghost_finish()
         else:
             self._ghost_begin_example(self._ghost_idx)
+
+    def _ghost_start_compare(self):
+        """The A-vs-B finale: both sides on screen, outputs bold + flashing,
+        then the detailed WHY a programmer picks one over the other."""
+        card = self.COMPARE_CARDS[self._ghost_card]
+        self._ghost_phase = "compare"
+        self._ghost_compare_flash = True
+        self._ghost_compare_ticks = 0
+        self._ghost_stop_blink()
+        self._ghost_render()
+        if self.voice_on:
+            speak(_pers(card["why"]))
+        t = getattr(self, "_ghost_compare_timer", None)
+        if t is not None:
+            t.stop()
+        self._ghost_compare_timer = self.set_interval(0.4, self._ghost_compare_tick)
+
+    def _ghost_compare_tick(self):
+        self._ghost_compare_flash = not self._ghost_compare_flash
+        self._ghost_compare_ticks += 1
+        self._ghost_render()
+        if self._ghost_compare_ticks >= 6:
+            t = getattr(self, "_ghost_compare_timer", None)
+            if t is not None:
+                t.stop()
+                self._ghost_compare_timer = None
+            self._ghost_compare_flash = False
+            self._ghost_render()
+
+    def _ghost_render_compare(self):
+        """Split screen: side A | side B, outputs bold-flashing, then the why.
+        Renders into the ghost overlay's region widgets directly."""
+        card = self.COMPARE_CARDS[self._ghost_card]
+        a, b = card["a"], card["b"]
+        a_code = self._ghost_a_code or a["code"]
+        b_code = self._ghost_target
+        a_out, b_out = self._ghost_a_out, self._ghost_out_text
+        half = max(22, (self.size.width - 16) // 2)
+        bold = self._ghost_compare_flash
+
+        def side(lines, style_a, style_b):
+            out = Text()
+            for i in range(max(len(lines[0]), len(lines[1]))):
+                l = lines[0][i] if i < len(lines[0]) else ""
+                r = lines[1][i] if i < len(lines[1]) else ""
+                pad = max(0, half - 2 - len(l))
+                out.append("  " + l, style=style_a)
+                out.append(" " * pad + "  │ ", style="dim")
+                out.append(r, style=style_b)
+                out.append("\n")
+            return out
+
+        head = Text(f"  A vs B  —  {card['topic'].upper()}",
+                    style="bold magenta")
+        code_t = Text()
+        code_t.append("  " + a["caption"] + "\n", style="bold #7dd3fc")
+        code_t.append_text(side((a_code.split("\n"), b_code.split("\n")),
+                                "#d5d5d5", "#d5d5d5"))
+        code_t.append("\n  " + b["caption"] + "\n", style="bold #f9a8d4")
+        out_t = Text()
+        out_t.append("  output A" + " " * (half - 6) + "│ output B\n",
+                     style="bold")
+        out_t.append_text(side(((a_out or "").split("\n")[:8],
+                                (b_out or "").split("\n")[:8]),
+                               "bold green" if bold else "green",
+                               "bold green" if bold else "green"))
+        why_t = Text()
+        why_t.append("WHY ONE VS THE OTHER\n", style="bold yellow")
+        why_t.append(card["why"], style="#f0f0f5")
+        why_t.append("\n\n" + card["rules"], style="bold #facc15")
+        self.query_one("#ghost-head", Static).update(head)
+        self.query_one("#ghost-code", Static).update(code_t)
+        self.query_one("#ghost-console", Static).update(out_t)
+        self.query_one("#ghost-why", Static).update(why_t)
+        self.query_one("#ghost-foot", Static).update(
+            Text("Enter — next drill", style="bold green"))
 
     def _ghost_dismiss(self):
         self._ghost_on = False
@@ -14093,7 +14316,7 @@ class TutorApp(App):
 
     def _ghost_stop_timers(self):
         for attr in ("_ghost_out_timer", "_ghost_blink_timer", "_ghost_nudge_timer",
-                     "_ghost_shake_timer"):
+                     "_ghost_shake_timer", "_ghost_compare_timer"):
             t = getattr(self, attr, None)
             if t is not None:
                 t.stop()
@@ -14107,6 +14330,9 @@ class TutorApp(App):
             pass
 
     def _ghost_render(self):
+        if self._ghost_phase == "compare":
+            self._ghost_render_compare()
+            return
         n = len(self._ghost_examples)
         mode_label = {
             "watch": "WATCH & RUN  —  it's written, press ⏎ to run",
