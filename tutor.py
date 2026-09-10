@@ -3114,8 +3114,11 @@ def _cue_tokens(expr: str) -> str:
     out = expr
     out = re.sub(r'\b(\d+)\b', lambda m: _num_words(int(m.group(1))), out)
     out = out.replace(">=", " is at least ").replace("<=", " is at most ")
-    out = out.replace("==", " equals ").replace(">", " is greater than ")
-    out = out.replace("<", " is less than ").replace("+", " plus ").replace("=", " equals ")
+    out = out.replace("==", " equals ")
+    out = out.replace("+=", " increases by ").replace("-=", " decreases by ")
+    out = out.replace("*=", " times ").replace("/=", " divided by ")
+    out = out.replace(">", " is greater than ").replace("<", " is less than ")
+    out = out.replace("+", " plus ").replace("=", " equals ")
     out = out.replace('"', "").replace("'", "")
     return re.sub(r"\s+", " ", out).strip()
 
@@ -3142,10 +3145,11 @@ def _line_cue(line: str) -> str:
         return "define function " + m.group(1)
     m = re.match(r'^return\s*(.*)$', line)
     if m:
-        return "return" + (" " + _cue_tokens(m.group(1)) if m.group(1) else "")
+        return "return" + (" " + _cue_tokens(m.group(1)) + " as the answer"
+                           if m.group(1) else "")
     m = re.match(r'^print\((.+)\)\s*$', line)
     if m:
-        return "print " + _cue_tokens(m.group(1))
+        return "print " + _cue_tokens(m.group(1)) + " to the screen"
     m = re.match(r'^([A-Za-z_]\w*)\s*=\s*(.+)$', line)
     if m and "==" not in line and "<=" not in line and ">=" not in line:
         return f"{m.group(1)} equals {_cue_tokens(m.group(2))}"
@@ -4082,8 +4086,7 @@ def _explain_code(code: str) -> list[tuple[str, str]]:
                 if isinstance(arg, ast.Constant):
                     if isinstance(arg.value, str):
                         out.append((val(arg),
-                                    f"{arg.value} is between quotes — the quotes make it a word — "
-                                    f"and it gets shown on the screen"))
+                                    f"{arg.value} gets printed to the screen"))
                     elif isinstance(arg.value, (int, float)) and not isinstance(arg.value, bool):
                         out.append((val(arg), "this number gets shown on the screen"))
                 elif (isinstance(arg, ast.Name) and arg.id not in writes
