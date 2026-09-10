@@ -14954,7 +14954,9 @@ class TutorApp(App):
         else:
             play_ghost_error()
             self._shell_attempts += 1
-            self._shell_msg = lesson["cmd_hint"]
+            # challenges have no ghost/cmd_hint — fall back to the goal line
+            # so a wrong attempt can never KeyError the whole app
+            self._shell_msg = lesson.get("cmd_hint", lesson.get("goal", ""))
             self._shell_msg_kind = "hint"
             if self.voice_on:
                 speak(_pers(self._shell_wrong_hint(lesson)), rate=1.2)
