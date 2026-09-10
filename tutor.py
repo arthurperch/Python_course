@@ -11980,11 +11980,11 @@ class TutorApp(App):
     #menu-preview-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
     #menu-preview-scroll { height: 1fr; }
     #menu-preview-inner { height: auto; padding: 1 2; }
-    #menu-keys { width: 34; padding: 1 2; border-left: solid $primary; background: $boost; }
+    #menu-keys { width: 38; padding: 1 2; border-left: solid $primary; background: $boost; }
     #menu-keys-inner { width: 1fr; height: auto; }
     #menu-name-title { height: 1; padding: 1 1 0 1; text-style: bold; color: $text; }
     #menu-name-row { height: 3; padding: 0 1; }
-    #menu-name-row Input { width: 1fr; }
+    #menu-name-row Input { width: 1fr; min-width: 14; }
     #menu-name-row Button { width: 10; }
     #menu-name-hint { height: 1; padding: 0 1; }
     #menu-settings-title { height: 1; padding: 1 1 0 1; text-style: bold; color: $text; }
@@ -12674,88 +12674,86 @@ class TutorApp(App):
         self._snap_menu_scroll(sel_line)
 
     def _render_series_list(self):
+        """One line per series — every course visible at once, the selected
+        row reverse-highlighted so the selection is impossible to miss. The
+        long descriptions live in the PREVIEW panel next door."""
         t = Text()
         t.append("CHOOSE A SERIES", style="bold magenta")
         t.append("\n\n")
-        # NETWORK+ — the noob → engineer networking path (series_sel == -4)
-        sel = self.series_sel == -4
-        t.append("▶ " if sel else "  ")
-        if self.p.get("net_course_done"):
-            t.append("✓ ", style="green")
-        t.append("NETWORK+", style="bold #ffa657" if sel else "#f0a05a")
-        t.append("   noob → network engineer", style="dim")
-        t.append("\n")
-        t.append("   ")
-        t.append("300+ foundations · 150+ intermediate · 100+ advanced questions",
-                 style="dim")
-        t.append("\n")
-        t.append("   ")
-        t.append("animated diagrams · quizzes with retraining · Linux config labs",
-                 style="dim")
-        label = net_checkpoint_label(self.p)
-        if label:
-            t.append("\n   ")
-            t.append(f"⏵ resume: {label}", style="bold yellow")
-        n_due = len(self._net_due_concepts())
-        if n_due:
-            t.append("\n   ")
-            t.append(f"⏰ {n_due} reviews due today", style="bold #ffa657")
-        t.append("\n\n")
-        # CLOUD & DEVOPS — the noob → engineer path (series_sel == -3)
-        sel = self.series_sel == -3
-        t.append("▶ " if sel else "  ")
-        if isinstance(self.p.get("dev_step"), int) and self.p["dev_step"] >= len(DEV_LESSONS):
-            t.append("✓ ", style="green")
-        t.append("CLOUD & DEVOPS", style="bold #7dd3fc" if sel else "#67e8f9")
-        t.append("   noob → engineer", style="dim")
-        t.append("\n")
-        t.append("   ")
-        t.append("git · docker · AWS · terraform · ansible · CI/CD", style="dim")
-        label = self._dev_checkpoint_label()
-        if label:
-            t.append("\n   ")
-            t.append(f"⏵ resume at {label}", style="bold yellow")
-        t.append("\n\n")
-        # BUILD STUFF first — the "from nothing" path (series_sel == -2)
-        sel = self.series_sel == -2
-        t.append("▶ " if sel else "  ")
-        if isinstance(self.p.get("build_step"), int) and self.p["build_step"] >= len(SHELL_LESSONS):
-            t.append("✓ ", style="green")
-        t.append("BUILD STUFF", style="bold #7ee787" if sel else "#56d364")
-        t.append("   bash → files → run your own program", style="dim")
-        t.append("\n")
-        t.append("   ")
-        t.append("make folders and files in a real terminal, then run them", style="dim")
-        label = self._shell_checkpoint_label()
-        if label:
-            t.append("\n   ")
-            t.append(f"⏵ resume at {label}", style="bold yellow")
-        t.append("\n\n")
-        # VIM/NEOVIM course (series_sel == -1)
-        sel = self.series_sel == -1
-        t.append("▶ " if sel else "  ")
-        t.append("VIM / NEOVIM COURSE", style="bold #d8b4fe" if sel else "#c9a7eb")
-        t.append("   keyboard dojo", style="dim")
-        t.append("\n")
-        t.append("   ")
-        t.append("learn h j k l, editing, then a live challenge", style="dim")
-        label = self._vim_checkpoint_label()
-        if label:
-            t.append("\n   ")
-            t.append(f"⏵ resume at {label}", style="bold yellow")
-        t.append("\n\n")
+        net_done = bool(self.p.get("net_course_done"))
+        dev_done = (isinstance(self.p.get("dev_step"), int)
+                    and self.p["dev_step"] >= len(DEV_LESSONS))
+        build_done = (isinstance(self.p.get("build_step"), int)
+                      and self.p["build_step"] >= len(SHELL_LESSONS))
+        rows = [
+            (-4, "NETWORK+", "#ffa657", "noob → network engineer",
+             "✓ done" if net_done else ""),
+            (-3, "CLOUD & DEVOPS", "#7dd3fc", "noob → engineer",
+             "✓ done" if dev_done else ""),
+            (-2, "BUILD STUFF", "#7ee787", "bash → your programs",
+             "✓ done" if build_done else ""),
+            (-1, "VIM / NEOVIM", "#d8b4fe", "keyboard dojo", ""),
+        ]
         for gi, g in enumerate(GROUPS):
             done, total = self._group_progress(gi)
-            sel = gi == self.series_sel
-            t.append("▶ " if sel else "  ")
-            t.append(g["name"], style="bold white" if sel else "#d5d5d5")
-            t.append(f"   {done}/{total}", style="dim")
+            rows.append((gi, g["name"], "#f9a8d4",
+                         f"python — {total} challenges", f"{done}/{total}"))
+        sel_line = 0
+        for i, (si, name, color, desc, status) in enumerate(rows):
+            sel = self.series_sel == si
+            if sel:
+                # the selected row is a SOLID bar in the series color —
+                # impossible to miss, even at a glance
+                line = Text()
+                line.append("▸ ", style=f"bold black on {color}")
+                line.append(name, style=f"bold black on {color}")
+                line.append("  ")
+                line.append(desc, style=f"black on {color}")
+                if status:
+                    line.append("  ")
+                    line.append(status, style=f"bold black on {color}")
+                sel_line = i
+            else:
+                line = Text()
+                line.append("  ")
+                line.append(name, style=f"bold {color}")
+                line.append("  ")
+                line.append(desc, style="dim")
+                if status:
+                    line.append("  ")
+                    line.append(status,
+                                style="bold #22c55e" if status.startswith("✓")
+                                else "dim")
+            t.append_text(line)
             t.append("\n")
-            t.append("   ")
-            t.append_text(self._bar_text(done, total))
-            t.append("\n\n")
-        t.append("Enter — open a series   ·   j/k — move   ·   q — quit", style="dim")
+        # one context line for the selected series: where you'd resume
+        t.append("\n")
+        note = ""
+        if self.series_sel == -4:
+            label = net_checkpoint_label(self.p)
+            note = f"resume: {label}" if label else "new path — start from the top"
+            n_due = len(self._net_due_concepts())
+            if n_due:
+                note += f" · ⏰ {n_due} reviews due today"
+        elif self.series_sel == -3:
+            label = self._dev_checkpoint_label()
+            note = f"resume: {label}" if label else "new path — start from the top"
+        elif self.series_sel == -2:
+            label = self._shell_checkpoint_label()
+            note = f"resume: {label}" if label else "new path — start from the top"
+        elif self.series_sel == -1:
+            label = self._vim_checkpoint_label()
+            note = f"resume: {label}" if label else "new path — start from the top"
+        else:
+            g = GROUPS[self.series_sel]
+            note = f"{g['name']} — Enter to browse its challenges"
+        if note:
+            t.append(note, style="bold yellow")
+            t.append("\n")
+        t.append("\nEnter — open a series   ·   j/k — move   ·   q — quit",
+                 style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
+        self._snap_menu_scroll(sel_line)
 
     def _render_challenge_list(self):
         g = GROUPS[self.series_sel]
