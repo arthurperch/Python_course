@@ -2213,7 +2213,7 @@ def example_why(example: str) -> str:
     return ""
 
 
-GHOST_TARGET = 8   # how many reps to drill (up to) before a challenge unlocks
+GHOST_TARGET = 3   # how many distinct styles to drill (value-swapped) before unlock
 _GHOST_WORDS = ["bean", "kiwi", "apple", "delta", "gamma", "thing", "value",
                 "city", "item", "name"]
 
@@ -15050,6 +15050,11 @@ class TutorApp(App):
         topic = c.get("topic", "custom")
         for ex in LESSONS.get(topic, LESSONS.get("custom")).get("examples", []):
             add(ex.get("code", ""), ex.get("stdin", ""))
+        # cap the write reps — never rewrite the same shape more than a few
+        # times; the value-swapping keeps each one a *different* value so the
+        # learner sees "same syntax, different words", not identical text
+        if len(codes) > GHOST_TARGET:
+            codes = codes[:GHOST_TARGET]
         # pad with value-swapped variants (same structure, different values)
         base = list(codes)
         while len(codes) < GHOST_TARGET and base:
@@ -15065,11 +15070,11 @@ class TutorApp(App):
                     added = True
             if not added:
                 break
-        # append 1-2 "change it" reps: the same code with ONE meaningful edit, so
-        # the user learns that editing THIS number changes THAT output. These go
-        # last — the most thought-provoking step of the ramp.
+        # ONE "change it" rep: the same code with ONE meaningful edit, so the
+        # user learns that editing THIS number changes THAT output. A single
+        # thought-provoking step, not more rewriting.
         for ex in codes[:3]:
-            if len(codes) >= GHOST_TARGET + 2:
+            if len(codes) >= GHOST_TARGET + 1:
                 break
             res = _change_variant(ex["code"], ex.get("stdin", ""), ex.get("prefix", ""))
             if res:
@@ -15099,14 +15104,13 @@ class TutorApp(App):
                         codes.append({"code": sc["code"], "stdin": "",
                                       "prefix": "", "compare_side": side.upper(),
                                       "card": card_id})
-        # the recall ramp: FADE steps on EVERY course — 5 purple-disappearing
-        # recalls that go gradually harder. Each one's hint starts deep purple
-        # and decays a bit faster than the last (strength 1.0 → 0.2).
+        # the recall step: ONE fade (purple-disappearing) recall, then (for
+        # intermediate+) ONE blind recall. Each rep is value-swapped, so you
+        # never rewrite the identical text — you see the syntax on a fresh value.
         main = example_code(self._current().get("example", ""))[1]
         if main:
-            for strength in (1.0, 0.8, 0.6, 0.4, 0.2):
-                codes.append({"code": main, "stdin": "", "prefix": "",
-                              "fade": True, "fade_strength": strength})
+            codes.append({"code": main, "stdin": "", "prefix": "",
+                          "fade": True, "fade_strength": 0.7})
             if getattr(self, "group_idx", 0) >= 2:
                 codes.append({"code": main, "stdin": "", "prefix": "",
                               "blind": True})
@@ -15550,9 +15554,9 @@ class TutorApp(App):
         self._ghost_render()
 
     def _ghost_blind_complete(self):
-        """A clean blind run. Two in a row = mastered → advance."""
+        """A clean blind run = mastered (single rep, not a loop)."""
         self._ghost_mastery_streak += 1
-        if self._ghost_mastery_streak >= 2:
+        if self._ghost_mastery_streak >= 1:
             play_menu_blip(4)
             self._ghost_next()
             return
