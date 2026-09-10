@@ -12186,6 +12186,9 @@ class TutorApp(App):
         self._ghost_a_out = ""              # side A output (stashed likewise)
         self._ghost_compare_flash = False   # split-screen bold flash on/off
         self._ghost_compare_timer = None
+        self._py_review_mode = False      # in a PYTHON REVIEW session
+        self._py_review_queue = []        # [(group_idx, ch_idx), ...] due today
+        self._py_review_i = 0
         self._ghost_last_mode = None        # last announced mode (for the TTS cue)
         self._ghost_result_tip_text = ""   # spoken once the output reveal finishes
         self._ex_anim_timer = None    # worked-examples output spit-out animation
@@ -12924,6 +12927,11 @@ class TutorApp(App):
             done, total = self._group_progress(gi)
             rows.append((gi, g["name"], "#f9a8d4",
                          f"python — {total} challenges", f"{done}/{total}"))
+        # the spaced-repetition review queue rides at the very bottom
+        n_due = len(self._py_due_topics())
+        rows.append((len(GROUPS), "PYTHON REVIEW", "#a5f3fc",
+                     "your due-today queue",
+                     f"⏰ {n_due} due" if n_due else "✓ all clear"))
         sel_line = 0
         for i, (si, name, color, desc, status) in enumerate(rows):
             sel = self.series_sel == si
@@ -12949,7 +12957,8 @@ class TutorApp(App):
                     line.append("  ")
                     line.append(status,
                                 style="bold #22c55e" if status.startswith("✓")
-                                else "dim")
+                                else ("bold #ffa657" if status.startswith("⏰")
+                                      else "dim"))
             t.append_text(line)
             t.append("\n")
         # one context line for the selected series: where you'd resume
@@ -12970,6 +12979,10 @@ class TutorApp(App):
         elif self.series_sel == -1:
             label = self._vim_checkpoint_label()
             note = f"resume: {label}" if label else "new path — start from the top"
+        elif self.series_sel == len(GROUPS):
+            n = len(self._py_due_topics())
+            note = (f"⏰ {n} topics due today — Enter to review them now"
+                    if n else "all caught up — nothing due today")
         else:
             g = GROUPS[self.series_sel]
             note = f"{g['name']} — Enter to browse its challenges"
@@ -13013,8 +13026,8 @@ class TutorApp(App):
         self._snap_menu_scroll(sel_line)
 
     def _preview_challenge(self):
-        if self.series_sel in (-1, -2, -3, -4):
-            return None   # VIM / BUILD / CLOUD / NETWORK+ courses — handled separately
+        if self.series_sel in (-1, -2, -3, -4) or self.series_sel == len(GROUPS):
+            return None   # courses / the review queue — handled separately
         if self.menu_level == "series":
             g = GROUPS[self.series_sel]
             return g["challenges"][0] if g["challenges"] else None
@@ -13022,6 +13035,28 @@ class TutorApp(App):
         return g["challenges"][self.menu_sel] if 0 <= self.menu_sel < len(g["challenges"]) else None
 
     def _render_menu_preview(self):
+        if self.series_sel == len(GROUPS):
+            self.query_one("#menu-preview-title", Static).update(
+                "PYTHON REVIEW — spaced repetition")
+            t = Text()
+            due = self._py_due_topics()
+            if due:
+                t.append("Concepts due for review today — weakest first.\n\n",
+                         style="#f0f0f5")
+                for topic in due[:10]:
+                    t.append("• ", style="dim")
+                    t.append(topic, style="bold #a5f3fc")
+                    t.append("\n")
+                t.append("\nEach one re-asks one challenge. Right answers get "
+                         "scheduled further into the future; anything you miss "
+                         "comes back tomorrow.", style="#d5d5d5")
+            else:
+                t.append("All caught up! Nothing is due today.\n\n", style="bold green")
+                t.append("Keep solving challenges — every answer feeds the "
+                         "schedule.", style="#d5d5d5")
+            t.append("\n\npress Enter to start the review", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
         if self.series_sel == -4:
             if self.menu_level == "net_modules":
                 self.query_one("#menu-preview-title", Static).update("MODULE")
@@ -13306,7 +13341,7 @@ class TutorApp(App):
             return
         if self.menu_level == "series":
             self.series_sel += 1
-            if self.series_sel >= len(GROUPS):
+            if self.series_sel >= len(GROUPS) + 1:
                 self.series_sel = -4
         elif self.menu_level == "dev_modules":
             n = len(self._dev_module_items())
@@ -13326,7 +13361,7 @@ class TutorApp(App):
         if self.menu_level == "series":
             self.series_sel -= 1
             if self.series_sel < -4:
-                self.series_sel = len(GROUPS) - 1
+                self.series_sel = len(GROUPS)
         elif self.menu_level == "dev_modules":
             n = len(self._dev_module_items())
             self.menu_sel = (self.menu_sel - 1) % n
@@ -13449,6 +13484,9 @@ class TutorApp(App):
                     return
                 if self.series_sel == -1:
                     self._vim_begin()
+                    return
+                if self.series_sel == len(GROUPS):
+                    self._start_py_review()
                     return
                 self.menu_level = "challenges"
                 g = GROUPS[self.series_sel]
@@ -18020,6 +18058,7 @@ class TutorApp(App):
             self._mark_fail_predict(actual, guess)
 
     def _mark_pass_predict(self, actual):
+        self._py_update_sched(self._current()["topic"], True)
         self.attempts[self._flat_index()] = 0
         challenge_stat(self.p, self._current()["title"])["right"] += 1
         self.p["done"] += 1
@@ -18055,6 +18094,7 @@ class TutorApp(App):
         self._celebrate_timer = self.set_timer(1.8, self._celebrate_pass)
 
     def _mark_fail_predict(self, actual, guess):
+        self._py_update_sched(self._current()["topic"], False)
         self.p["streak"] = 0
         key = self._flat_index()
         self.attempts[key] = self.attempts.get(key, 0) + 1
@@ -18169,7 +18209,89 @@ class TutorApp(App):
             self._out_reveal_timer = None
         self._out_reveal_final = None
 
+    # ---- Python spaced repetition ---------------------------------------- #
+    def _py_update_sched(self, topic: str, ok: bool):
+        """SM-2 style schedule, one card per TOPIC (mirrors the NETWORK+ track).
+        Right answer → interval grows; wrong → resets to 1 day."""
+        from datetime import date, timedelta
+        sched = self.p.setdefault("py_sched", {})
+        s = sched.setdefault(topic, {"rep": 0, "int": 1, "ease": 2.0,
+                                     "due": date.today().isoformat()})
+        if ok:
+            s["rep"] += 1
+            s["int"] = 1 if s["rep"] == 1 else min(180, max(1, round(s["int"] * s["ease"])))
+            s["ease"] = min(2.5, s["ease"] + 0.05)
+        else:
+            s["rep"] = 0
+            s["int"] = 1
+            s["ease"] = max(1.3, s["ease"] - 0.2)
+        s["due"] = (date.today() + timedelta(days=s["int"])).isoformat()
+
+    def _py_due_topics(self):
+        """Topics due today, weakest (lowest ease) first, then oldest due."""
+        from datetime import date
+        sched = self.p.get("py_sched", {})
+        today = date.today().isoformat()
+        due = [t for t, s in sched.items() if s.get("due", "") <= today]
+        due.sort(key=lambda t: (sched[t].get("ease", 2.0), sched[t].get("due", "")))
+        return due
+
+    def _py_review_build(self, cap=12):
+        """Map due topics to a challenge each (first one with that topic)."""
+        queue = []
+        seen = set()
+        for topic in self._py_due_topics():
+            if len(queue) >= cap:
+                break
+            for gi, g in enumerate(GROUPS):
+                for ci, c in enumerate(g["challenges"]):
+                    if c.get("topic") == topic and (gi, ci) not in seen:
+                        seen.add((gi, ci))
+                        queue.append((gi, ci))
+                        break
+                else:
+                    continue
+                break
+        return queue
+
+    def _start_py_review(self):
+        self._py_review_queue = self._py_review_build()
+        self._py_review_i = 0
+        if not self._py_review_queue:
+            self._py_review_mode = False
+            if self.voice_on:
+                speak("Nothing due today — you're all caught up.")
+            return
+        self._py_review_mode = True
+        gi, ci = self._py_review_queue[0]
+        self.group_idx = gi
+        self.ch_idx = ci
+        self.started = True
+        play_menu_blip(3)
+        self._show_challenge()
+        self._render_challenge()
+
+    def _py_review_next(self):
+        self._py_review_i += 1
+        if self._py_review_i >= len(self._py_review_queue):
+            self._py_review_finish()
+            return
+        gi, ci = self._py_review_queue[self._py_review_i]
+        self.group_idx = gi
+        self.ch_idx = ci
+        self.started = True
+        self._render_challenge()
+
+    def _py_review_finish(self):
+        self._py_review_mode = False
+        self._py_review_queue = []
+        if self.voice_on:
+            speak("Review complete. Right answers are scheduled further out; "
+                  "anything you missed comes back tomorrow.")
+        self._show_menu()
+
     def _mark_pass(self, out=""):
+        self._py_update_sched(self._current()["topic"], True)
         self.attempts[self._flat_index()] = 0
         challenge_stat(self.p, self._current()["title"])["right"] += 1
         self.p["done"] += 1
@@ -18234,6 +18356,9 @@ class TutorApp(App):
         if self.last != "pass":
             return
         self._close_visual()
+        if self._py_review_mode:
+            self._py_review_next()
+            return
         group = GROUPS[self.group_idx]
         streak = self.p["streak"]
         # finishing a whole tier is a BIG moment — cat-microwave loading screen
@@ -18266,6 +18391,7 @@ class TutorApp(App):
         self._render_challenge()
 
     def _mark_fail(self, topic, out, hint):
+        self._py_update_sched(self._current()["topic"], False)
         self.p["streak"] = 0
         key = self._flat_index()
         self.attempts[key] = self.attempts.get(key, 0) + 1
@@ -18717,7 +18843,11 @@ class TutorApp(App):
 
         t = Text()
         t.append("\n" * max(0, self.size.height // 6))
-        t.append(center("◤  NEW CHALLENGE  ◥", "bold magenta"))
+        if self._py_review_mode:
+            tag = f"◤  REVIEW {self._py_review_i + 1}/{len(self._py_review_queue)}  ◥"
+            t.append(center(tag, "bold #a5f3fc"))
+        else:
+            t.append(center("◤  NEW CHALLENGE  ◥", "bold magenta"))
         t.append("\n\n")
         t.append(center(c["title"], "bold yellow"))
         t.append("\n\n")
