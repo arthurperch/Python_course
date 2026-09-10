@@ -12748,6 +12748,8 @@ class TutorApp(App):
     #gate.visible { display: block; }
     #map { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #0a0a0a; display: none; overflow: auto; }
     #map.visible { display: block; }
+    #jump { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #0a0a0a; display: none; overflow: auto; }
+    #jump.visible { display: block; }
     #ghost { layer: overlay; width: 100%; height: 100%; padding: 1 1; background: #1e1e2e; display: none; }
     #ghost.visible { display: block; }
     #ghost-bufferline { height: 1; background: #181825; padding: 0 1; }
@@ -12878,6 +12880,7 @@ class TutorApp(App):
         Binding("f12", "quick_check", "Check", show=False),
         Binding("m", "toggle_music", "Music", show=False),
         Binding("g", "map", "Map", show=False),
+        Binding("ctrl+enter", "jump", "Jump", show=False),
         Binding("y", "quit_save", "SaveQuit", show=False),
         Binding("e", "lesson", "Lesson", show=False),
         Binding("w", "gate_watch", "Watch", show=False),
@@ -12986,6 +12989,10 @@ class TutorApp(App):
         self._py_review_queue = []        # [(group_idx, ch_idx), ...] due today
         self._py_review_i = 0
         self._map_visible = False         # the curriculum-map overlay is up
+        self._jump_visible = False        # the Ctrl+Enter jump overlay is up
+        self._jump_level = 0              # 0 = pick a course, 1 = pick a challenge
+        self._jump_sel = 0                # cursor in the jump overlay
+        self._jump_course = 0             # course chosen in level 1
         self._ghost_last_mode = None        # last announced mode (for the TTS cue)
         self._ghost_result_tip_text = ""   # spoken once the output reveal finishes
         self._ex_anim_timer = None    # worked-examples output spit-out animation
@@ -13192,6 +13199,7 @@ class TutorApp(App):
         yield Static("", id="lesson")
         yield Static("", id="gate")
         yield Static("", id="map")
+        yield Static("", id="jump")
         with GhostWriter(id="ghost"):
             yield Static("", id="ghost-bufferline")
             with Horizontal(id="ghost-main"):
@@ -13379,6 +13387,96 @@ class TutorApp(App):
         self._map_visible = False
         self.query_one("#map", Static).remove_class("visible")
         self._render_menu()
+
+    # ---- Ctrl+Enter JUMP navigator ------------------------------------- #
+    # A hidden dev/testing screen: hop straight into any course or any
+    # challenge (1-15) without walking the normal flow.
+
+    def action_jump(self):
+        if self._jump_visible:
+            self._hide_jump()
+        else:
+            self._show_jump()
+
+    def _show_jump(self):
+        self._jump_visible = True
+        self._jump_level = 0
+        self._jump_sel = max(0, self.series_sel if self.series_sel >= 0 else 0)
+        self.query_one("#jump", Static).update(self._render_jump())
+        self.query_one("#jump", Static).add_class("visible")
+
+    def _hide_jump(self):
+        self._jump_visible = False
+        self.query_one("#jump", Static).remove_class("visible")
+        if self.mode == "menu":
+            self._render_menu()
+
+    def _render_jump(self):
+        t = Text()
+        w = max(60, self.size.width - 8)
+        title = "◤  JUMP  ◥"
+        t.append(" " * max(0, (w - len(title)) // 2))
+        t.append(title, style="bold magenta")
+        t.append("\n\n")
+        if self._jump_level == 0:
+            t.append("pick a course:\n\n", style="dim")
+            for gi, g in enumerate(GROUPS):
+                mark = "▶" if gi == self._jump_sel else " "
+                style = "bold #f0f0f5" if gi == self._jump_sel else "#c8c8d0"
+                t.append(f" {mark} {g['name'].upper()}  ({len(g['challenges'])} challenges)",
+                         style=style)
+                t.append("\n")
+            t.append("\nj/k move   Enter pick   Esc close   Ctrl+Enter close",
+                     style="dim")
+        else:
+            g = GROUPS[self._jump_course]
+            t.append(g["name"].upper() + "\n\n", style="bold #7dd3fc")
+            for ci, ch in enumerate(g["challenges"]):
+                mark = "▶" if ci == self._jump_sel else " "
+                style = "bold #f0f0f5" if ci == self._jump_sel else "#c8c8d0"
+                t.append(f" {mark} {ci + 1:>2}. {ch['title']}", style=style)
+                t.append("\n")
+            t.append("\nj/k move   Enter jump   Esc back", style="dim")
+        return t
+
+    def _jump_move(self, delta):
+        if self._jump_level == 0:
+            self._jump_sel = (self._jump_sel + delta) % len(GROUPS)
+        else:
+            n = len(GROUPS[self._jump_course]["challenges"])
+            self._jump_sel = (self._jump_sel + delta) % n
+        play_menu_blip(0)
+        self.query_one("#jump", Static).update(self._render_jump())
+
+    def _jump_enter(self):
+        if self._jump_level == 0:
+            self._jump_course = self._jump_sel
+            self._jump_level = 1
+            self._jump_sel = 0
+            play_menu_blip(2)
+            self.query_one("#jump", Static).update(self._render_jump())
+        else:
+            self._jump_to(self._jump_course, self._jump_sel)
+
+    def _jump_back(self):
+        if self._jump_level == 1:
+            self._jump_level = 0
+            self.query_one("#jump", Static).update(self._render_jump())
+        else:
+            self._hide_jump()
+
+    def _jump_to(self, gi, ci):
+        """Hop straight into challenge ci of course gi (for testing)."""
+        self._hide_jump()
+        self.series_sel = gi
+        self.group_idx = gi
+        self.ch_idx = ci
+        self.menu_sel = ci
+        self.p["last"] = self._current()["title"]
+        save_progress(self.p)
+        self.started = True
+        self._show_challenge()
+        self._render_challenge()
 
     def _render_map(self):
         w = max(64, self.size.width - 8)
@@ -14289,6 +14387,9 @@ class TutorApp(App):
             self._update_status()
 
     def action_menu_down(self):
+        if self._jump_visible:
+            self._jump_move(1)
+            return
         if self.mode != "menu":
             return
         if self.menu_level == "series":
@@ -14308,6 +14409,9 @@ class TutorApp(App):
         self._render_menu()
 
     def action_menu_up(self):
+        if self._jump_visible:
+            self._jump_move(-1)
+            return
         if self.mode != "menu":
             return
         if self.menu_level == "series":
@@ -14364,6 +14468,9 @@ class TutorApp(App):
         if self._map_visible:
             self._hide_map()
             return
+        if self._jump_visible:
+            self._jump_back()
+            return
         if self._lesson_on:
             self._finish_lesson()
             return
@@ -14407,6 +14514,9 @@ class TutorApp(App):
         return n + self.ch_idx
 
     def action_start(self):
+        if self._jump_visible:
+            self._jump_enter()
+            return
         if self._map_visible:
             self._hide_map()
             return
