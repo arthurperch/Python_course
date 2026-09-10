@@ -3505,6 +3505,16 @@ def play_console_result(good: bool) -> None:
         pass
 
 
+def play_hint() -> None:
+    """A bright two-note 'ding' for pressing the show-code hint button."""
+    try:
+        path = _sweep((523.25, 783.99), "tutor_hint.wav", dur=0.18, vol=28000)
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(49152)}", str(path)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def play_ghost_error() -> None:
     """A comedic 'womp' for a mistyped ghost letter — three quick descending blips."""
     try:
@@ -15376,10 +15386,11 @@ class TutorApp(App):
             self._ghost_render_hints()
             return
         if key == "h" and self._ghost_fade:
-            # "show code for 5s" peek — reveal the answer in purple for 5 seconds,
-            # with a countdown, then hide it again (and mark the hint as used)
+            # "show code" hint — one per hidden action. If the hint is already
+            # spent (or the reveal is showing), the button does nothing.
             event.stop(); event.prevent_default()
-            self._ghost_start_reveal()
+            if not self._ghost_used_hint and self._ghost_reveal <= 0:
+                self._ghost_start_reveal()
             return
         if self._ghost_phase == "lab":
             # watch lab: Enter reveals the next variant's output; when all are
@@ -15934,25 +15945,29 @@ class TutorApp(App):
             "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
             "change": "type the changed code · Enter = new line · Tab = indent · Enter at the end = run",
-            "fade": "recall each char · spaces stay · Enter = new line · Tab = indent · silent on miss · h = show code 5s",
+            "fade": "recall each char · spaces stay · Enter = new line · Tab = indent · silent on miss",
             "blind": "write from memory · two clean runs in a row = mastered",
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
-        # the "show code for 5s" hint: a flickering circular button + countdown,
-        # shown in the footer while a fade recall is in progress
+        # the "show code" hint button: a flickering circle + a countdown ABOVE
+        # it while the purple reveal is showing, and a spent state afterwards
         if self._ghost_fade:
             flick = self._ghost_blink_on
             if self._ghost_reveal > 0:
-                btn = Text("●", style="bold #cba6f7" if flick else "bold #6d5c9e")
-                btn.append(f"  {self._ghost_reveal}  ", style="bold #1e1e2e on #cba6f7")
-                btn.append("   hiding…", style="bold #cba6f7")
-                foot = btn
+                f = Text()
+                f.append(f"   {self._ghost_reveal}   ", style="bold #1e1e2e on #cba6f7")
+                f.append("\n")
+                f.append("●", style="bold #cba6f7" if flick else "bold #6d5c9e")
+                f.append("  code shown — remember it", style="bold #cba6f7" if flick else "#6d5c9e")
+                foot = f
+            elif self._ghost_used_hint:
+                foot = Text("○  hint used", style="dim")
             else:
-                btn = Text("◯", style="bold #cba6f7" if flick else "bold #6d5c9e")
-                btn.append("  show code for 5s", style="bold #cba6f7" if flick else "#6d5c9e")
-                btn.append("   [h]", style="bold #7f849c")
-                foot = btn
+                b = Text("●", style="bold #cba6f7" if flick else "bold #6d5c9e")
+                b.append("  show code for 3s", style="bold #cba6f7" if flick else "#6d5c9e")
+                b.append("   [h]", style="bold #7f849c")
+                foot = b
         # render each region into its OWN widget, so the code box can shake on
         # its own without moving the header, console, or footer.
         self.query_one("#ghost-bufferline", Static).update(head)
@@ -16090,10 +16105,12 @@ class TutorApp(App):
         return f"#{r:02x}{g:02x}{b:02x}"
 
     def _ghost_start_reveal(self):
-        """'show code for 5s' — reveal the answer in purple for 5 seconds with a
-        countdown, then hide it again. Marks the hint as used (5 extra reps)."""
+        """'show code' hint — reveal the answer in purple for 3 seconds with a
+        countdown and a sound, then hide it. ONE hint per hidden action; after
+        that the button is spent (and it triggers the extra retrain reps)."""
         self._ghost_used_hint = True
-        self._ghost_reveal = 5
+        self._ghost_reveal = 3
+        play_hint()   # a distinct sound when the hint button is hit
         if self._ghost_reveal_timer:
             self._ghost_reveal_timer.stop()
         self._ghost_reveal_timer = self.set_interval(1.0, self._ghost_reveal_tick)
