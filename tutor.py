@@ -12504,6 +12504,11 @@ class TutorApp(App):
     #ghost-winbar { height: 1; background: #181825; padding: 0 1; }
     #ghost-code { height: 1fr; padding: 0 1; background: #1e1e2e; }
     #ghost-statusline { height: 1; background: #313244; padding: 0 1; }
+    #ghost-editor-pane-b { width: 1fr; border: tall #313244; display: none; }
+    #ghost-editor-pane-b.visible { display: block; }
+    #ghost-winbar-b { height: 1; background: #181825; padding: 0 1; }
+    #ghost-code-b { height: 1fr; padding: 0 1; background: #1e1e2e; }
+    #ghost-statusline-b { height: 1; background: #313244; padding: 0 1; }
     #ghost-why { width: 34%; border: tall #313244; padding: 1 1; background: #181825; }
     #ghost-why.active { border: tall #89b4fa; }
     #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
@@ -12928,6 +12933,10 @@ class TutorApp(App):
                     yield Static("", id="ghost-winbar")
                     yield Static("", id="ghost-code")
                     yield Static("", id="ghost-statusline")
+                with Vertical(id="ghost-editor-pane-b"):
+                    yield Static("", id="ghost-winbar-b")
+                    yield Static("", id="ghost-code-b")
+                    yield Static("", id="ghost-statusline-b")
                 yield Static("", id="ghost-why")
             yield Static("", id="ghost-console")
             yield Static("", id="ghost-foot")
@@ -15166,12 +15175,7 @@ class TutorApp(App):
             left_o = Text(a_out or "", style=lstyle)
             right_o = Text(self._ghost_out_text or "", style=lstyle)
 
-        # ---- captions sit ABOVE their column, inside the same box ----------
-        lc = Text(a["caption"] + "\n", style="bold #7dd3fc")
-        lc.append_text(left_c)
-        rc = Text(b["caption"] + "\n", style="bold #f9a8d4")
-        rc.append_text(right_c)
-
+        # ---- captions live in each pane's WINBAR (two separate windows) ----
         # ---- head ----------------------------------------------------------
         head = Text()
         head.append(f"  A vs B  —  {card['topic'].upper()}",
@@ -15204,15 +15208,11 @@ class TutorApp(App):
                      style="dim"))
 
         self.query_one("#ghost-bufferline", Static).update(head)
-        mode, mcolor = self._ghost_mode_status()
-        wb = Text("  A vs B — " + card["topic"].upper() + "  ", style="#7f849c")
-        wb.append(mode, style=f"bold {mcolor}")
-        self.query_one("#ghost-winbar", Static).update(wb)
-        self.query_one("#ghost-code", Static).update(
-            self._ghost_side_by_side(lc, rc, box=False))
-        sl = Text(" " + mode + " ", style=f"bold #1e1e2e on {mcolor}")
-        sl.append("  A vs B  ", style="#cdd6f4 on #313244")
-        self.query_one("#ghost-statusline", Static).update(sl)
+        # two SEPARATE vim windows side by side — each its own winbar/gutter/
+        # code/statusline, captioned in the winbar, framed by native borders
+        self.query_one("#ghost-editor-pane-b", Vertical).add_class("visible")
+        self._ghost_fill_pane("", "A · " + a["caption"], left_c, "A")
+        self._ghost_fill_pane("-b", "B · " + b["caption"], right_c, "B")
         self.query_one("#ghost-console", Static).update(
             self._ghost_side_by_side(left_o, right_o, box=False))
         self.query_one("#ghost-why", Static).update(why_t)
@@ -15271,6 +15271,7 @@ class TutorApp(App):
         # render each region into its OWN widget, so the code box can shake on
         # its own without moving the header, console, or footer.
         self.query_one("#ghost-bufferline", Static).update(head)
+        self.query_one("#ghost-editor-pane-b", Vertical).remove_class("visible")
         self._ghost_fill_editor(code)
         self.query_one("#ghost-console", Static).update(
             console if console.cell_len else Text(""))
@@ -15307,29 +15308,23 @@ class TutorApp(App):
         except Exception:
             pass
 
-    def _ghost_fill_editor(self, code, title=None):
-        """Fill the winbar + code + statusline as REAL widgets (the pane
-        border is native CSS — no ASCII box). Mirrors Neovim's chrome."""
-        title = title or getattr(self, "_ghost_title", "drill.py")
+    def _ghost_fill_pane(self, suffix, title, code, side_label):
+        """Fill ONE editor pane (winbar + code + statusline). suffix "" = the
+        left pane, "-b" = the right (A-vs-B) pane. Real widgets, native borders
+        — two SEPARATE vim windows during a compare."""
         mode, mcolor = self._ghost_mode_status()
-        w = max(40, getattr(self.size, "width", 80) - 6)
-        # winbar
         wb = Text(" " + title + "  ", style="#7f849c")
         wb.append(mode, style=f"bold {mcolor}")
-        self.query_one("#ghost-winbar", Static).update(wb)
-        # code body (the gutter is baked in by _ghost_render_code)
-        self.query_one("#ghost-code", Static).update(code)
-        # statusline
-        line_i = min(len(self._ghost_target.split("\n")),
-                     self._ghost_target[:self._ghost_pos].count("\n") + 1)
+        self.query_one(f"#ghost-winbar{suffix}", Static).update(wb)
+        self.query_one(f"#ghost-code{suffix}", Static).update(code)
         sl = Text(" " + mode + " ", style=f"bold #1e1e2e on {mcolor}")
-        sl.append(" " + title + " ", style="#cdd6f4 on #313244")
-        right = f" {self._ghost_idx + 1}/{len(self._ghost_examples)}  {line_i} "
-        pad = w - 4 - len(mode) - len(title) - len(right)
-        if pad > 0:
-            sl.append(" " * pad, style="on #313244")
-        sl.append(right, style="#cdd6f4 on #313244")
-        self.query_one("#ghost-statusline", Static).update(sl)
+        sl.append(f" {side_label} ", style="#cdd6f4 on #313244")
+        self.query_one(f"#ghost-statusline{suffix}", Static).update(sl)
+
+    def _ghost_fill_editor(self, code, title=None):
+        """Single-pane fill for a normal drill (the B pane is hidden)."""
+        title = title or getattr(self, "_ghost_title", "drill.py")
+        self._ghost_fill_pane("", title, code, title)
 
     def _ghost_render_code(self):
         t = Text()
