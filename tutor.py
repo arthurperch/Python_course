@@ -12715,6 +12715,9 @@ class TutorApp(App):
         self._ghost_card = None             # compare card id
         self._ghost_lab = None              # card id when this step is a WATCH lab
         self._ghost_lab_revealed = 0        # how many lab variants have been revealed
+        self._ghost_blind_from = None       # pos to write blind from (None = normal)
+        self._ghost_blind_reveal = 0        # how much of the blind section is shown
+        self._ghost_mastery_streak = 0      # clean blind completions in a row
         self._ghost_a_code = None           # side A code (stashed for the split view)
         self._ghost_a_out = ""              # side A output (stashed likewise)
         self._ghost_compare_flash = False   # split-screen bold flash on/off
@@ -14596,6 +14599,13 @@ class TutorApp(App):
                         codes.append({"code": sc["code"], "stdin": "",
                                       "prefix": "", "compare_side": side.upper(),
                                       "card": card_id})
+        # the mastery finale: write the WHOLE thing blind (no ghost) — a mistake
+        # reveals the first part and restarts; two clean runs in a row = mastered
+        if getattr(self, "group_idx", 0) >= 2:
+            main = example_code(self._current().get("example", ""))[1]
+            if main:
+                codes.append({"code": main, "stdin": "", "prefix": "",
+                              "blind": True})
         return codes
 
     def _start_ghost_required(self):
@@ -14693,6 +14703,8 @@ class TutorApp(App):
         # instruction + before/after output, not the typing difficulty
         if self._ghost_examples[idx].get("change"):
             return 0, "change"
+        if self._ghost_examples[idx].get("blind"):
+            return 0, "blind"
         if n <= 1:
             return 0, "write"
         watch = max(1, n // 3)            # first third: watch & run
@@ -14730,6 +14742,9 @@ class TutorApp(App):
         self._ghost_compare = ex.get("compare_side")  # "A"/"B" in a compare card
         self._ghost_card = ex.get("card")
         self._ghost_lab = ex.get("lab")               # card id for a WATCH lab
+        self._ghost_blind_from = None                 # reset unless this step is blind
+        self._ghost_blind_reveal = 0
+        self._ghost_mastery_streak = 0
         if self._ghost_lab:
             # multi-variant watch lab: nothing to type — press Enter to reveal
             # each variant's output (with letter highlighting), then compare all
@@ -14739,6 +14754,11 @@ class TutorApp(App):
             self._ghost_done = True
             self._ghost_render()
             return
+        if ex.get("blind"):
+            # mastery finale: write from memory, no ghost. A mistake reveals the
+            # first part and restarts; two clean runs in a row advances.
+            self._ghost_blind_from = 0
+            self._ghost_mode = "blind"
         try:
             self._ghost_title = self._current().get("title", "drill") + ".py"
         except Exception:
@@ -14920,16 +14940,46 @@ class TutorApp(App):
             self._ghost_pos += 1
             play_key()
         else:
-            # wrong char is COMMITTED (keep typing), flagged red to fix later
-            self._ghost_errors[p] = ch
-            self._ghost_pos += 1
-            play_ghost_error()   # comedic 'womp' so the miss is HEARD
-            self._ghost_shake()   # and FELT — the text jolts once
+            if self._ghost_blind_from is not None:
+                # BLIND drill: a mistake reveals the first part of the answer
+                # and restarts the whole blind section — no partial credit
+                self._ghost_blind_reveal = min(
+                    len(self._ghost_target) - self._ghost_blind_from,
+                    self._ghost_blind_reveal + 8)
+                self._ghost_pos = self._ghost_blind_from
+                self._ghost_errors = {}
+                play_ghost_error()
+                self._ghost_shake()
+            else:
+                # wrong char is COMMITTED (keep typing), flagged red to fix later
+                self._ghost_errors[p] = ch
+                self._ghost_pos += 1
+                play_ghost_error()   # comedic 'womp' so the miss is HEARD
+                self._ghost_shake()   # and FELT — the text jolts once
         self._ghost_done = (self._ghost_pos >= len(self._ghost_target)
                             and not self._ghost_errors)
         if self._ghost_done:
+            if self._ghost_blind_from is not None:
+                self._ghost_blind_complete()
+                return
             play_menu_blip(3)          # completion cue — you're at the end
             self._ghost_start_blink()
+        self._ghost_render()
+
+    def _ghost_blind_complete(self):
+        """A clean blind run. Two in a row = mastered → advance."""
+        self._ghost_mastery_streak += 1
+        if self._ghost_mastery_streak >= 2:
+            play_menu_blip(4)
+            self._ghost_next()
+            return
+        # one clean run down — hide it again and do it once more, no help
+        self._ghost_pos = self._ghost_blind_from
+        self._ghost_errors = {}
+        self._ghost_blind_reveal = 0
+        self._ghost_done = False
+        if self.voice_on:
+            speak("Good — now do it again, no help.")
         self._ghost_render()
 
     def _ghost_backspace(self):
@@ -15500,6 +15550,7 @@ class TutorApp(App):
                     ct.stylize("bold")
                     t.append_text(ct)
             # structural prompts: an explicit Enter/Tab the user performs next
+            blind = self._ghost_blind_from is not None
             need_enter = (pos == end and end < len(self._ghost_target)
                           and self._ghost_target[end] == "\n")
             need_tab = (start <= pos < end and self._ghost_target[pos] == " "
@@ -15512,16 +15563,33 @@ class TutorApp(App):
                     k += 1
                 t.append(" ", style="reverse bold")
                 if k < len(line):
-                    t.append(line[k:], style="#5a5a5a")
+                    if blind:
+                        t.append("·" * (len(line) - k), style="#3a3a44")
+                    else:
+                        t.append(line[k:], style="#5a5a5a")
             elif need_enter:
                 # whole line typed — a block cursor at the end of the line
                 # (Enter is the next key)
                 t.append(" ", style="reverse bold")
-            elif typed_n < len(line) and start <= pos < end:
-                t.append(line[typed_n], style="reverse bold")   # next char to type
-                t.append(line[typed_n + 1:], style="#5a5a5a")   # ghost (dim)
             elif typed_n < len(line):
-                t.append(line[typed_n:], style="#5a5a5a")
+                # the rest of the line: dim ghost normally; in a BLIND drill the
+                # content is hidden (·) except the revealed first part
+                rest = line[typed_n:]
+                if blind:
+                    for k, ch in enumerate(rest):
+                        a = start + typed_n + k
+                        cur = (a == pos and a < end)
+                        if a < self._ghost_blind_from + self._ghost_blind_reveal:
+                            t.append(self._ghost_visible(ch),
+                                     style="reverse bold" if cur else "#5a5a5a")
+                        else:
+                            t.append("·", style="reverse bold" if cur else "#3a3a44")
+                else:
+                    if start <= pos < end:
+                        t.append(line[typed_n], style="reverse bold")
+                        t.append(line[typed_n + 1:], style="#5a5a5a")
+                    else:
+                        t.append(line[typed_n:], style="#5a5a5a")
             idx = end + 1
         return t
 
