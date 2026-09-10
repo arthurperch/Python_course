@@ -12992,6 +12992,7 @@ class TutorApp(App):
         self._ghost_fill_input = ""          # what the user typed into the blank
         self._ghost_fill_s = 0               # blank span start in the code
         self._ghost_fill_e = 0               # blank span end in the code
+        self._ghost_goal_out = ""            # expected output, shown during fade/blind
         self._ghost_used_hint = False       # true once the user peeked at the answer
         self._ghost_mastery_streak = 0      # clean blind completions in a row
         self._ghost_shake_cool = False      # cooldown gate on the error shake
@@ -15289,6 +15290,12 @@ class TutorApp(App):
             self._ghost_fill_s, self._ghost_fill_e = self._ghost_fill_blank(self._ghost_target)
         else:
             self._ghost_fill = False
+        # recall modes (fade/blind): show the EXPECTED output as the goal, so the
+        # user knows what their code should print while they recall it
+        if self._ghost_mode in ("fade", "blind"):
+            self._ghost_goal_out = self._ghost_goal_output()
+        else:
+            self._ghost_goal_out = ""
         # say one short useful thing about THIS example; announce the ramp level
         # the first time it changes, so the progression is explained as you go
         if self.voice_on:
@@ -16167,6 +16174,25 @@ class TutorApp(App):
         self._ghost_phase = "type"
         self._ghost_run()
 
+    def _ghost_goal_output(self):
+        """The expected output of the target code — the 'goal' the user is
+        aiming at during fade/blind recall, so they know what to plan for."""
+        try:
+            full = _with_prefix(self._ghost_prefix, self._ghost_target)
+            if self._ghost_stdin:
+                return run_demo_session(full, self._ghost_stdin).strip()
+            out, err = run_lesson_code(full, self._ghost_stdin)
+            if out.strip():
+                return out.strip()
+            if err.strip():
+                return ""   # the target is expected to print; if it errors, no goal
+            final = final_vars_of(full, self._ghost_stdin)
+            if final:
+                return "\n".join(f"{k} = {v}" for k, v in final.items())
+            return ""
+        except Exception:
+            return ""
+
     def _ghost_visible(self, ch):
         """Render a character visibly even when it's a space or newline, so a
         missed/wrong space isn't an invisible blank."""
@@ -16334,6 +16360,14 @@ class TutorApp(App):
 
     def _ghost_render_console(self):
         if self._ghost_phase == "type":
+            # recall modes show the EXPECTED output as the goal to plan against
+            if self._ghost_goal_out and self._ghost_mode in ("fade", "blind"):
+                g = Text("GOAL OUTPUT:  ", style="bold #7dd3fc")
+                g.append(self._ghost_goal_out, style="bold #facc15")
+                if self._ghost_done:
+                    g.append("\n")
+                    g.append_text(self._ghost_enter_button())
+                return g
             if self._ghost_done:
                 return self._ghost_enter_button()
             if self._ghost_errors:
