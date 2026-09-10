@@ -15346,28 +15346,19 @@ class TutorApp(App):
             play_key()
         else:
             if self._ghost_fade:
-                # FADE recall mode is silent: a miss doesn't advance and there's
-                # no red, no sound, no shake — just a harder recall. Two misses
-                # in a row reset the current line once (a forgiveness).
+                # no reset — a miss is committed in red and you keep typing, then
+                # backspace and fix it in place. Silent (no womp, no shake).
+                self._ghost_errors[p] = ch
+                self._ghost_pos += 1
                 self._ghost_fade_wrong += 1
-                if self._ghost_fade_wrong >= 2:
-                    ls = self._ghost_target.rfind("\n", 0, p) + 1
-                    self._ghost_pos = ls
-                    self._ghost_errors = {k: v for k, v in self._ghost_errors.items()
-                                          if k < ls}
-                    self._ghost_fade_wrong = 0
-                self._ghost_render()
-                return
-            if self._ghost_blind_from is not None:
-                # BLIND drill: a mistake reveals the first part of the answer
-                # and restarts the whole blind section — no partial credit
+            elif self._ghost_blind_from is not None:
+                # no reset either — reveal a bit more of the answer as a hint and
+                # commit the miss in red to fix in place
                 self._ghost_blind_reveal = min(
                     len(self._ghost_target) - self._ghost_blind_from,
                     self._ghost_blind_reveal + 8)
-                self._ghost_pos = self._ghost_blind_from
-                self._ghost_errors = {}
-                play_ghost_error()
-                self._ghost_shake()
+                self._ghost_errors[p] = ch
+                self._ghost_pos += 1
             else:
                 # wrong char is COMMITTED (keep typing), flagged red to fix later
                 self._ghost_errors[p] = ch
@@ -16084,18 +16075,24 @@ class TutorApp(App):
                     # fades to invisible as the user writes more.
                     if self._ghost_reveal > 0:
                         color = "#cba6f7"
+                        gone = False
                     else:
+                        # hide sooner: the hint fades ~1.8x faster than linear
                         prog = min(1.0, (self._ghost_pos / max(1, len(self._ghost_target)))
-                                   / max(0.05, self._ghost_fade_strength))
+                                   / max(0.05, self._ghost_fade_strength) * 1.8)
                         color = self._fade_purple(prog)
+                        gone = prog >= 0.9   # hint is essentially invisible now
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
                         if ch == " ":
                             t.append(" ", style="reverse bold" if cur else "#585b70")
+                        elif cur:
+                            # once the hint is gone, the cursor is a blank block —
+                            # it never reveals the char you're meant to recall
+                            t.append(" " if gone else ch, style="reverse bold #cba6f7")
                         else:
-                            t.append(ch, style="reverse bold #cba6f7" if cur
-                                     else color)
+                            t.append(ch, style=color)
                 elif blind:
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
@@ -21530,6 +21527,13 @@ class TutorApp(App):
                      style="dim")
             t.append("\n")
             t.append(f"  {c['stdin']!r}", style="#7dd3fc")
+        # the raw syntax the answer is built from — exactly "you'll need \"\" ()"
+        need = [n for n in c.get("need", []) if n]
+        if need and not c.get("free"):
+            t.append("\n\n")
+            t.append("YOU'LL NEED", style="bold #facc15")
+            t.append("\n")
+            t.append("  " + "   ".join(f"`{n}`" for n in need), style="#fde68a")
         values = self._goal_values(c)
         if values and not c.get("predict"):
             t.append("\n\n")
