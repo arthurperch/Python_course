@@ -12471,6 +12471,7 @@ class TutorApp(App):
         self._ghost_shake_timer = None
         self._ghost_last_tip = None
         self._ghost_mode = "write"          # ramp level: watch | finish | write
+        self._ghost_title = "drill.py"      # filename shown in the vim chrome
         self._ghost_compare = None          # "A"/"B" when the step is a compare card
         self._ghost_card = None             # compare card id
         self._ghost_a_code = None           # side A code (stashed for the split view)
@@ -14350,6 +14351,10 @@ class TutorApp(App):
         self._ghost_change = ex.get("change")   # "change it" metadata, or None
         self._ghost_compare = ex.get("compare_side")  # "A"/"B" in a compare card
         self._ghost_card = ex.get("card")
+        try:
+            self._ghost_title = self._current().get("title", "drill") + ".py"
+        except Exception:
+            self._ghost_title = "drill.py"
         # ---- learning ramp: watch -> finish -> write -> change (see, do, change) ----
         self._ghost_pos, self._ghost_mode = self._ghost_start_pos(idx, len(self._ghost_examples))
         self._ghost_done = self._ghost_pos >= len(self._ghost_target)
@@ -14726,7 +14731,7 @@ class TutorApp(App):
         for i, line in enumerate(code.split("\n")):
             if i:
                 t.append("\n")
-            t.append(f"{i+1:>2} │ ", style="dim")
+            t.append(f"{i+1:>3} ", style="#7f849c")
             t.append(line, style="#454545")
         t.append("\n\n  ⏳ next — this window unlocks after side A runs",
                  style="bold #7a7a7a")
@@ -14901,10 +14906,51 @@ class TutorApp(App):
         # render each region into its OWN widget, so the code box can shake on
         # its own without moving the header, console, or footer.
         self.query_one("#ghost-head", Static).update(head)
-        self.query_one("#ghost-code", Static).update(_box_lines(_lines_of(code)))
+        self.query_one("#ghost-code", Static).update(
+            _box_lines(_lines_of(self._ghost_editor_window(code))))
         self.query_one("#ghost-console", Static).update(
             _box_lines(_lines_of(console)) if console.cell_len else Text(""))
         self.query_one("#ghost-foot", Static).update(Text(foot, style="dim"))
+
+    def _ghost_mode_status(self):
+        """(mode, color) for the vim chrome — INSERT while typing, NORMAL the
+        rest of the time, so the window reads like a real editor."""
+        if self._ghost_phase == "type" and not self._ghost_done:
+            return "INSERT", "#a6e3a1"
+        return "NORMAL", "#89b4fa"
+
+    def _ghost_editor_window(self, code):
+        """Wrap the code lines in vim chrome: a winbar (file + mode) on top
+        and a lualine-style status bar (mode · file · position) underneath —
+        so the drill looks like the editor it's teaching you to use."""
+        title = getattr(self, "_ghost_title", "drill.py")
+        mode, mcolor = self._ghost_mode_status()
+        w = max(40, getattr(self.size, "width", 80) - 6)
+        lines = _lines_of(code)
+        t = Text()
+        # winbar
+        t.append("  " + title + "  ", style="#7f849c")
+        t.append(mode, style=f"bold {mcolor}")
+        t.append(" " * max(0, w - 4 - len(title) - len(mode)))
+        t.append("\n")
+        # code body (already has the vim gutter)
+        for i, ln in enumerate(lines):
+            t.append_text(ln)
+            if ln.cell_len < w:
+                t.append(" " * (w - ln.cell_len))
+            t.append("\n")
+        # statusline
+        line_i = min(len(self._ghost_target.split("\n")),
+                     self._ghost_target[:self._ghost_pos].count("\n") + 1)
+        pos = f"{line_i}"
+        t.append(" " + mode + " ", style=f"bold #1e1e2e on {mcolor}")
+        t.append(" " + title + " ", style="#cdd6f4 on #313244")
+        right = f" {self._ghost_idx + 1}/{len(self._ghost_examples)}  {pos} "
+        pad = w - 4 - len(mode) - len(title) - len(right)
+        if pad > 0:
+            t.append(" " * pad, style="on #313244")
+        t.append(right, style="#cdd6f4 on #313244")
+        return t
 
     def _ghost_render_code(self):
         t = Text()
@@ -14919,7 +14965,7 @@ class TutorApp(App):
             for i, line in enumerate(self._ghost_target.split("\n")):
                 if i:
                     t.append("\n")
-                t.append(f"{i+1:>2} │ ", style="dim")
+                t.append(f"{i+1:>3} ", style="#7f849c")
                 t.append_text(_spotlight_line(line, spot, style))
             return t
         for i, line in enumerate(self._ghost_target.split("\n")):
@@ -14928,7 +14974,7 @@ class TutorApp(App):
             typed_n = max(0, min(pos, end) - start)
             if i:
                 t.append("\n")
-            t.append(f"{i+1:>2} │ ", style="dim")
+            t.append(f"{i+1:>3} ", style="#7f849c")
             # typed portion: correct runs syntax-colored + BOLD (bigger focus),
             # error chars red
             j = 0
