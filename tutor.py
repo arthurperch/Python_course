@@ -12992,6 +12992,7 @@ class TutorApp(App):
         self._ghost_fill_input = ""          # what the user typed into the blank
         self._ghost_fill_s = 0               # blank span start in the code
         self._ghost_fill_e = 0               # blank span end in the code
+        self._ghost_fill_is_num = False      # True when the blank expects a number
         self._ghost_goal_out = ""            # expected output, shown during fade/blind
         self._ghost_used_hint = False       # true once the user peeked at the answer
         self._ghost_mastery_streak = 0      # clean blind completions in a row
@@ -15216,7 +15217,7 @@ class TutorApp(App):
         if idx < watch:
             # the very first rep is a FILL — blank a value and let the user
             # type any value/name to see the output change, not just press enter
-            if idx == 0 and self._ghost_fill_blank(self._ghost_target) != (None, None):
+            if idx == 0 and self._ghost_fill_blank(self._ghost_target)[0] is not None:
                 return 0, "fill"
             return L, "watch"
         write_from = n - max(1, n // 3)   # last third: write it all
@@ -15287,7 +15288,8 @@ class TutorApp(App):
         if self._ghost_mode == "fill":
             self._ghost_fill = True
             self._ghost_fill_input = ""
-            self._ghost_fill_s, self._ghost_fill_e = self._ghost_fill_blank(self._ghost_target)
+            self._ghost_fill_s, self._ghost_fill_e, self._ghost_fill_is_num = \
+                self._ghost_fill_blank(self._ghost_target)
         else:
             self._ghost_fill = False
         # recall modes (fade/blind): show the EXPECTED output as the goal, so the
@@ -15408,6 +15410,11 @@ class TutorApp(App):
                 return
             if ch and not key.startswith("ctrl+"):
                 event.stop(); event.prevent_default()
+                # number blanks only take digits (and one decimal point) — no
+                # more typing "+" or letters into a slot that wants a number
+                if self._ghost_fill_is_num and not (ch.isdigit() or ch == "."):
+                    self._ghost_render()
+                    return
                 self._ghost_fill_input += ch
                 play_key()
                 self._ghost_render()
@@ -16129,11 +16136,17 @@ class TutorApp(App):
     def _ghost_fill_blank(self, code):
         """Find the first string value (inside the quotes) or a number to blank
         out for a 'fill the value' drill. Quotes stay — the user types the value
-        between them. Returns (start, end) or (None, None)."""
-        m = re.search(r'(?<=")[^"]*(?=")|(?<=\')[^\']*(?=\')|\b\d+\b', code)
+        between them. Returns (start, end, is_number) or (None, None, False)."""
+        m = re.search(r'(?<=")[^"]*(?=")', code)
         if m and m.start() != m.end():
-            return m.start(), m.end()
-        return None, None
+            return m.start(), m.end(), False
+        m = re.search(r"(?<=')[^']*(?=')", code)
+        if m and m.start() != m.end():
+            return m.start(), m.end(), False
+        m = re.search(r'\b\d+\b', code)
+        if m:
+            return m.start(), m.end(), True
+        return None, None, False
 
     def _ghost_render_fill(self):
         """FILL mode: the code with the blank value replaced by whatever the user
@@ -16153,8 +16166,12 @@ class TutorApp(App):
                 le = min(len(line), e - pos)
                 t.append(line[:ls], style="#cdd6f4")
                 shown = val if val else "___"
-                t.append(shown, style="bold #facc15")
-                t.append("█", style="bold #facc15" if self._ghost_blink_on else "bold #a3a380")
+                # a clear yellow "fill slot" — the user types INTO this box
+                slot = Text()
+                slot.append(shown, style="bold #1e1e2e on #facc15")
+                slot.append("█" if self._ghost_blink_on else " ",
+                            style="bold #1e1e2e on #facc15")
+                t.append_text(slot)
                 t.append(line[le:], style="#cdd6f4")
             else:
                 t.append(line, style="#cdd6f4")
