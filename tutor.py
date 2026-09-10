@@ -14999,16 +14999,16 @@ class TutorApp(App):
                                               max(40, self.size.width - 8)),
                          style="bold #facc15")
         elif side == "A":
-            why_t = Text("TYPE IT IN THE LEFT WINDOW — ⏎ to run\n"
+            why_t = Text("TYPE IT IN THE LEFT WINDOW — Enter to run\n"
                          "the right window is next, automatically",
                          style="bold #7dd3fc")
         else:
-            why_t = Text("NOW THE RIGHT WINDOW — type side B, ⏎ to run\n"
+            why_t = Text("NOW THE RIGHT WINDOW — type side B, Enter to run\n"
                          "then both outputs compare side by side",
                          style="bold #f9a8d4")
 
         foot = (Text("Enter — next drill", style="bold green") if comp else
-                Text("type the ghost · ⏎ new line · ⇥ indent · ⏎ runs at the end",
+                Text("type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
                      style="dim"))
 
         self.query_one("#ghost-head", Static).update(head)
@@ -15048,7 +15048,7 @@ class TutorApp(App):
             return
         n = len(self._ghost_examples)
         mode_label = {
-            "watch": "WATCH & RUN  —  it's written, press ⏎ to run",
+            "watch": "WATCH & RUN  —  it's written, press Enter to run",
             "finish": "FINISH IT  —  I started, you finish the rest",
             "write": "WRITE IT ALL  —  you're locked in, type it out",
             "change": "CHANGE IT  —  I edited one thing, type it and see the output change",
@@ -15062,11 +15062,11 @@ class TutorApp(App):
         code = self._ghost_render_code()
         console = self._ghost_render_console()
         foot = {
-            "watch": "just read it · ⏎ to run",
-            "finish": "finish the dim part · ⏎ new line · ⇥ indent · ⏎ runs at the end",
-            "write": "type the ghost · ⏎ new line · ⇥ indent · ⏎ runs at the end",
-            "change": "type the changed code · ⏎ new line · ⇥ indent · ⏎ runs at the end",
-        }.get(self._ghost_mode, "type the ghost · ⏎ new line · ⇥ indent · ⏎ runs at the end")
+            "watch": "just read it · Enter to run",
+            "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
+            "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
+            "change": "type the changed code · Enter = new line · Tab = indent · Enter at the end = run",
+        }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
         # render each region into its OWN widget, so the code box can shake on
@@ -15122,7 +15122,6 @@ class TutorApp(App):
         t = Text()
         pos = self._ghost_pos
         idx = 0
-        prompt_style = ("bold #d8b4fe" if self._ghost_blink_on else "bold #9333ea")
         # "ran" phase: the code is fully written — flash the tokens the coach is
         # explaining (bold yellow ↔ normal) so the eye lands on the exact bit
         spot = getattr(self, "_ghost_spot_tokens", None)
@@ -15165,16 +15164,18 @@ class TutorApp(App):
             need_tab = (start <= pos < end and self._ghost_target[pos] == " "
                         and self._ghost_structural(pos))
             if need_tab:
-                # at the indent — prompt for Tab, then show the ghost of the rest
+                # at the indent — a block cursor at the start of the line, then
+                # the dim ghost of the indented code (Tab is the next key)
                 k = 0
                 while k < len(line) and line[k] == " ":
                     k += 1
-                t.append(" ⇥", style=prompt_style)
+                t.append(" ", style="reverse bold")
                 if k < len(line):
                     t.append(line[k:], style="#5a5a5a")
             elif need_enter:
-                # whole line typed — blink an Enter prompt on the right of this line
-                t.append(" ⏎", style=prompt_style)
+                # whole line typed — a block cursor at the end of the line
+                # (Enter is the next key)
+                t.append(" ", style="reverse bold")
             elif typed_n < len(line) and start <= pos < end:
                 t.append(line[typed_n], style="reverse bold")   # next char to type
                 t.append(line[typed_n + 1:], style="#5a5a5a")   # ghost (dim)
@@ -20107,7 +20108,7 @@ class TutorApp(App):
     def _lesson_screen(self, out: list[Text]) -> Text:
         """Box a list of styled lines, add the Enter/Esc footer, and center it."""
         out = out + [Text("")]
-        out.append(Text("Enter ⏎ next   ·   Esc back to editor", style="dim"))
+        out.append(Text("Enter = next   ·   Esc back to editor", style="dim"))
         body = _box_lines(out)
         return _center_screen(body, self.size.width, self.size.height - 1)
 
