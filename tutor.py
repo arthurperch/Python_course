@@ -648,6 +648,60 @@ GROUPS = [
              "example": "A different random range:\n```python\nimport random\nprint(random.randint(1, 10))\n```\n> random.randint(a, b) picks a whole number between a and b — run it twice and you get different answers."},
         ],
     },
+    {
+        "id": "toolpick",
+        "name": "CHOOSE YOUR TOOL",
+        "challenges": [
+            {"title": "hand it back", "topic": "return",
+             "prompt": "Write a function `double(n)` that RETURNS `n * 2` — no print inside it! — then print `double(5)`.",
+             "starter": "", "expect": ["10"], "need": ["return"], "stdin": "",
+             "example": "Same idea, halving:\n```python\ndef half(n):\n    return n // 2\n\nprint(half(10))\n```\n> return hands the value back so print() can show it. No return = the function gives back None."},
+            {"title": "while it lasts", "topic": "while",
+             "prompt": "Use a WHILE loop to print 1 through 4. You can't use `for`.",
+             "starter": "n = 1\n", "expect": ["1", "2", "3", "4"], "need": ["while"], "stdin": "",
+             "example": "A while countdown:\n```python\nn = 3\nwhile n > 0:\n    print(n)\n    n -= 1\n```\n> while keeps looping until its condition is false — and something inside MUST change n."},
+            {"title": "frozen coordinates", "topic": "tuples",
+             "prompt": "Store the point (10, 20) as a TUPLE, then print it. It must be impossible to change later.",
+             "starter": "", "expect": ["10", "20"], "need": [], "stdin": "",
+             "example": "A different point:\n```python\npoint = (3, 4)\nprint(point)\n```\n> ( ) with commas = a tuple — locked the moment it's made. Lists use [ ] and can change."},
+            {"title": "safe menu", "topic": "dicts",
+             "prompt": "Look up `soup` in the menu with `.get()` and a fallback — print the fallback so the program never crashes.",
+             "starter": "menu = {\"tea\": 2, \"cake\": 5}\n", "expect": ["not on menu"], "need": [".get"], "stdin": "",
+             "example": "A key that exists:\n```python\nmenu = {\"tea\": 2}\nprint(menu.get(\"tea\", \"missing\"))\n```\n> .get(key, fallback) = look it up, but give me the fallback instead of crashing."},
+            {"title": "grade it", "topic": "conditionals",
+             "prompt": "score is 7. Use if/elif/else to print ONE grade: 9+ → `A`, 6+ → `B`, otherwise `C`.",
+             "starter": "score = 7\n", "expect": ["b"], "need": ["elif"], "stdin": "",
+             "example": "A pass/fail check:\n```python\nscore = 5\nif score >= 6:\n    print(\"pass\")\nelse:\n    print(\"retry\")\n```\n> if/elif/else stops at the FIRST true branch — exactly one block runs."},
+            {"title": "text to math", "topic": "casting",
+             "prompt": "age is the TEXT `\"27\"`. Print 100 minus the number. Don't change the starter.",
+             "starter": "age = \"27\"\n", "expect": ["73"], "need": ["int"], "stdin": "",
+             "example": "Text price to doubled number:\n```python\nprice = \"9\"\nprint(int(price) * 2)\n```\n> int() turns text into a number so math works — \"9\" is text, 9 is a number."},
+            {"title": "fill the blank", "topic": "f-strings",
+             "prompt": "name is `\"bean\"`. Use an f-string to print exactly `hi bean`.",
+             "starter": "name = \"bean\"\n", "expect": ["hi bean"], "need": ["f\""], "stdin": "",
+             "example": "An f-string with an age:\n```python\nage = 27\nprint(f\"you are {age}\")\n```\n> f\"...\" = format — {name} pulls the variable's value into the sentence."},
+            {"title": "first exit", "topic": "break",
+             "prompt": "Loop i from 0 to 9 printing each i, but BREAK the whole loop the moment i reaches 5.",
+             "starter": "", "expect": ["0", "1", "2", "3", "4", "5"], "need": ["break"], "stdin": "",
+             "example": "Stopping at 3:\n```python\nfor i in range(10):\n    if i == 3:\n        break\n    print(i)\n```\n> break kills the loop immediately — the search is over, stop looking."},
+            {"title": "skip the threes", "topic": "continue",
+             "prompt": "Loop i from 1 to 6, SKIP multiples of 3 with `continue`, print every other i.",
+             "starter": "", "expect": ["1", "2", "4", "5"], "need": ["continue"], "stdin": "",
+             "example": "Skipping evens:\n```python\nfor i in range(1, 6):\n    if i % 2 == 0:\n        continue\n    print(i)\n```\n> continue skips just this one lap — the loop keeps going."},
+            {"title": "whole and leftover", "topic": "moddiv",
+             "prompt": "Print `17 % 5` and `17 // 5` — the leftover and the whole count.",
+             "starter": "", "expect": ["2", "3"], "need": ["%", "//"], "stdin": "",
+             "example": "Different numbers:\n```python\nprint(10 % 3)\nprint(10 // 3)\n```\n> % is the leftover, // throws the leftover away."},
+            {"title": "grow without touching", "topic": "concat",
+             "prompt": "a is `[1, 2]`. Make `b = a + [3]` and print BOTH lists. a must stay unchanged.",
+             "starter": "a = [1, 2]\n", "expect": ["[1, 2]", "[1, 2, 3]"], "need": ["+"], "stdin": "",
+             "example": "Adding a different value:\n```python\na = [1]\nb = a + [99]\nprint(a)\nprint(b)\n```\n> + builds a NEW list — a stays as it was, b is the new one."},
+            {"title": "numbered fruit", "topic": "enumerate",
+             "prompt": "Use `enumerate` to print each INDEX and fruit from the list, one per line.",
+             "starter": "fruits = [\"kiwi\", \"fig\"]\n", "expect": ["0", "kiwi", "1", "fig"], "need": ["enumerate"], "stdin": "",
+             "example": "Numbering names:\n```python\nnames = [\"ada\", \"grace\"]\nfor i, n in enumerate(names):\n    print(i, n)\n```\n> enumerate hands you the position AND the item in one step."},
+        ],
+    },
 ]
 
 EXAMPLES = {
@@ -12589,11 +12643,43 @@ class TutorApp(App):
         "casting": {
             "topic": "casting",
             "a": {"caption": "int() — turn text into a number to do math",
-                  "code": "age = input(\"age? \")\nyears_left = 100 - int(age)\nprint(years_left)"},
+                  "code": "age = \"27\"\nyears_left = 100 - int(age)\nprint(years_left)"},
             "b": {"caption": "str() — turn a number into text to print it",
                   "code": "wins = 3\nprint(\"you have \" + str(wins) + \" wins\")"},
             "why": "input() always hands you TEXT, even if the user typed 27 — and you can't do 100 - \"27\". int() converts text to a number so math works. Going the other way, \"you have \" + 3 crashes too — str() converts a number to text so it can join a sentence. Convert when the two worlds meet.",
             "rules": "RULES: int(\"27\") → the number 27. str(3) → the text \"3\". The quotes are the difference: \"27\" is text, 27 is a number. You can't mix them in math or in + joining."},
+        "break_vs_continue": {
+            "topic": "loops",
+            "a": {"caption": "break — STOP the whole loop",
+                  "code": "for i in range(6):\n    if i == 3:\n        break\n    print(i)"},
+            "b": {"caption": "continue — skip ONE lap, keep going",
+                  "code": "for i in range(6):\n    if i == 3:\n        continue\n    print(i)"},
+            "why": "break prints 0, 1, 2 and STOPS — the loop is dead. continue prints 0, 1, 2, 4, 5 — only the 3 is skipped, then the loop keeps running. Programmers break when the answer is found (search is over), and continue when one bad item must be skipped (filter out junk).",
+            "rules": "RULES: break = exit the loop now. continue = jump to the next lap now. Both live INSIDE the loop's Tab-indented block, usually guarded by an if."},
+        "moddiv": {
+            "topic": "math",
+            "a": {"caption": "% — the LEFTOVER after division",
+                  "code": "print(17 % 5)\nprint(8 % 2)"},
+            "b": {"caption": "// — whole-number division",
+                  "code": "print(17 // 5)\nprint(8 // 2)"},
+            "why": "% prints 2 then 0: 17 = 5×3 with 2 left over, and 8 has no leftover. // prints 3 then 4: it throws the remainder away entirely. Programmers use % to test even/odd (n % 2 == 0), and // when they need exact whole groups — like rows of 5.",
+            "rules": "RULES: % rhymes with REMAINDER — the leftover. // floors down to the whole number. 17 % 5 = 2 · 17 // 5 = 3 · and n % 2 == 0 is the classic even-number test."},
+        "append_vs_concat": {
+            "topic": "lists",
+            "a": {"caption": "append() — changes the list IN PLACE",
+                  "code": "a = [1, 2]\na.append(3)\nprint(a)"},
+            "b": {"caption": "+ — builds a NEW list, old one untouched",
+                  "code": "a = [1, 2]\nb = a + [3]\nprint(a)\nprint(b)"},
+            "why": "append gives you one list: [1, 2, 3] — a itself changed. The + version prints [1, 2] then [1, 2, 3] — a is untouched, b is the new list. Programmers append when the original should grow (a shopping cart), and use + when the original must stay intact (you need both versions).",
+            "rules": "RULES: .append() is a command — it returns nothing, it just changes the list. + makes a brand-new list you usually save into a variable. a stays as it was."},
+        "index_vs_enumerate": {
+            "topic": "loops",
+            "a": {"caption": "range(len(...)) — count positions by hand",
+                  "code": "fruits = [\"kiwi\", \"fig\"]\nfor i in range(len(fruits)):\n    print(i, fruits[i])"},
+            "b": {"caption": "enumerate() — index and item together",
+                  "code": "fruits = [\"kiwi\", \"fig\"]\nfor i, f in enumerate(fruits):\n    print(i, f)"},
+            "why": "Both print 0 kiwi then 1 fig. range(len()) is the manual way — you must remember fruits[i] yourself and it's easy to get wrong. enumerate hands you BOTH the position and the item in one step, so there's nothing to forget. Programmers reach for enumerate whenever a loop needs the index.",
+            "rules": "RULES: enumerate(list) gives back (index, item) pairs — for i, f in ... unpacks the pair into two names. len() counts how many items, range() counts the numbers."},
     }
 
     # which challenge topics get which comparison card (basic → intermediate)
@@ -12608,6 +12694,10 @@ class TutorApp(App):
         "dicts": "dict_access",
         "conditionals": "elifs", "booleans": "elifs",
         "casting": "casting", "input": "casting",
+        "break": "break_vs_continue", "continue": "break_vs_continue",
+        "moddiv": "moddiv", "math": "moddiv",
+        "concat": "append_vs_concat",
+        "enumerate": "index_vs_enumerate",
     }
 
     def _vim_checkpoint_label(self):
@@ -14258,53 +14348,140 @@ class TutorApp(App):
             self._ghost_compare_flash = False
             self._ghost_render()
 
-    def _ghost_render_compare(self):
-        """Split screen: side A | side B, outputs bold-flashing, then the why.
-        Renders into the ghost overlay's region widgets directly."""
+    def _ghost_code_for(self, target, pos, errors, phase, spot):
+        """Render one side's code box by borrowing the single-box renderer."""
+        saved = (self._ghost_target, self._ghost_pos, self._ghost_errors,
+                 self._ghost_phase, getattr(self, "_ghost_spot_tokens", None))
+        self._ghost_target = target
+        self._ghost_pos = pos
+        self._ghost_errors = errors or {}
+        self._ghost_phase = phase
+        self._ghost_spot_tokens = spot
+        t = self._ghost_render_code()
+        (self._ghost_target, self._ghost_pos, self._ghost_errors,
+         self._ghost_phase, self._ghost_spot_tokens) = saved
+        return t
+
+    def _ghost_waiting_code(self, code):
+        """The side that isn't active yet: full code, dimmed, with a marker."""
+        t = Text()
+        for i, line in enumerate(code.split("\n")):
+            if i:
+                t.append("\n")
+            t.append(f"{i+1:>2} │ ", style="dim")
+            t.append(line, style="#454545")
+        t.append("\n\n  ⏳ next — this window unlocks after side A runs",
+                 style="bold #7a7a7a")
+        return t
+
+    def _ghost_side_by_side(self, left, right):
+        """Merge two Texts line by line into fixed-width columns with a
+        clean │ divider that lines up on every row."""
+        L = _lines_of(left)
+        R = _lines_of(right)
+        half = max(20, (self.size.width - 18) // 2)
+        t = Text()
+        for i in range(max(len(L), len(R))):
+            lt = L[i] if i < len(L) else Text("")
+            rt = R[i] if i < len(R) else Text("")
+            lw = lt.cell_len
+            t.append_text(lt)
+            t.append(" " * max(0, half - lw) + " │ ", style="dim")
+            t.append_text(rt)
+            t.append("\n")
+        return t
+
+    def _ghost_render_split(self):
+        """The two-window A-vs-B screen — visible the WHOLE time: the user
+        ghost-types in the LEFT window, runs it, then the RIGHT window takes
+        over automatically, runs, and finally both outputs flash bold."""
         card = self.COMPARE_CARDS[self._ghost_card]
         a, b = card["a"], card["b"]
-        a_code = self._ghost_a_code or a["code"]
-        b_code = self._ghost_target
-        a_out, b_out = self._ghost_a_out, self._ghost_out_text
-        half = max(22, (self.size.width - 16) // 2)
+        side = self._ghost_compare
+        comp = self._ghost_phase == "compare"
         bold = self._ghost_compare_flash
+        a_code = self._ghost_a_code or a["code"]
+        a_out = self._ghost_a_out
 
-        def side(lines, style_a, style_b):
-            out = Text()
-            for i in range(max(len(lines[0]), len(lines[1]))):
-                l = lines[0][i] if i < len(lines[0]) else ""
-                r = lines[1][i] if i < len(lines[1]) else ""
-                pad = max(0, half - 2 - len(l))
-                out.append("  " + l, style=style_a)
-                out.append(" " * pad + "  │ ", style="dim")
-                out.append(r, style=style_b)
-                out.append("\n")
-            return out
+        # ---- code columns ------------------------------------------------
+        if side == "A":
+            left_c = self._ghost_code_for(self._ghost_target, self._ghost_pos,
+                                          self._ghost_errors, self._ghost_phase,
+                                          self._ghost_spot_tokens)
+            right_c = self._ghost_waiting_code(b["code"])
+        elif side == "B":
+            left_c = self._ghost_code_for(a_code, len(a_code), {}, "ran", None)
+            left_c.append("\n\n  ✓ ran", style="bold #22c55e")
+            right_c = self._ghost_code_for(self._ghost_target, self._ghost_pos,
+                                           self._ghost_errors, self._ghost_phase,
+                                           self._ghost_spot_tokens)
+        else:  # compare phase — both finished, side by side
+            left_c = self._ghost_code_for(a_code, len(a_code), {}, "ran", None)
+            right_c = self._ghost_code_for(self._ghost_target,
+                                           len(self._ghost_target), {}, "ran", None)
 
-        head = Text(f"  A vs B  —  {card['topic'].upper()}",
+        # ---- console columns ---------------------------------------------
+        if side == "A":
+            if self._ghost_phase in ("reveal", "ran", "run"):
+                left_o = self._ghost_render_console()
+            else:
+                left_o = Text("", style="dim")
+            right_o = Text("   ⏳", style="bold #7a7a7a")
+        elif side == "B":
+            left_o = Text(a_out or "", style="green")
+            if self._ghost_phase in ("reveal", "ran", "run"):
+                right_o = self._ghost_render_console()
+            else:
+                right_o = Text("", style="dim")
+        else:
+            lstyle = "bold green" if bold else "green"
+            left_o = Text(a_out or "", style=lstyle)
+            right_o = Text(self._ghost_out_text or "", style=lstyle)
+
+        # ---- captions sit ABOVE their column, inside the same box ----------
+        lc = Text(a["caption"] + "\n", style="bold #7dd3fc")
+        lc.append_text(left_c)
+        rc = Text(b["caption"] + "\n", style="bold #f9a8d4")
+        rc.append_text(right_c)
+
+        # ---- head ----------------------------------------------------------
+        head = Text()
+        head.append(f"  A vs B  —  {card['topic'].upper()}",
                     style="bold magenta")
-        code_t = Text()
-        code_t.append("  " + a["caption"] + "\n", style="bold #7dd3fc")
-        code_t.append_text(side((a_code.split("\n"), b_code.split("\n")),
-                                "#d5d5d5", "#d5d5d5"))
-        code_t.append("\n  " + b["caption"] + "\n", style="bold #f9a8d4")
-        out_t = Text()
-        out_t.append("  output A" + " " * (half - 6) + "│ output B\n",
-                     style="bold")
-        out_t.append_text(side(((a_out or "").split("\n")[:8],
-                                (b_out or "").split("\n")[:8]),
-                               "bold green" if bold else "green",
-                               "bold green" if bold else "green"))
-        why_t = Text()
-        why_t.append("WHY ONE VS THE OTHER\n", style="bold yellow")
-        why_t.append(card["why"], style="#f0f0f5")
-        why_t.append("\n\n" + card["rules"], style="bold #facc15")
+        if not comp:
+            n = len(self._ghost_examples)
+            head.append(f"      SYNTAX DRILL {self._ghost_idx + 1}/{n}",
+                        style="bold #c4b5fd")
+
+        # ---- why / rules ---------------------------------------------------
+        if comp:
+            why_t = Text()
+            why_t.append("WHY ONE VS THE OTHER\n", style="bold yellow")
+            why_t.append(_wrap_console(card["why"], max(40, self.size.width - 8)),
+                         style="#f0f0f5")
+            why_t.append("\n" + _wrap_console(card["rules"],
+                                              max(40, self.size.width - 8)),
+                         style="bold #facc15")
+        elif side == "A":
+            why_t = Text("TYPE IT IN THE LEFT WINDOW — ⏎ to run\n"
+                         "the right window is next, automatically",
+                         style="bold #7dd3fc")
+        else:
+            why_t = Text("NOW THE RIGHT WINDOW — type side B, ⏎ to run\n"
+                         "then both outputs compare side by side",
+                         style="bold #f9a8d4")
+
+        foot = (Text("Enter — next drill", style="bold green") if comp else
+                Text("type the ghost · ⏎ new line · ⇥ indent · ⏎ runs at the end",
+                     style="dim"))
+
         self.query_one("#ghost-head", Static).update(head)
-        self.query_one("#ghost-code", Static).update(code_t)
-        self.query_one("#ghost-console", Static).update(out_t)
+        self.query_one("#ghost-code", Static).update(
+            self._ghost_side_by_side(lc, rc))
+        self.query_one("#ghost-console", Static).update(
+            self._ghost_side_by_side(left_o, right_o))
         self.query_one("#ghost-why", Static).update(why_t)
-        self.query_one("#ghost-foot", Static).update(
-            Text("Enter — next drill", style="bold green"))
+        self.query_one("#ghost-foot", Static).update(foot)
 
     def _ghost_dismiss(self):
         self._ghost_on = False
@@ -14330,8 +14507,8 @@ class TutorApp(App):
             pass
 
     def _ghost_render(self):
-        if self._ghost_phase == "compare":
-            self._ghost_render_compare()
+        if self._ghost_phase == "compare" or self._ghost_compare:
+            self._ghost_render_split()
             return
         n = len(self._ghost_examples)
         mode_label = {
