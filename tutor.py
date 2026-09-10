@@ -12495,13 +12495,18 @@ class TutorApp(App):
     #gate.visible { display: block; }
     #map { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #0a0a0a; display: none; overflow: auto; }
     #map.visible { display: block; }
-    #ghost { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; align-horizontal: center; align-vertical: middle; }
+    #ghost { layer: overlay; width: 100%; height: 100%; padding: 1 1; background: #1e1e2e; display: none; }
     #ghost.visible { display: block; }
-    #ghost-head { width: 100%; text-align: center; }
-    #ghost-code { width: 100%; text-align: center; margin: 1 0; }
-    #ghost-console { width: 100%; text-align: center; }
-    #ghost-why { width: 100%; text-align: center; margin: 1 0; }
-    #ghost-foot { width: 100%; text-align: center; }
+    #ghost-bufferline { height: 1; background: #181825; padding: 0 1; }
+    #ghost-main { height: 1fr; }
+    #ghost-editor-pane { width: 1fr; border: tall #313244; background: #1e1e2e; }
+    #ghost-editor-pane.active { border: tall #89b4fa; }
+    #ghost-winbar { height: 1; background: #181825; padding: 0 1; }
+    #ghost-code { height: 1fr; padding: 0 1; background: #1e1e2e; }
+    #ghost-statusline { height: 1; background: #313244; padding: 0 1; }
+    #ghost-why { width: 34%; border: tall #313244; padding: 1 1; background: #181825; }
+    #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
+    #ghost-foot { height: 1; padding: 0 1; }
     #vim { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #vim.visible { display: block; }
     #vim-head { width: 100%; text-align: center; }
@@ -12912,10 +12917,14 @@ class TutorApp(App):
         yield Static("", id="gate")
         yield Static("", id="map")
         with GhostWriter(id="ghost"):
-            yield Static("", id="ghost-head")
-            yield Static("", id="ghost-code")
+            yield Static("", id="ghost-bufferline")
+            with Horizontal(id="ghost-main"):
+                with Vertical(id="ghost-editor-pane"):
+                    yield Static("", id="ghost-winbar")
+                    yield Static("", id="ghost-code")
+                    yield Static("", id="ghost-statusline")
+                yield Static("", id="ghost-why")
             yield Static("", id="ghost-console")
-            yield Static("", id="ghost-why")
             yield Static("", id="ghost-foot")
         with VimTrainer(id="vim"):
             yield Static("", id="vim-head")
@@ -15168,11 +15177,18 @@ class TutorApp(App):
                 Text("type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
                      style="dim"))
 
-        self.query_one("#ghost-head", Static).update(head)
+        self.query_one("#ghost-bufferline", Static).update(head)
+        mode, mcolor = self._ghost_mode_status()
+        wb = Text("  A vs B — " + card["topic"].upper() + "  ", style="#7f849c")
+        wb.append(mode, style=f"bold {mcolor}")
+        self.query_one("#ghost-winbar", Static).update(wb)
         self.query_one("#ghost-code", Static).update(
-            self._ghost_side_by_side(lc, rc, box=True))
+            self._ghost_side_by_side(lc, rc, box=False))
+        sl = Text(" " + mode + " ", style=f"bold #1e1e2e on {mcolor}")
+        sl.append("  A vs B  ", style="#cdd6f4 on #313244")
+        self.query_one("#ghost-statusline", Static).update(sl)
         self.query_one("#ghost-console", Static).update(
-            self._ghost_side_by_side(left_o, right_o, box=True))
+            self._ghost_side_by_side(left_o, right_o, box=False))
         self.query_one("#ghost-why", Static).update(why_t)
         self.query_one("#ghost-foot", Static).update(foot)
 
@@ -15228,11 +15244,10 @@ class TutorApp(App):
             foot = "Esc quit · " + foot
         # render each region into its OWN widget, so the code box can shake on
         # its own without moving the header, console, or footer.
-        self.query_one("#ghost-head", Static).update(head)
-        self.query_one("#ghost-code", Static).update(
-            _box_lines(_lines_of(self._ghost_editor_window(code))))
+        self.query_one("#ghost-bufferline", Static).update(head)
+        self._ghost_fill_editor(code)
         self.query_one("#ghost-console", Static).update(
-            _box_lines(_lines_of(console)) if console.cell_len else Text(""))
+            console if console.cell_len else Text(""))
         self.query_one("#ghost-foot", Static).update(Text(foot, style="dim"))
 
     def _ghost_mode_status(self):
@@ -15242,38 +15257,29 @@ class TutorApp(App):
             return "INSERT", "#a6e3a1"
         return "NORMAL", "#89b4fa"
 
-    def _ghost_editor_window(self, code):
-        """Wrap the code lines in vim chrome: a winbar (file + mode) on top
-        and a lualine-style status bar (mode · file · position) underneath —
-        so the drill looks like the editor it's teaching you to use."""
-        title = getattr(self, "_ghost_title", "drill.py")
+    def _ghost_fill_editor(self, code, title=None):
+        """Fill the winbar + code + statusline as REAL widgets (the pane
+        border is native CSS — no ASCII box). Mirrors Neovim's chrome."""
+        title = title or getattr(self, "_ghost_title", "drill.py")
         mode, mcolor = self._ghost_mode_status()
         w = max(40, getattr(self.size, "width", 80) - 6)
-        lines = _lines_of(code)
-        t = Text()
         # winbar
-        t.append("  " + title + "  ", style="#7f849c")
-        t.append(mode, style=f"bold {mcolor}")
-        t.append(" " * max(0, w - 4 - len(title) - len(mode)))
-        t.append("\n")
-        # code body (already has the vim gutter)
-        for i, ln in enumerate(lines):
-            t.append_text(ln)
-            if ln.cell_len < w:
-                t.append(" " * (w - ln.cell_len))
-            t.append("\n")
+        wb = Text(" " + title + "  ", style="#7f849c")
+        wb.append(mode, style=f"bold {mcolor}")
+        self.query_one("#ghost-winbar", Static).update(wb)
+        # code body (the gutter is baked in by _ghost_render_code)
+        self.query_one("#ghost-code", Static).update(code)
         # statusline
         line_i = min(len(self._ghost_target.split("\n")),
                      self._ghost_target[:self._ghost_pos].count("\n") + 1)
-        pos = f"{line_i}"
-        t.append(" " + mode + " ", style=f"bold #1e1e2e on {mcolor}")
-        t.append(" " + title + " ", style="#cdd6f4 on #313244")
-        right = f" {self._ghost_idx + 1}/{len(self._ghost_examples)}  {pos} "
+        sl = Text(" " + mode + " ", style=f"bold #1e1e2e on {mcolor}")
+        sl.append(" " + title + " ", style="#cdd6f4 on #313244")
+        right = f" {self._ghost_idx + 1}/{len(self._ghost_examples)}  {line_i} "
         pad = w - 4 - len(mode) - len(title) - len(right)
         if pad > 0:
-            t.append(" " * pad, style="on #313244")
-        t.append(right, style="#cdd6f4 on #313244")
-        return t
+            sl.append(" " * pad, style="on #313244")
+        sl.append(right, style="#cdd6f4 on #313244")
+        self.query_one("#ghost-statusline", Static).update(sl)
 
     def _ghost_render_code(self):
         t = Text()
