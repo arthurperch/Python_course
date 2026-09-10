@@ -866,6 +866,18 @@ GROUPS = [
              "prompt": "Step 4 — assemble it. Greet the player, let them pick a door, and print their final score.",
              "starter": "score = 0\n", "expect": ["hello bean", "key", "score: 1"], "need": ["input", "if", "score"], "stdin": "bean\nleft\n",
              "example": "A full mini-quest:\n```python\nscore = 0\nname = input(\"name? \")\nprint(\"hello \" + name)\nchoice = input(\"door? \")\nif choice == \"a\":\n    print(\"gold\")\n    score += 1\nprint(\"score:\", score)\n```\n> A program is just the pieces you already know, stacked in order."},
+            {"title": "greet anyone", "topic": "input", "free": True,
+             "prompt": "FREE PLAY — ask the user their name and greet them. ANY name works, any greeting works. The only rule: your code must run without crashing.",
+             "starter": "", "expect": [], "need": [], "stdin": "bean\n",
+             "example": "One way (yours can be different):\n```python\nname = input(\"name? \")\nprint(\"hello \" + name)\n```\n> There's no wrong answer here — if it runs, you're right. Make it yours."},
+            {"title": "my own list", "topic": "lists", "free": True,
+             "prompt": "FREE PLAY — make a list of anything you like (items, numbers, mixed), then print it. As long as it runs, it's correct.",
+             "starter": "", "expect": [], "need": [], "stdin": "",
+             "example": "One way:\n```python\nthings = [\"book\", \"cat\", 7]\nprint(things)\n```\n> A list holds whatever you choose. Any valid list is the right answer."},
+            {"title": "a blank note", "topic": "strings", "free": True,
+             "prompt": "FREE PLAY — make an empty string, add some text to it, and print it. The text is your choice; it just has to run.",
+             "starter": "", "expect": [], "need": [], "stdin": "",
+             "example": "One way:\n```python\nnote = \"\"\nnote += \"hello\"\nprint(note)\n```\n> \"\" is an empty string; += grows it. Fill it with whatever you want."},
         ],
     },
     {
@@ -19197,6 +19209,22 @@ class TutorApp(App):
         code = self.query_one("#editor", VimEditor).get_text()
         topic = c["topic"]
         stdin = c.get("stdin", "")
+        if c.get("free"):
+            # FREE-ANSWER challenge: the ONLY rule is that the code runs without
+            # crashing. Whatever it prints is fine — there's no fixed answer.
+            if stdin:
+                transcript = run_code_echo(code, stdin)
+                if "Traceback" in transcript or "Error" in transcript:
+                    self._mark_fail(topic, "", transcript)
+                else:
+                    self._mark_pass(transcript)
+            else:
+                out, err = run_code(code, stdin)
+                if err:
+                    self._mark_fail(topic, "", err)
+                else:
+                    self._mark_pass(out)
+            return
         if stdin:
             # interactive input: run in a PTY so the prompt + typed value show up
             transcript = run_code_echo(code, stdin)
