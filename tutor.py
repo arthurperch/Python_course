@@ -14012,7 +14012,7 @@ class TutorApp(App):
                 sel_line = i
             else:
                 line = Text()
-                line.append("  ")
+                line.append("▸ ", style="dim")
                 line.append(name, style=f"bold {color}")
                 line.append("  ")
                 line.append(desc, style="dim")
@@ -14024,6 +14024,11 @@ class TutorApp(App):
                                       else "dim"))
             t.append_text(line)
             t.append("\n")
+            # a clean divider between the non-Python paths and the Python
+            # course stack, and again before the review queue
+            if si == -1 or si == len(GROUPS) - 1:
+                t.append("─" * 46, style="#3a3a3a")
+                t.append("\n")
         # one context line for the selected series: where you'd resume
         t.append("\n")
         note = ""
@@ -15404,6 +15409,10 @@ class TutorApp(App):
         if self._ghost_fill:
             if key == "enter":
                 event.stop(); event.prevent_default()
+                if not self._ghost_fill_input:
+                    # require a value — never fall back to the old "bean"/default
+                    self._ghost_nudge_show()
+                    return
                 self._ghost_run_fill()
                 return
             if key == "backspace":
@@ -16169,13 +16178,12 @@ class TutorApp(App):
                 ls = max(0, s - pos)
                 le = min(len(line), e - pos)
                 t.append(line[:ls], style="#cdd6f4")
-                shown = val if val else "___"
-                # a clear yellow "fill slot" — the user types INTO this box
-                slot = Text()
-                slot.append(shown, style="bold #1e1e2e on #facc15")
-                slot.append("█" if self._ghost_blink_on else " ",
-                            style="bold #1e1e2e on #facc15")
-                t.append_text(slot)
+                # the blank is a bold '|' block — no underscores, no padding.
+                # typed value is normal text; spaces appear only when typed.
+                if val:
+                    t.append(val, style="#e6e6f0")
+                t.append("|" if self._ghost_blink_on else " ",
+                         style="bold #1e1e2e on #facc15")
                 t.append(line[le:], style="#cdd6f4")
             else:
                 t.append(line, style="#cdd6f4")
@@ -16218,7 +16226,7 @@ class TutorApp(App):
         """Render a character visibly even when it's a space or newline, so a
         missed/wrong space isn't an invisible blank."""
         if ch == " ":
-            return "·"
+            return "_"
         if ch == "\n":
             return "↵"
         if ch == "\t":
@@ -16386,6 +16394,10 @@ class TutorApp(App):
         return _box_lines([Text(label, style="bold #22c55e")])
 
     def _ghost_render_console(self):
+        if self._ghost_fill:
+            if self._ghost_nudge:
+                return Text("type a value first — then Enter to run", style="bold yellow")
+            return Text("type any value into the blank · Enter to run", style="dim")
         if self._ghost_phase == "type":
             # recall modes show the EXPECTED output as the goal to plan against
             if self._ghost_goal_out and self._ghost_mode in ("fade", "blind"):
