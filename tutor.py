@@ -3553,8 +3553,8 @@ def _hint_image_path() -> str:
 
 
 try:
-    from textual_image.widget import AutoImage as _TIImage
-    from textual_image.widget import AutoRenderable as _TIRenderable
+    from textual_image.widget import TGPImage as _TIImage
+    from textual_image.widget import TGPRenderable as _TIRenderable
 except Exception:
     _TIImage = None
     _TIRenderable = None
@@ -15474,6 +15474,9 @@ class TutorApp(App):
             self._ghost_goal_out = self._ghost_goal_output()
         else:
             self._ghost_goal_out = ""
+        # walkthrough: speak what to write on the FIRST line (typing modes only)
+        if not self._ghost_fill and self._ghost_mode not in ("watch", "fill"):
+            self._ghost_speak_line(self._ghost_current_line())
         # say one short useful thing about THIS example; announce the ramp level
         # the first time it changes, so the progression is explained as you go
         if self.voice_on:
@@ -15535,16 +15538,30 @@ class TutorApp(App):
                 and self._ghost_target[self._ghost_pos] == " "
                 and self._ghost_structural(self._ghost_pos))
 
+    def _ghost_current_line(self):
+        """The line the cursor is currently on (the one the user is writing)."""
+        ls = self._ghost_target.rfind("\n", 0, self._ghost_pos) + 1
+        le = self._ghost_target.find("\n", self._ghost_pos)
+        if le == -1:
+            le = len(self._ghost_target)
+        return self._ghost_target[ls:le]
+
+    def _ghost_speak_line(self, line):
+        """Walkthrough: speak what to write on this line (e.g. 'write else colon')."""
+        cue = _line_cue(line)
+        if not cue:
+            return
+        if self.writing_tts_on:
+            speak_write(f"write {cue}")
+        elif self.voice_on:
+            speak(f"write {cue}")
+
     def _ghost_consume_newline(self):
         if self._ghost_at_newline():
-            if self.writing_tts_on:
-                # speak a quick cue for the line just completed, e.g. "a equals 4"
-                ls = self._ghost_target.rfind("\n", 0, self._ghost_pos) + 1
-                cue = _line_cue(self._ghost_target[ls:self._ghost_pos])
-                if cue:
-                    speak_write(cue)
             self._ghost_pos += 1
             play_key()
+            # walkthrough: speak what to write on the NEXT line
+            self._ghost_speak_line(self._ghost_current_line())
             self._ghost_render()
 
     def _ghost_consume_indent(self):
@@ -16235,7 +16252,7 @@ class TutorApp(App):
             "finish": "FINISH IT  —  I started, you finish the rest",
             "write": "WRITE IT ALL  —  you're locked in, type it out",
             "change": "CHANGE IT  —  I edited one thing, type it and see the output change",
-            "fade": "RECALL  —  the ghost fades as you type; letters only, spaces stay",
+            "fade": "FIX THIS CODE  —  syntax shows, words are hinted by their first letter",
             "blind": "BLIND  —  write it from memory, no ghost",
         }.get(self._ghost_mode, "GHOST WRITE")
         if self._ghost_required:
@@ -16252,7 +16269,7 @@ class TutorApp(App):
             "finish": "finish the dim part · Enter = new line · Tab = indent · Enter at the end = run",
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
             "change": "type the changed code · Enter = new line · Tab = indent · Enter at the end = run",
-            "fade": "recall each char · spaces stay · Enter = new line · Tab = indent · silent on miss",
+            "fade": "fix the code · syntax stays, words show their first letter · silent on miss",
             "blind": "write from memory · two clean runs in a row = mastered",
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
@@ -16608,29 +16625,30 @@ class TutorApp(App):
                 # the normal dim ghost
                 rest = line[typed_n:]
                 if self._ghost_fade:
-                    # "show code for 5s" peek: reveal the WHOLE line in purple.
-                    # Otherwise the purple hint starts deep and progressively
-                    # fades to invisible as the user writes more.
-                    if self._ghost_reveal > 0:
-                        color = "#cba6f7"
-                        gone = False
-                    else:
-                        # hide sooner: the hint fades ~1.8x faster than linear
-                        prog = min(1.0, (self._ghost_pos / max(1, len(self._ghost_target)))
-                                   / max(0.05, self._ghost_fade_strength) * 1.8)
-                        color = self._fade_purple(prog)
-                        gone = prog >= 0.9   # hint is essentially invisible now
+                    # FIX THIS CODE: syntax symbols stay fully visible (the clear
+                    # structural hints), while each word shows only its first
+                    # letter — the rest is a symbolic '▢' blank to recall.
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
-                        if ch == " ":
+                        if self._ghost_reveal > 0:
+                            # the 3s peek — reveal the whole char in purple
+                            t.append(self._ghost_visible(ch) if ch == " " else ch,
+                                     style="reverse bold #cba6f7" if cur else "#cba6f7")
+                        elif ch == " ":
                             t.append(" ", style="reverse bold" if cur else "#585b70")
-                        elif cur:
-                            # once the hint is gone, the cursor is a blank block —
-                            # it never reveals the char you're meant to recall
-                            t.append(" " if gone else ch, style="reverse bold #cba6f7")
+                        elif ch.isalnum() or ch == "_":
+                            # word char: first letter shown, the rest as a blank
+                            prev = rest[k - 1] if k > 0 else (
+                                line[typed_n - 1] if typed_n > 0 else "")
+                            is_first = not (prev.isalnum() or prev == "_")
+                            if is_first:
+                                t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
+                            else:
+                                t.append("▢", style="reverse bold #6d5c9e" if cur else "#6d5c9e")
                         else:
-                            t.append(ch, style=color)
+                            # syntax symbol — always visible (the clear hint)
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
                 elif blind:
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
