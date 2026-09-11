@@ -15672,13 +15672,9 @@ class TutorApp(App):
             self._ghost_hints = not self._ghost_hints
             self._ghost_render_hints()
             return
-        if key == "h" and self._ghost_fade:
-            # "show code" hint — one per hidden action. If the hint is already
-            # spent (or the reveal is showing), the button does nothing.
-            event.stop(); event.prevent_default()
-            if not self._ghost_used_hint and self._ghost_reveal <= 0:
-                self._ghost_start_reveal()
-            return
+        # NOTE: no keyboard shortcut for the show-code hint — 'h' is a normal
+        # letter (e.g. in "while"), so the hint is triggered ONLY by clicking
+        # the image button (HintImage.on_click).
         if self._ghost_phase == "lab":
             # watch lab: Enter reveals the next variant's output; when all are
             # shown, Enter moves on to the next drill
@@ -16286,8 +16282,8 @@ class TutorApp(App):
                 foot = Text("hint used", style="dim")
             else:
                 b = Text()
-                b.append("show code for 3s", style="bold #cba6f7" if flick else "#6d5c9e")
-                b.append("   [h]", style="bold #7f849c")
+                b.append("click the image → show code for 3s",
+                         style="bold #cba6f7" if flick else "#6d5c9e")
                 foot = b
         # render each region into its OWN widget, so the code box can shake on
         # its own without moving the header, console, or footer.
