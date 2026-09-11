@@ -4755,6 +4755,7 @@ def load_progress() -> dict:
             p.setdefault("stats", {})
             p.setdefault("last", "")
             p.setdefault("ghosted", [])
+            p.setdefault("failed", [])   # flat indices of challenges to re-practice
             p.setdefault("structure_taught", False)
             p.setdefault("topics_taught", [])
             # voice/sfx faders are NOT setdefault'd here — a legacy `volume`/`muted`
@@ -4764,7 +4765,7 @@ def load_progress() -> dict:
         except Exception:
             pass
     return {"xp": 0, "done": 0, "streak": 0, "best_streak": 0,
-            "topics": [], "stats": {}, "last": "", "ghosted": [],
+            "topics": [], "stats": {}, "last": "", "ghosted": [], "failed": [],
             "structure_taught": False, "topics_taught": [],
             "voice_volume": 1.0, "voice_muted": False,
             "sfx_volume": 1.0, "sfx_muted": False}
@@ -14126,7 +14127,13 @@ class TutorApp(App):
                     and self.p["dev_step"] >= len(DEV_LESSONS))
         build_done = (isinstance(self.p.get("build_step"), int)
                       and self.p["build_step"] >= len(SHELL_LESSONS))
-        rows = [
+        failed = self._failed_entries()
+        rows = []
+        if failed:
+            # the 'fix these' queue rides at the VERY top — mistakes first
+            rows.append((-5, "FIX THESE", "#f87171", "re-practice what you missed",
+                         f"{len(failed)} to fix"))
+        rows += [
             (-4, "NETWORK+", "#ffa657", "noob → network engineer",
              "✓ done" if net_done else ""),
             (-3, "CLOUD & DEVOPS", "#7dd3fc", "noob → engineer",
@@ -14181,7 +14188,10 @@ class TutorApp(App):
         # one context line for the selected series: where you'd resume
         t.append("\n")
         note = ""
-        if self.series_sel == -4:
+        if self.series_sel == -5:
+            failed = self._failed_entries()
+            note = f"{len(failed)} challenges to fix · Enter to re-practice the first one"
+        elif self.series_sel == -4:
             label = net_checkpoint_label(self.p)
             note = f"resume: {label}" if label else "new path — start from the top"
             n_due = len(self._net_due_concepts())
@@ -14252,6 +14262,24 @@ class TutorApp(App):
         return g["challenges"][self.menu_sel] if 0 <= self.menu_sel < len(g["challenges"]) else None
 
     def _render_menu_preview(self):
+        if self.series_sel == -5:
+            self.query_one("#menu-preview-title", Static).update(
+                "FIX THESE — your mistakes")
+            t = Text()
+            failed = self._failed_entries()
+            t.append("Challenges you've missed, ready to re-practice. "
+                     "Fix one and it leaves the list.\n\n", style="#f0f0f5")
+            for gi, ci, title in failed[:12]:
+                t.append("• ", style="#f87171")
+                t.append(title, style="bold #fca5a5")
+                t.append("  ", style="dim")
+                t.append(GROUPS[gi]["name"], style="dim")
+                t.append("\n")
+            if len(failed) > 12:
+                t.append(f"\n… and {len(failed) - 12} more\n", style="dim")
+            t.append("\nEnter jumps into the first one.", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
         if self.series_sel == len(GROUPS):
             self.query_one("#menu-preview-title", Static).update(
                 "PYTHON REVIEW — spaced repetition")
@@ -14689,6 +14717,29 @@ class TutorApp(App):
             n += len(GROUPS[gi]["challenges"])
         return n + self.ch_idx
 
+    def _failed_add(self, flat):
+        """Remember a failed challenge so the 'fix these' queue can re-practice it."""
+        if flat not in self.p["failed"]:
+            self.p["failed"].append(flat)
+            save_progress(self.p)
+
+    def _failed_remove(self, flat):
+        """A pass clears the challenge from the 'fix these' queue."""
+        if flat in self.p["failed"]:
+            self.p["failed"].remove(flat)
+            save_progress(self.p)
+
+    def _failed_entries(self):
+        """[(group_idx, ch_idx, title), ...] for the pinned 'fix these' queue."""
+        out = []
+        n = 0
+        for gi, g in enumerate(GROUPS):
+            for ci, c in enumerate(g["challenges"]):
+                if n in self.p["failed"]:
+                    out.append((gi, ci, c["title"]))
+                n += 1
+        return out
+
     def action_start(self):
         if self._jump_visible:
             self._jump_enter()
@@ -14713,6 +14764,12 @@ class TutorApp(App):
             return
         if self.mode == "menu":
             if self.menu_level == "series":
+                if self.series_sel == -5:
+                    # jump into the FIRST failed challenge to re-practice it
+                    entries = self._failed_entries()
+                    if entries:
+                        self._jump_to(entries[0][0], entries[0][1])
+                    return
                 if self.series_sel == -4:
                     self.menu_level = "net_modules"
                     self.menu_sel = 0
@@ -20114,6 +20171,7 @@ class TutorApp(App):
         self.p["xp"] += 50
         save_progress(self.p)
         self.last = "pass"
+        self._failed_remove(self._flat_index())
         self.query_one("#editor", VimEditor).blur()
         self.query_one("#editor", VimEditor).hint_lines = set()
         if actual.strip():
@@ -20148,6 +20206,7 @@ class TutorApp(App):
         challenge_stat(self.p, self._current()["title"])["wrong"] += 1
         save_progress(self.p)
         self.last = "fail"
+        self._failed_add(self._flat_index())
         _, fail = self._sounds_for(key)
         if fail and self.music_on:
             play_file(fail, volume=self._fx_volume())
@@ -20349,6 +20408,7 @@ class TutorApp(App):
         self.p["xp"] += 50
         save_progress(self.p)
         self.last = "pass"
+        self._failed_remove(self._flat_index())
         # blur the editor so w (watch) / l (listen) / e (lesson) reach the app
         # bindings now that the user is done typing — not vim's word motions
         self.query_one("#editor", VimEditor).blur()
@@ -20449,6 +20509,7 @@ class TutorApp(App):
         challenge_stat(self.p, self._current()["title"])["wrong"] += 1
         save_progress(self.p)
         self.last = "fail"
+        self._failed_add(self._flat_index())
         # NOTE: the fail SOUND waits for _finalize_fail / _visual_finish_fail —
         # it plays AFTER the run animation finishes, as the verdict lands.
         a = self.attempts[key]
@@ -20529,8 +20590,9 @@ class TutorApp(App):
                     t.append(why, style="#f0f0f5")
             else:
                 t.append(hint, style="red")
-        if self.hints_on and not crash:
-            # underline the exact broken lines in the editor + say what's off
+        if not crash:
+            # ALWAYS underline the broken lines + say what's off — the mistake is
+            # the lesson, so this fires on every non-crash fail (not just hints_on)
             ed = self.query_one("#editor", VimEditor)
             issues, bad_lines = self._analyze_code(self._current(), ed.get_text())
             ed.hint_lines = set(bad_lines)
@@ -20709,9 +20771,18 @@ class TutorApp(App):
                 msg = first[-1] if first else err.strip()
                 issues.append(f"It errored: {msg}")
             else:
-                for e in c.get("expect", []):
-                    if e.lower() not in out.lower():
-                        issues.append(f"The output is missing {e!r}.")
+                missing_vals = [e for e in c.get("expect", [])
+                                if e.lower() not in out.lower()]
+                if missing_vals:
+                    issues.append("The output is missing "
+                                  + ", ".join(repr(m) for m in missing_vals) + ".")
+                    # pinpoint the lines that produce/control the output
+                    for i, ln in enumerate(lines, 1):
+                        s = ln.strip()
+                        if s.startswith("print") or any(
+                                k in s for k in ("for ", "while ", "range",
+                                                 "if ", "elif ", "else")):
+                            bad_lines.add(i)
         if not issues:
             issues.append("Honestly, this looks solid — run it and see if it passes!")
         return issues, sorted(bad_lines)
