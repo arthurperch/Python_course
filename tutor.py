@@ -2650,7 +2650,9 @@ def verify(challenge: dict, code: str, stdout: str) -> tuple[bool, str]:
     missing = [e for e in challenge.get("expect", []) if e.lower() not in out]
     if missing:
         return False, "output should contain " + ", ".join(repr(m) for m in missing)
-    missing_need = [n for n in challenge.get("need", []) if n not in code]
+    code_body = "\n".join(ln for ln in code.split("\n")
+                           if not ln.strip().startswith("#"))
+    missing_need = [n for n in challenge.get("need", []) if n not in code_body]
     if missing_need:
         return False, "try to use " + ", ".join(repr(m) for m in missing_need)
     return True, ""
@@ -14823,6 +14825,20 @@ class TutorApp(App):
         if self.last == "pass":
             self._advance_after_pass()
 
+    def _plan_template(self, c):
+        """A 'think before you type' comment block that trains decomposition —
+        the student replaces the placeholders with their own plan. Pure English,
+        no code tokens, so it never falsely satisfies a `need` check."""
+        if c.get("predict") or c.get("free"):
+            return ""   # read-the-output and free-answer don't need a plan
+        return (
+            "# your plan — think before you type:\n"
+            "# 1. goal — what should this print or return?\n"
+            "# 2. tool — loop, decision, or a function?\n"
+            "# 3. steps — list them, then write the code below\n"
+            "\n"
+        )
+
     def _render_challenge(self):
         c = self._current()
         xp, lvl = self.p["xp"], level_for(self.p["xp"])
@@ -14844,7 +14860,8 @@ class TutorApp(App):
         self.query_one("#goal", Static).update(self._goal_panel(c))
         self.query_one("#example-ref", Static).update(
             "[dim]worked examples are on the right →  ([reverse]F8[/] hide/show · scroll for more)[/]")
-        self.query_one("#editor", VimEditor).set_text(c["starter"])
+        self.query_one("#editor", VimEditor).set_text(
+            self._plan_template(c) + c["starter"])
         self.query_one("#output", Static).update("")
         self.last = None
         self._cancel_celebrate()
