@@ -16449,8 +16449,9 @@ class TutorApp(App):
                     if cur >= len(val):
                         t.append(" ", style="reverse bold")
                 elif hint:
-                    t.append(" ", style="reverse bold")
-                    t.append(hint, style="dim #8a7bc4")
+                    # block cursor sits ON the first hint char (no leading space)
+                    t.append(hint[0], style="reverse bold")
+                    t.append(hint[1:], style="dim #8a7bc4")
                 else:
                     t.append(" ", style="reverse bold")
                 # pre-filled text AFTER the blank — normal, non-editable
