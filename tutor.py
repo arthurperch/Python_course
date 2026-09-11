@@ -3547,6 +3547,43 @@ def _hint_image_text():
     return _HINT_IMG_TEXT
 
 
+def _hint_image_path() -> str:
+    """Absolute path to the circled hint image (hint.png)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "hint.png")
+
+
+try:
+    from textual_image.widget import AutoImage as _TIImage
+    from textual_image.widget import AutoRenderable as _TIRenderable
+except Exception:
+    _TIImage = None
+    _TIRenderable = None
+
+
+if _TIImage is not None:
+    class HintImage(_TIImage, Renderable=_TIRenderable):
+        """The 'show code' hint button — the REAL circled meme image (terminal
+        graphics protocol), clickable, rounded border."""
+
+        def on_click(self, event):
+            event.stop()
+            app = self.app
+            if getattr(app, "_ghost_on", False) and getattr(app, "_ghost_fade", False):
+                app._ghost_start_reveal()
+else:
+    class HintImage(Static):
+        """Fallback hint button: pixel art when the image widget is absent."""
+
+        def __init__(self, image=None, **kw):
+            super().__init__(_hint_image_text() or "◉", **kw)
+
+        def on_click(self, event):
+            event.stop()
+            app = self.app
+            if getattr(app, "_ghost_on", False) and getattr(app, "_ghost_fade", False):
+                app._ghost_start_reveal()
+
+
 def play_ghost_error() -> None:
     """A comedic 'womp' for a mistyped ghost letter — three quick descending blips."""
     try:
@@ -12833,7 +12870,9 @@ class TutorApp(App):
     #ghost-why { width: 34%; border: tall #313244; padding: 1 1; background: #181825; }
     #ghost-why.active { border: tall #89b4fa; }
     #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
-    #ghost-foot { height: auto; min-height: 1; padding: 0 1; }
+    #ghost-foot-row { height: 5; padding: 0 1; }
+    #ghost-foot { width: 1fr; height: auto; min-height: 1; padding: 1 1 0 1; }
+    #hint-img { width: 10; height: 5; border: round #cba6f7; }
     #vim { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #vim.visible { display: block; }
     #vim-head { width: 100%; text-align: center; }
@@ -13306,7 +13345,9 @@ class TutorApp(App):
                     yield Static("", id="ghost-statusline-b")
                 yield Static("", id="ghost-why")
             yield Static("", id="ghost-console")
-            yield Static("", id="ghost-foot")
+            with Horizontal(id="ghost-foot-row"):
+                yield HintImage(_hint_image_path(), id="hint-img")
+                yield Static("", id="ghost-foot")
         yield Static("", id="ghost-exit-popup")
         with VimTrainer(id="vim"):
             yield Static("", id="vim-head")
@@ -16216,27 +16257,19 @@ class TutorApp(App):
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
-        # the "show code" hint button: the circled hint.png image + a countdown
-        # ABOVE it while the purple reveal is showing, and a spent state after
+        # the "show code" hint: the text label sits next to the real image button
         if self._ghost_fade:
             flick = self._ghost_blink_on
-            img = _hint_image_text()
             if self._ghost_reveal > 0:
                 f = Text()
                 f.append(f"   {self._ghost_reveal}   ", style="bold #1e1e2e on #cba6f7")
-                f.append("\n")
-                f.append_text(img)
-                f.append("\n code shown — remember it", style="bold #cba6f7" if flick else "#6d5c9e")
+                f.append("  code shown — remember it", style="bold #cba6f7" if flick else "#6d5c9e")
                 foot = f
             elif self._ghost_used_hint:
-                f = Text()
-                f.append_text(img)
-                f.append("\n hint used", style="dim")
-                foot = f
+                foot = Text("hint used", style="dim")
             else:
                 b = Text()
-                b.append_text(img)
-                b.append("\n show code for 3s", style="bold #cba6f7" if flick else "#6d5c9e")
+                b.append("show code for 3s", style="bold #cba6f7" if flick else "#6d5c9e")
                 b.append("   [h]", style="bold #7f849c")
                 foot = b
         # render each region into its OWN widget, so the code box can shake on
@@ -16247,6 +16280,9 @@ class TutorApp(App):
         self.query_one("#ghost-console", Static).update(
             console if console.cell_len else Text(""))
         self.query_one("#ghost-foot", Static).update(foot)
+        # the hint image button only shows during fade recall
+        self.query_one("#ghost-foot-row", Horizontal).display = (
+            "block" if self._ghost_fade else "none")
 
     def _ghost_mode_status(self):
         """(mode, color) for the vim chrome — INSERT while typing, NORMAL the
