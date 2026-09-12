@@ -12930,6 +12930,8 @@ class TutorApp(App):
     #split-drag:hover { background: $accent; }
     #task-check { dock: bottom; width: 100%; min-height: 3; }
     #task-step { dock: bottom; width: 100%; min-height: 3; }
+    #task-run { dock: bottom; width: 100%; min-height: 2; }
+    #task-continue { dock: bottom; width: 100%; min-height: 3; }
     ExLine { width: 100%; height: 1; padding: 0 1; color: $text-muted; }
     ExLine:hover { background: $boost; color: $text; }
     #ex-lines { height: auto; }
@@ -13461,8 +13463,10 @@ class TutorApp(App):
                     yield Static("", id="side-inner")
                     with Vertical(id="ex-lines"):
                         pass
-                yield Button("✓ CHECK", id="task-check", variant="primary")
+                yield Button("✓ COMPLETE", id="task-check", variant="primary")
+                yield Button("▶ RUN", id="task-run", variant="default")
                 yield Button("▶ STEP", id="task-step", variant="default")
+                yield Button("▶ CONTINUE", id="task-continue", variant="success", classes="hidden")
             yield Markdown("", id="cheat")
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
@@ -13621,6 +13625,19 @@ class TutorApp(App):
             btn.remove_class("hidden")
         else:
             btn.add_class("hidden")
+
+    def _sync_continue_button(self):
+        """The CONTINUE button unlocks only after a challenge is completed —
+        completion never auto-advances, so the student moves on when ready."""
+        show = (self.mode == "challenge" and self.started and self.last == "pass")
+        try:
+            btn = self.query_one("#task-continue", Button)
+            if show:
+                btn.remove_class("hidden")
+            else:
+                btn.add_class("hidden")
+        except Exception:
+            pass
 
     def _render_menu(self):
         self.query_one("#menu-banner", Static).update(self._banner_text())
@@ -14707,11 +14724,20 @@ class TutorApp(App):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "task-check":
-            # the CHECK button is the mouse-friendly path to run+submit —
+            # the COMPLETE button is the mouse-friendly path to run+check —
             # identical to typing :submit in the editor command line
             if (self.mode == "challenge" and self.started
                     and not self.lesson_gate):
                 self._run_and_submit()
+            return
+        if event.button.id == "task-run":
+            # Run only — execute, show output, no verdict
+            if (self.mode == "challenge" and self.started
+                    and not self.lesson_gate):
+                self._run_only()
+            return
+        if event.button.id == "task-continue":
+            self._advance_after_pass()
             return
         if event.button.id == "task-step":
             self.action_step()
@@ -15196,15 +15222,16 @@ class TutorApp(App):
             f"[bold]tutor[/]  ·  LVL {lvl} [yellow]{xp} XP[/]  ·  "
             f"[green]{self.p['done']} done[/]  ·  streak [yellow]{self.p['streak']}[/]"
         )
+        num = self._flat_index() + 1
         if c.get("predict"):
             self.query_one("#challenge", Markdown).update(
-                f"## {c['title']}\n\n"
+                f"## Challenge {num:02d} — {c['title']}\n\n"
                 f"### READ THIS CODE\n```python\n{c['code']}\n```\n\n"
                 f"### WHAT TO DO\n{c['prompt']}"
             )
         else:
             self.query_one("#challenge", Markdown).update(
-                f"## {c['title']}\n\n"
+                f"## Challenge {num:02d} — {c['title']}\n\n"
                 f"### WHAT TO DO\n{c['prompt']}"
             )
         if self._mastery_on:
@@ -15225,6 +15252,7 @@ class TutorApp(App):
         self._cancel_celebrate()
         self._cancel_output_reveal()
         self.query_one("#confetti", Confetti).dismiss()
+        self._sync_continue_button()
         self._update_status()
         self._update_guide()
         self._set_task_arrow(c["title"])
@@ -20503,7 +20531,8 @@ class TutorApp(App):
         self._run_and_submit()
 
     def _run_and_submit(self):
-        """Run the buffer and, if it runs clean, submit it for a pass/fail verdict."""
+        """Complete Challenge: run the buffer and, if it runs clean, submit it
+        for a pass/fail verdict. This is the 'check the solution' path."""
         if not self.started:
             self.action_start()
             return
@@ -20551,6 +20580,44 @@ class TutorApp(App):
             self._mark_pass(out)
         else:
             self._mark_fail(topic, out, hint)
+
+    def _run_only(self):
+        """Run: execute the current code and show its output — NO pass/fail
+        verdict, no sounds, no progress. The 'just experiment' path, separate
+        from Complete. Completing (or failing) the challenge is unaffected."""
+        if not self.started:
+            self.action_start()
+            return
+        c = self._current()
+        stdin = c.get("stdin", "")
+        if c.get("predict"):
+            # reveal what the code really prints (read-the-code answer)
+            code = c["code"]
+            if stdin:
+                actual = run_code_echo(code, stdin)
+            else:
+                out, err = run_code(code, stdin)
+                actual = (out if not err else err).rstrip("\n")
+            self._show_run_output(actual)
+            return
+        code = self.query_one("#editor", VimEditor).get_text()
+        if stdin:
+            transcript = run_code_echo(code, stdin)
+            self._show_run_output(transcript)
+            return
+        out, err = run_code(code, stdin)
+        self._show_run_output(out if not err else err)
+
+    def _show_run_output(self, out):
+        """Show a plain run's output — no verdict, no sounds, no progress."""
+        out = _cap_lines(out.rstrip("\n"), 400)
+        t = Text()
+        if out.strip():
+            t.append(out, style="green")
+        else:
+            t.append("(no output)", style="dim")
+        self.query_one("#output", Static).update(t)
+        self._update_guide()
 
     # ---- predict-the-output (READ the code) ------------------------------- #
     # The code is already written — the student predicts what it prints, types
@@ -20822,6 +20889,7 @@ class TutorApp(App):
         save_progress(self.p)
         self.last = "pass"
         self._failed_remove(self._flat_index())
+        self._sync_continue_button()   # unlock CONTINUE the moment it passes
         # blur the editor so w (watch) / l (listen) / e (lesson) reach the app
         # bindings now that the user is done typing — not vim's word motions
         self.query_one("#editor", VimEditor).blur()
@@ -20851,6 +20919,7 @@ class TutorApp(App):
         t.append("  press Enter", style="dim")
         self.query_one("#output", Static).update(t)
         self._update_guide()
+        self._sync_continue_button()
         # the verdict just landed — green border flash, then celebrate
         self._flash_output_border("#22c55e")
         win, _ = self._sounds_for(self._flat_index())
@@ -21561,8 +21630,14 @@ class TutorApp(App):
     def _enter_editor(self):
         self.lesson_gate = False
         self.query_one("#gate", Static).remove_class("visible")
-        # mandatory ghost-writing drill before the editor unlocks — EVERY time
-        # you open a challenge (done or not), no skipping. Muscle memory first.
+        # A challenge you've already completed skips the ghost drill + guided
+        # hints — free editing, experiment and re-run without hand-holding.
+        c = self._current()
+        if challenge_stat(self.p, c["title"])["right"] > 0:
+            self._focus_editor()
+            return
+        # mandatory ghost-writing drill before the editor unlocks — muscle
+        # memory first, for challenges you haven't solved yet.
         self._start_ghost_required()
 
     def _focus_editor(self):
@@ -22627,13 +22702,16 @@ class TutorApp(App):
             self.exit()
         elif raw in ("w", "write"):
             self.query_one("#output", Static).update("[bold]\"challenge.py\" written[/]")
-        elif raw in ("submit", "run"):
-            # lazy alias — same as :!python3 %
+        elif raw == "run":
+            # Run only — execute and show output, no pass/fail verdict
+            self._run_only()
+        elif raw == "submit":
+            # Complete Challenge — run + check the solution
             self._run_and_submit()
         elif raw == "ghost":
             self.action_ghost()
         elif raw.startswith("!python3"):
-            # the real nvim way to test: :!python3 %  — runs AND submits for a verdict
+            # the real nvim way to complete: :!python3 %  — runs AND checks
             self._run_and_submit()
         else:
             self.query_one("#output", Static).update(f"[dim]Unknown command: :{raw}[/]")
