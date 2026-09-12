@@ -3226,6 +3226,27 @@ def _cue_tokens(expr: str) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def _line_need(line: str) -> list[str]:
+    """The syntax tokens a line needs — a per-line 'what's required' hint. Shows
+    the keywords, structural symbols, and quote/string marker of the line."""
+    line = line.strip()
+    if not line:
+        return []
+    toks = []
+    for kw in ("def", "if", "elif", "else", "for", "while", "return",
+               "print", "in", "not", "and", "or", "class", "import", "range",
+               "len", "input", "append", "with", "open", "as", "yield", "lambda"):
+        if re.search(rf"\b{kw}\b", line):
+            toks.append(kw)
+    for sym in ("(", ")", ":", "[", "]", "{", "}", "=", "+", "-", "*", "/", "%",
+                ".", ",", ">", "<", "==", "!="):
+        if sym in line:
+            toks.append(sym)
+    if '"' in line or "'" in line:
+        toks.append('""')
+    return toks
+
+
 def _line_cue(line: str) -> str:
     """A short phrase describing what a code line does, for the writing voice."""
     line = line.strip()
@@ -16782,6 +16803,11 @@ class TutorApp(App):
             if self._ghost_goal_out and self._ghost_mode in ("fade", "blind"):
                 g = Text("GOAL OUTPUT:  ", style="bold #7dd3fc")
                 g.append(self._ghost_goal_out, style="bold #facc15")
+                # per-line hint: what syntax the current line needs
+                need = _line_need(self._ghost_current_line())
+                if need:
+                    g.append("\nTHIS LINE:  ", style="bold #cba6f7")
+                    g.append("  ".join(f"`{t}`" for t in need), style="#e6e6f0")
                 if self._ghost_done:
                     g.append("\n")
                     g.append_text(self._ghost_enter_button())
