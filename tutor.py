@@ -12941,6 +12941,8 @@ class TutorApp(App):
     #example-ref { height: auto; padding: 1 2; background: #0d1117; border-bottom: solid $warning; }
     #editor { height: 1fr; padding: 1 2; }
     #output-scroll { height: 10; border-top: solid $primary; background: $surface-darken-1; }
+    #out-drag { height: 1; background: $surface-darken-2; }
+    #out-drag:hover { background: $accent; }
     #output { height: auto; padding: 0 1; }
     #output-bar { height: 1; padding: 0 1; background: $boost; }
     #guide { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
@@ -13167,6 +13169,9 @@ class TutorApp(App):
         self._demo_timer = None
         self._demo_next_timer = None
         self._split_dragging = False   # dragging the editor/task divider
+        self._out_dragging = False     # dragging the editor↔output divider
+        self._out_drag_start_y = 0
+        self._out_drag_start_h = 10
         self._demo_gen = 0
         self._demo_phase = "idle"
         self._demo_code = ""
@@ -13455,6 +13460,7 @@ class TutorApp(App):
                 yield Static("", id="editor-label")
                 yield Static("", id="example-ref")
                 yield VimEditor(id="editor")
+                yield Static("", id="out-drag")
                 with VerticalScroll(id="output-scroll"):
                     yield Static("", id="output")
                 yield Static("", id="output-bar")
@@ -20310,6 +20316,15 @@ class TutorApp(App):
             self._split_dragging = True
             self.capture_mouse(event.widget)
             return
+        if getattr(event.widget, "id", None) == "out-drag":
+            self._out_dragging = True
+            self._out_drag_start_y = event.screen_y
+            try:
+                self._out_drag_start_h = self.query_one("#output-scroll", VerticalScroll).size.height
+            except Exception:
+                self._out_drag_start_h = 10
+            self.capture_mouse(event.widget)
+            return
         if isinstance(event.widget, ExLine):
             # clicked an example line: explain it out loud + flash it
             if self.voice_on:
@@ -20331,8 +20346,23 @@ class TutorApp(App):
                 self.release_mouse()
             except Exception:
                 pass
+        if getattr(self, "_out_dragging", False):
+            self._out_dragging = False
+            try:
+                self.release_mouse()
+            except Exception:
+                pass
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
+        if getattr(self, "_out_dragging", False):
+            # drag up grows the output console, drag down shrinks it
+            delta = self._out_drag_start_y - event.screen_y
+            h = max(3, min(30, self._out_drag_start_h + delta))
+            try:
+                self.query_one("#output-scroll", VerticalScroll).styles.height = f"{h}"
+            except Exception:
+                pass
+            return
         if not getattr(self, "_split_dragging", False):
             return
         try:
