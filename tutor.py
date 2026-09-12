@@ -15710,13 +15710,32 @@ class TutorApp(App):
         self.query_one("#ghost", GhostWriter).focus()
         self._ghost_begin_example(0)
 
+    def _ghost_help_level(self) -> int:
+        """How much help the ghost gives, based on how far through the current
+        course you are. 0 = follow the ghost (start), 3 = recall from memory
+        (end). The 50-challenge ramp IS this: help melts away gradually."""
+        if self.group_idx >= len(GROUPS):
+            return 3
+        n = max(1, len(GROUPS[self.group_idx]["challenges"]) - 1)
+        frac = self.ch_idx / max(1, n)
+        if frac < 0.25:
+            return 0
+        if frac < 0.5:
+            return 1
+        if frac < 0.75:
+            return 2
+        return 3
+
     def _ghost_pool(self, c):
         """Every distinct worked example for this challenge/topic (EXAMPLES +
-        inline + lesson examples), padded with value-swapped variants up to
-        GHOST_TARGET — so the drill lands ~8 different styles of the syntax."""
+        inline + lesson examples), padded with value-swapped variants up to the
+        help-level target. The help level ramps with WHERE you are in the course:
+        early = more reps + full ghost, late = fewer reps + fade/blind recall."""
         codes = []
         seen = set()
         starter = c.get("starter", "") or ""
+        level = self._ghost_help_level()
+        target = [5, 4, 3, 2][level]   # reps shrink as you improve
 
         def add(code, stdin="", prefix=""):
             code = _pers((code or "").strip())
@@ -15736,14 +15755,14 @@ class TutorApp(App):
         # cap the write reps — never rewrite the same shape more than a few
         # times; the value-swapping keeps each one a *different* value so the
         # learner sees "same syntax, different words", not identical text
-        if len(codes) > GHOST_TARGET:
-            codes = codes[:GHOST_TARGET]
+        if len(codes) > target:
+            codes = codes[:target]
         # pad with value-swapped variants (same structure, different values)
         base = list(codes)
-        while len(codes) < GHOST_TARGET and base:
+        while len(codes) < target and base:
             added = False
             for ex in base:
-                if len(codes) >= GHOST_TARGET:
+                if len(codes) >= target:
                     break
                 var = _ghost_variant(ex["code"], ex.get("stdin", ""), ex.get("prefix", ""))
                 if var and var not in seen:
@@ -15757,7 +15776,7 @@ class TutorApp(App):
         # user learns that editing THIS number changes THAT output. A single
         # thought-provoking step, not more rewriting.
         for ex in codes[:3]:
-            if len(codes) >= GHOST_TARGET + 1:
+            if len(codes) >= target + 1:
                 break
             res = _change_variant(ex["code"], ex.get("stdin", ""), ex.get("prefix", ""))
             if res:
@@ -15792,9 +15811,15 @@ class TutorApp(App):
         # never rewrite the identical text — you see the syntax on a fresh value.
         main = example_code(self._current().get("example", ""))[1]
         if main:
-            codes.append({"code": main, "stdin": "", "prefix": "",
-                          "fade": True, "fade_strength": 0.7})
-            if getattr(self, "group_idx", 0) >= 2:
+            # FADE (disappearing ghost) appears from level 1 onward — the ghost
+            # is shown MORE early and barely at all by level 3, so the recall
+            # gets harder as you move through the course.
+            if level >= 1:
+                strength = [0.85, 0.6, 0.4, 0.2][level]
+                codes.append({"code": main, "stdin": "", "prefix": "",
+                              "fade": True, "fade_strength": strength})
+            # BLIND (recall from memory, nothing shown) only once you're deep in.
+            if level >= 2:
                 codes.append({"code": main, "stdin": "", "prefix": "",
                               "blind": True})
         return codes
