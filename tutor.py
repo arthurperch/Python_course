@@ -22708,15 +22708,8 @@ class TutorApp(App):
         # pop the wildmenu right away (all commands), like nvim `:`
         self._wm_index = 0
         self._update_wildmenu()
-        if not self._cmd_demo_shown:
-            # one-time lesson: type the run command key-by-key so it's seen & heard
-            self._cmd_demo_shown = True
-            self._wm_hide()  # keep the wildmenu quiet while the demo types it out
-            self._type_command("!python3 %")
-        else:
-            # after the demo, point at the recommended commands + Tab completion
-            self.query_one("#guide", Static).update(
-                "[yellow]→ press Tab to cycle the recommended run commands, then Enter.[/]")
+        self.query_one("#guide", Static).update(
+            "[yellow]→ press Tab to cycle the commands, then Enter.  :run = just run   :submit = check[/]")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "cmd":
