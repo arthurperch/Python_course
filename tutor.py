@@ -4984,20 +4984,8 @@ class VimEditor(Static):
 
     def render(self) -> Text:
         t = Text()
-        # viewport: only draw the visible window and keep the cursor on screen
-        try:
-            h = max(3, self.size.height - 2)   # minus the 1px top/bottom padding
-        except Exception:
-            h = 20
-        if self.cursor_row < self.scroll_top:
-            self.scroll_top = self.cursor_row
-        elif self.cursor_row >= self.scroll_top + h:
-            self.scroll_top = self.cursor_row - h + 1
-        self.scroll_top = max(0, min(self.scroll_top, max(0, len(self.buffer) - 1)))
-        end = min(len(self.buffer), self.scroll_top + h)
-        for i in range(self.scroll_top, end):
-            line = self.buffer[i]
-            if i > self.scroll_top:
+        for i, line in enumerate(self.buffer):
+            if i > 0:
                 t.append("\n")
             # relative line numbers like LazyVim (current line = its number, others = distance)
             if i == self.cursor_row:
@@ -13005,7 +12993,7 @@ class TutorApp(App):
     #editor-label.normal { background: #1f4e79; }
     #editor-label.insert { background: #1e6b3f; }
     #example-ref { height: auto; padding: 1 2; background: #0d1117; border-bottom: solid $warning; }
-    #editor { height: 1fr; padding: 1 2; }
+    #editor { height: auto; min-height: 8; padding: 1 2; }
     #output-scroll { height: 7; border-top: solid $primary; background: $surface-darken-1; }
     #out-drag { height: 1; background: $surface-darken-2; }
     #out-drag:hover { background: $accent; }
@@ -13522,7 +13510,7 @@ class TutorApp(App):
                 yield Static("", id="demo-label")
                 yield Static("", id="demo-editor")
                 yield Static("", id="demo-console")
-            with Vertical(id="editor-box"):
+            with VerticalScroll(id="editor-box"):
                 yield Static("", id="editor-label")
                 yield Static("", id="example-ref")
                 yield VimEditor(id="editor")
@@ -20451,7 +20439,7 @@ class TutorApp(App):
         try:
             w = self.size.width or 1
             pct = max(38, min(82, round(event.screen_x / w * 100)))
-            self.query_one("#editor-box", Vertical).styles.width = f"{pct}%"
+            self.query_one("#editor-box", VerticalScroll).styles.width = f"{pct}%"
         except Exception:
             pass
 
