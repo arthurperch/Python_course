@@ -1488,6 +1488,27 @@ FOCUS_HINTS = {
 }
 
 
+# One-line "the idea" per topic, for the no-help mastery exam's THE IDEA note.
+# Explains the KEY mental model (n = 5 is the starting point, > is greater than)
+# without ever spelling out the answer.
+TOPIC_CONCEPTS = {
+    "print": "`print(...)` puts text on the screen — whatever sits inside the ( ) is what shows.",
+    "variables": "`name = value` stores a value under a name — `n = 5` makes `n` the starting point.",
+    "strings": "quotes `\" \"` wrap text — the text inside the quotes is exactly what prints.",
+    "conditionals": "`if a > b:` chooses a path — `>` means 'greater than', `<` means 'less than'.",
+    "loops": "`for x in ...:` repeats the indented block once per item — the body is the indented lines.",
+    "lists": "`[a, b, c]` is an ordered list — `lst[0]` is the first item, `lst[-1]` the last.",
+    "functions": "`def name(x):` names a reusable block — `return` sends a value back to the caller.",
+    "dicts": "`{\"key\": value}` pairs a name to a value — `d[\"key\"]` fetches it back.",
+    "sets": "`{a, b}` holds unique items — `|` merges, `&` keeps shared, `-` removes.",
+    "slicing": "`s[a:b:c]` slices a string or list — `s[::-1]` reverses, `s[::2]` skips every other.",
+    "input": "`input()` pauses and reads what the user types — it always comes back as text.",
+    "classes": "`class X:` is a blueprint — `__init__` sets up each new object's starting values.",
+    "files": "`open(...)` opens a file — `with` closes it for you automatically.",
+    "json": "`json.loads()` turns text into data — `json.dumps()` turns data back into text.",
+}
+
+
 LESSONS = {
     "print": {
         "title": "print() — Your Voice to the Machine",
@@ -13289,6 +13310,15 @@ class TutorApp(App):
         self._lesson_gen = 0
         self._lesson_steps: list[dict] = []
         self._lesson_i = 0
+        # MASTERY CHECK: a no-help exam — write from scratch, output-only, no
+        # ghost drill, no hints, no worked example. 2nd chance on fail, then a
+        # forced re-drill of the exact topic you're weak on.
+        self._mastery_on = False
+        self._mastery_queue: list[tuple] = []   # [(group_idx, ch_idx), ...]
+        self._mastery_i = 0
+        self._mastery_group = 0                 # group being examined
+        self._mastery_fails = 0                 # fails on the CURRENT exam item
+        self._mastery_retry = False             # True = this is the 2nd chance
         self._lesson_typed = 0
         self._lesson_code = ""
         self._lesson_caption = ""
@@ -13360,6 +13390,7 @@ class TutorApp(App):
         with Horizontal(id="body", classes="hidden"):
             with VerticalScroll(id="challenge-box"):
                 yield Static("[bold]CHALLENGE[/]", id="challenge-label")
+                yield Static("", id="mastery-note")
                 yield Static("", id="task")
                 yield Markdown("", id="challenge")
                 yield Static("", id="goal")
@@ -14286,6 +14317,19 @@ class TutorApp(App):
         t.append("\n\n")
         sel_line = 0
         line_no = 0
+        # MASTERY CHECK rides at the top of every course: 3 no-help challenges
+        sel = self.menu_sel == -1
+        line = Text()
+        line.append("▶ " if sel else "  ")
+        line.append("🏁 ", style="bold #c084fc")
+        line.append("MASTERY CHECK", style="bold #c084fc")
+        line.append("  — 3 no-help challenges · prove this course", style="dim")
+        if sel:
+            line.stylize("reverse")
+            sel_line = line_no
+        t.append_text(line)
+        t.append("\n")
+        line_no += 1
         for ci, c in enumerate(g["challenges"]):
             st = challenge_stat(self.p, c["title"])
             right, wrong = st["right"], st["wrong"]
@@ -14662,7 +14706,9 @@ class TutorApp(App):
             self.menu_sel = (self.menu_sel + 1) % n
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
-            self.menu_sel = (self.menu_sel + 1) % n
+            self.menu_sel += 1
+            if self.menu_sel >= n:
+                self.menu_sel = -1
         play_menu_blip(0)
         self._render_menu()
 
@@ -14684,7 +14730,9 @@ class TutorApp(App):
             self.menu_sel = (self.menu_sel - 1) % n
         else:
             n = len(GROUPS[self.series_sel]["challenges"])
-            self.menu_sel = (self.menu_sel - 1) % n
+            self.menu_sel = self.menu_sel - 1
+            if self.menu_sel < -1:
+                self.menu_sel = n - 1
         play_menu_blip(0)
         self._render_menu()
 
@@ -14767,6 +14815,160 @@ class TutorApp(App):
 
     def _current(self):
         return GROUPS[self.group_idx]["challenges"][self.ch_idx]
+
+    # ---- MASTERY CHECK: no-help exam ------------------------------------- #
+    # After you finish a course you prove it with 3 challenges written from
+    # scratch: only the TARGET OUTPUT is shown. No ghost drill, no hints, no
+    # worked example. One fail = a 2nd chance on a DIFFERENT same-topic problem
+    # (so you can't just retype it). A 2nd fail = you re-drill that exact topic
+    # with the ghost, then try again. Pass all 3 in order to clear the exam.
+
+    def _mastery_trio(self, group_idx):
+        """Three exam challenges — one per topic, deterministic per group."""
+        challenges = GROUPS[group_idx]["challenges"]
+        picks, seen = [], []
+        for i, c in enumerate(challenges):
+            t = c.get("topic", "custom")
+            if t in seen:
+                continue
+            seen.append(t)
+            picks.append((group_idx, i))
+            if len(picks) == 3:
+                return picks
+        for i, c in enumerate(challenges):
+            if (group_idx, i) not in picks:
+                picks.append((group_idx, i))
+                if len(picks) == 3:
+                    break
+        return picks[:3]
+
+    def _mastery_alt(self, gi, ci):
+        """A different challenge on the same topic — the 2nd chance problem."""
+        topic = GROUPS[gi]["challenges"][ci].get("topic", "custom")
+        for j, c in enumerate(GROUPS[gi]["challenges"]):
+            if j != ci and c.get("topic", "custom") == topic:
+                return gi, j
+        return None
+
+    def _enter_mastery(self, group_idx):
+        trio = self._mastery_trio(group_idx)
+        if not trio:
+            self._show_menu()
+            return
+        self._mastery_queue = trio
+        self._mastery_group = group_idx
+        self._mastery_i = 0
+        self._mastery_fails = 0
+        self._mastery_retry = False
+        self._mastery_on = True
+        self._mastery_open_current()
+
+    def _mastery_open_current(self):
+        gi, ci = self._mastery_queue[self._mastery_i]
+        self.group_idx = gi
+        self.ch_idx = ci
+        self.started = True
+        self.p["last"] = self._current()["title"]
+        save_progress(self.p)
+        play_menu_blip(3)
+        self._show_challenge()
+        self._render_challenge()
+        self._render_mastery_banner()
+        self._focus_editor()   # straight in — no ghost, no gate
+        if self.voice_on:
+            self._speak_mastery_intro()
+
+    def _speak_mastery_intro(self):
+        c = self._current()
+        lines = [ln.strip() for ln in example_code(c.get("example", ""))[1].split("\n")
+                 if ln.strip() and not ln.strip().startswith(">")]
+        cues = [x for x in (_line_cue(ln) for ln in lines) if x]
+        goal = "  ".join(self._goal_values(c))
+        msg = (f"Exam. {self._mastery_i + 1} of {len(self._mastery_queue)}. "
+               f"No help — build it yourself. Goal: {goal or 'see the target output'}. ")
+        if cues:
+            msg += "Think line by line. " + ". ".join(cues[:4]) + "."
+        else:
+            msg += "Plan it, then write it."
+        speak(msg)
+
+    def _mastery_advance(self, passed):
+        """Handle the result of one exam item — pass, retry, or retrain."""
+        c = self._current()
+        if passed:
+            self._mastery_fails = 0
+            self._mastery_retry = False
+            self._mastery_i += 1
+            if self._mastery_i >= len(self._mastery_queue):
+                self._mastery_finish()
+            else:
+                self._mastery_open_current()
+            return
+        # failed this item
+        self._mastery_fails += 1
+        if self._mastery_fails == 1:
+            # 2nd chance: a DIFFERENT same-topic problem (or the same, if none)
+            alt = self._mastery_alt(self.group_idx, self.ch_idx)
+            if alt:
+                self._mastery_queue[self._mastery_i] = alt
+                self._mastery_retry = True
+                self._mastery_open_current()
+                self._render_mastery_note(
+                    "Almost — try a different version of the same idea.")
+            else:
+                self._mastery_retry = True
+                self._mastery_open_current()
+                self._render_mastery_note("Almost — one more try, from scratch.")
+        else:
+            # 2nd fail → retrain with the ghost drill, then come back to retry
+            self._mastery_retry = False
+            self._mastery_fails = 0
+            self._render_mastery_note(
+                "Let's rebuild it together — watch the ghost, then try again.")
+            self._mastery_retrain()
+
+    def _render_mastery_note(self, text):
+        try:
+            self.query_one("#mastery-note", Static).update(
+                Text(text, style="bold #facc15"))
+        except Exception:
+            pass
+
+    def _render_mastery_banner(self):
+        try:
+            self.query_one("#mastery-note", Static).update(Text(
+                f"NO-HELP EXAM · {self._mastery_i + 1}/{len(self._mastery_queue)} · "
+                f"write it from scratch — only the TARGET OUTPUT is shown",
+                style="bold #c084fc"))
+        except Exception:
+            pass
+
+    def _mastery_retrain(self):
+        """Force the ghost drill on the failed challenge, then return to the exam."""
+        gi, ci = self._mastery_queue[self._mastery_i]
+        self.group_idx = gi
+        self.ch_idx = ci
+        self._mastery_on = False   # let the drill run its normal course
+        self._ghost_on_done = self._mastery_retrain_done
+        self._start_ghost_required()
+
+    def _mastery_retrain_done(self):
+        """Back from the drill — retry the exam item from scratch."""
+        self._mastery_on = True
+        self._mastery_open_current()
+
+    def _mastery_finish(self):
+        self._mastery_on = False
+        self._mastery_queue = []
+        self._mastery_retry = False
+        self._mastery_fails = 0
+        play_complete()
+        self._celebrate()
+        if self.voice_on:
+            speak("Exam passed. You own it.")
+        self._render_mastery_note("EXAM PASSED — back to the menu.")
+        self._show_menu()
+
 
     def _flat_index(self):
         n = 0
@@ -14859,7 +15061,10 @@ class TutorApp(App):
             elif self.menu_level == "net_modules":
                 self._net_enter_module()
             else:
-                self._select_challenge()
+                if self.menu_sel == -1:
+                    self._enter_mastery(self.series_sel)
+                else:
+                    self._select_challenge()
             return
         if self.lesson_gate:
             self._enter_editor()
@@ -14869,6 +15074,9 @@ class TutorApp(App):
             self._render_challenge()
             return
         if self.last == "fail":
+            if self._mastery_on:
+                self._mastery_advance(False)
+                return
             # Enter closes the fail visual replay so the editor comes back
             try:
                 if self.query_one("#visual", Static).has_class("visible"):
@@ -14878,6 +15086,9 @@ class TutorApp(App):
                 pass
             return
         if self.last == "pass":
+            if self._mastery_on:
+                self._mastery_advance(True)
+                return
             self._advance_after_pass()
 
     def _plan_template(self, c):
@@ -14912,11 +15123,19 @@ class TutorApp(App):
                 f"## {c['title']}\n\n"
                 f"### WHAT TO DO\n{c['prompt']}"
             )
-        self.query_one("#goal", Static).update(self._goal_panel(c))
-        self.query_one("#example-ref", Static).update(
-            "[dim]worked examples are on the right →  ([reverse]F8[/] hide/show · scroll for more)[/]")
-        self.query_one("#editor", VimEditor).set_text(
-            self._plan_template(c) + c["starter"])
+        if self._mastery_on:
+            # NO-HELP exam: blank editor (write from scratch), no goal diagram,
+            # no worked-example hint. The task panel already shows the goal.
+            self.query_one("#goal", Static).update("")
+            self.query_one("#example-ref", Static).update("")
+            self.query_one("#editor", VimEditor).set_text("")
+        else:
+            self.query_one("#mastery-note", Static).update("")
+            self.query_one("#goal", Static).update(self._goal_panel(c))
+            self.query_one("#example-ref", Static).update(
+                "[dim]worked examples are on the right →  ([reverse]F8[/] hide/show · scroll for more)[/]")
+            self.query_one("#editor", VimEditor).set_text(
+                self._plan_template(c) + c["starter"])
         self.query_one("#output", Static).update("")
         self.last = None
         self._cancel_celebrate()
@@ -14932,7 +15151,8 @@ class TutorApp(App):
         topic = c.get("topic", "custom")
         self.seen_topics.add(topic)
         # open the challenge gate popup: Enter = dive in, w = watch lesson, l = listen
-        self.lesson_gate = True
+        # (mastery skips the gate entirely — straight to writing)
+        self.lesson_gate = not self._mastery_on
         # hard-clear any stale ghost overlay so it can't swallow 'w' at the gate
         # (a leftover _ghost_on=True makes GhostWriter's on_key eat 'w' as typing)
         if self._ghost_on:
@@ -15417,6 +15637,10 @@ class TutorApp(App):
         """Mandatory drill: lock the user into ghost-writing the syntax before
         they may type their own answer. Esc is ignored until it's all written."""
         c = self._current()
+        if self._mastery_on:
+            # mastery exam: no drill, straight to the editor (output-only)
+            self._focus_editor()
+            return
         pool = self._ghost_pool(c)
         if not pool:
             self._focus_editor()
@@ -20501,6 +20725,9 @@ class TutorApp(App):
     def _mark_pass(self, out=""):
         # cap the printout so a runaway loop can never push the console off screen
         out = _cap_lines(out.rstrip("\n"), 40)
+        if self._mastery_on:
+            self._mastery_mark_pass(out)
+            return
         self._py_update_sched(self._current()["topic"], True)
         self.attempts[self._flat_index()] = 0
         challenge_stat(self.p, self._current()["title"])["right"] += 1
@@ -20604,6 +20831,9 @@ class TutorApp(App):
     def _mark_fail(self, topic, out, hint):
         # cap the printout so a runaway loop can never push the console off screen
         out = _cap_lines(out.rstrip("\n"), 40)
+        if self._mastery_on:
+            self._mastery_mark_fail(topic, out, hint)
+            return
         self._py_update_sched(self._current()["topic"], False)
         self.p["streak"] = 0
         key = self._flat_index()
@@ -20724,6 +20954,110 @@ class TutorApp(App):
             speak("what this means. " + why)
         self.query_one("#output", Static).update(t)
         self._update_guide()
+
+    # ---- mastery exam pass/fail finalizers -------------------------------- #
+    def _mastery_mark_pass(self, out):
+        self._py_update_sched(self._current()["topic"], True)
+        self.p["streak"] += 1
+        self.p["best_streak"] = max(self.p["best_streak"], self.p["streak"])
+        self.p["xp"] += 50
+        save_progress(self.p)
+        self.last = "pass"
+        self._failed_remove(self._flat_index())
+        self.query_one("#editor", VimEditor).blur()
+        self.query_one("#editor", VimEditor).hint_lines = set()
+        if out.strip():
+            self._start_output_reveal(out.rstrip("\n"),
+                                      lambda: self._finalize_mastery_pass(out))
+        else:
+            self._finalize_mastery_pass(out)
+
+    def _finalize_mastery_pass(self, out):
+        play_console_result(True)
+        out = _wrap_console(out.rstrip("\n"), self._output_w()) if out else ""
+        t = Text()
+        if out.strip():
+            t.append(out, style="green")
+            t.append("\n")
+        t.append(f"✓ exam {self._mastery_i + 1}/{len(self._mastery_queue)} passed",
+                 style="bold green")
+        t.append("\n")
+        t.append("NEXT ▶  press Enter", style="bold yellow")
+        self.query_one("#output", Static).update(t)
+        self._update_guide()
+        self._flash_output_border("#22c55e")
+
+    def _mastery_mark_fail(self, topic, out, hint):
+        self._py_update_sched(self._current()["topic"], False)
+        self.p["streak"] = 0
+        key = self._flat_index()
+        self.attempts[key] = self.attempts.get(key, 0) + 1
+        challenge_stat(self.p, self._current()["title"])["wrong"] += 1
+        save_progress(self.p)
+        self.last = "fail"
+        self._failed_add(key)
+        if out.strip() and not _looks_like_traceback(hint):
+            self._start_output_reveal(out.rstrip("\n"),
+                                      lambda: self._finalize_mastery_fail(topic, out, hint))
+        else:
+            self._finalize_mastery_fail(topic, out, hint)
+
+    def _finalize_mastery_fail(self, topic, out, hint):
+        play_console_result(False)
+        _, fail = self._sounds_for(self._flat_index())
+        if fail and self.music_on:
+            play_file(fail, volume=self._fx_volume())
+        self._flash_output_border("#f87171")
+        crash = _looks_like_traceback(hint)
+        why = translate_error(hint) if crash else ""
+        out = _wrap_console(out.rstrip("\n"), self._output_w()) if out else ""
+        t = Text()
+        if out.strip():
+            t.append(out, style="green")
+            t.append("\n")
+        t.append("✗ your code crashed" if crash else "✗ not approved", style="bold red")
+        if hint:
+            t.append("\n")
+            if crash:
+                t.append(_traceback_last_line(hint), style="red")
+                if why:
+                    t.append("\n\n")
+                    t.append("WHAT THIS MEANS", style="bold yellow")
+                    t.append("\n")
+                    t.append(why, style="#f0f0f5")
+            else:
+                t.append(hint, style="red")
+        if not crash:
+            ed = self.query_one("#editor", VimEditor)
+            issues, bad_lines = self._analyze_code(self._current(), ed.get_text())
+            ed.hint_lines = set(bad_lines)
+            ed.refresh()
+            real = [x for x in issues if "looks solid" not in x]
+            if real:
+                t.append("\n\n")
+                t.append("WHAT'S OFF:", style="bold yellow")
+                for issue in real[:3]:
+                    t.append("\n• ")
+                    t.append(issue, style="#f0f0f5")
+                if self.voice_on:
+                    speak("what's off. " + " ".join(real[:2]))
+        if crash and self.voice_on and why:
+            speak("what this means. " + why)
+        # exam mode: no cheat-sheet hint, no 'fix and run again' — decide next
+        t.append("\n\n")
+        if self._mastery_fails >= 1:
+            t.append("TWO misses — let's rebuild it together. ", style="bold #facc15")
+        else:
+            t.append("ONE miss — you get a 2nd chance, a different problem. ",
+                     style="bold #facc15")
+        t.append("press Enter", style="dim")
+        self.query_one("#output", Static).update(t)
+        self._update_guide()
+        if self.voice_on:
+            if self._mastery_fails >= 1:
+                speak("not approved. let's rebuild it together.")
+            else:
+                speak("not approved. second chance, a different problem.")
 
     def action_review(self):
         if self.mode != "challenge":
@@ -22268,6 +22602,35 @@ class TutorApp(App):
                      style="dim")
             t.append("\n")
             t.append(f"  {c['stdin']!r}", style="#7dd3fc")
+        if self._mastery_on:
+            # NO-HELP exam: prompt + THE IDEA + target output only. No syntax
+            # hints, no suggestions, no worked example — prove it from scratch.
+            concept = TOPIC_CONCEPTS.get(c.get("topic", ""), "")
+            if concept:
+                t.append("\n\n")
+                t.append("THE IDEA", style="bold #7dd3fc")
+                t.append("\n")
+                for ln in _wrap_words(concept, w):
+                    t.append(ln, style="#bae6fd")
+                    t.append("\n")
+            values = self._goal_values(c)
+            if values and not c.get("predict"):
+                t.append("\n\n")
+                t.append("TARGET OUTPUT", style="bold #22c55e")
+                t.append("\n")
+                for v in values[:6]:
+                    t.append(f"  ▸ {v}", style="#22c55e")
+                    t.append("\n")
+            t.append("\n\n")
+            t.append("no hints · no example · build it yourself", style="dim")
+            self.query_one("#side-inner", Static).update(t)
+            container = self.query_one("#ex-lines", Vertical)
+            for old in list(container.children):
+                if getattr(old, "id", "").startswith("exline-"):
+                    old.remove()
+            self.query_one("#side-examples-title", TabLabel).update(
+                f"[bold]EXAM[/] — {c['title']}   ·   [reverse]CHECK[/] runs your code")
+            return
         # the raw syntax the answer is built from — exactly "you'll need \"\" ()"
         need = [n for n in c.get("need", []) if n]
         if need and not c.get("free"):
