@@ -12929,6 +12929,7 @@ class TutorApp(App):
     #split-drag { width: 1; background: $surface-darken-2; }
     #split-drag:hover { background: $accent; }
     #task-check { dock: bottom; width: 100%; min-height: 3; }
+    #task-step { dock: bottom; width: 100%; min-height: 3; }
     ExLine { width: 100%; height: 1; padding: 0 1; color: $text-muted; }
     ExLine:hover { background: $boost; color: $text; }
     #ex-lines { height: auto; }
@@ -12949,6 +12950,8 @@ class TutorApp(App):
     #wildmenu.visible { display: block; }
     #lesson { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; overflow: auto; }
     #lesson.visible { display: block; }
+    #step { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #0a0a0a; display: none; overflow: auto; }
+    #step.visible { display: block; }
     #gate { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; overflow: auto; }
     #gate.visible { display: block; }
     #map { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #0a0a0a; display: none; overflow: auto; }
@@ -13110,6 +13113,10 @@ class TutorApp(App):
         Binding("f9", "toggle_hints", "Hints", show=False),
         Binding("f10", "editor_wider", "Wider", show=False),
         Binding("f11", "editor_narrower", "Narrower", show=False),
+        Binding("f5", "step", "Step", show=False),
+        Binding("right", "step_next", "Next", show=False),
+        Binding("left", "step_prev", "Prev", show=False),
+        Binding("space", "step_auto", "Auto", show=False),
     ]
 
     def __init__(self):
@@ -13370,6 +13377,17 @@ class TutorApp(App):
         self._tour_blink_on = False
         self._tour_blink_timer = None
         self._tour_output = ""
+        # STEP overlay: a standalone Python-Tutor-style line-by-line execution
+        # replay of the current example (or your own code) — highlight the line,
+        # show the variables, and watch the output build up.
+        self._step_on = False
+        self._step_steps: list = []   # (ln, before, after, out_before, out_after)
+        self._step_i = 0
+        self._step_code = ""
+        self._step_gen = 0
+        self._step_output = ""
+        self._step_auto_timer = None
+        self._step_auto = False
         self._tour_caption = ""
         self._tour_stdin = ""
         self._tour_why = ""
@@ -13444,6 +13462,7 @@ class TutorApp(App):
                     with Vertical(id="ex-lines"):
                         pass
                 yield Button("✓ CHECK", id="task-check", variant="primary")
+                yield Button("▶ STEP", id="task-step", variant="default")
             yield Markdown("", id="cheat")
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
@@ -13517,6 +13536,7 @@ class TutorApp(App):
         yield Static("", id="cat")
         yield Static("", id="quick")
         yield Static("", id="quit")
+        yield Static("", id="step")
         yield VolumeBar(id="volume-bar")
         yield Confetti(id="confetti")
 
@@ -14693,6 +14713,9 @@ class TutorApp(App):
                     and not self.lesson_gate):
                 self._run_and_submit()
             return
+        if event.button.id == "task-step":
+            self.action_step()
+            return
         if event.button.id == "name-save":
             self._save_name()
             return
@@ -14810,6 +14833,9 @@ class TutorApp(App):
     def action_menu(self):
         if self._profile_visible:
             self._hide_profile()
+            return
+        if self._step_on:
+            self._step_close()
             return
         if self._ghost_on:
             return   # ghost overlay owns the keyboard; Esc there dismisses it
@@ -22073,6 +22099,200 @@ class TutorApp(App):
                 out.append(ol)
         self.query_one("#lesson", Static).update(self._lesson_screen(out))
 
+    # ---- STEP overlay: standalone Python-Tutor-style execution replay ----- #
+    # F5 (or the STEP button) steps through the current example code line by
+    # line — the running line highlighted, the variables shown at each moment,
+    # and the real output building up below. ←/→ (h/l) move, Space auto-plays,
+    # Esc closes. This is the "watch code run top to bottom" teacher.
+
+    def action_step(self):
+        """Open (or close) the step-through replay of the current example."""
+        if self._step_on:
+            self._step_close()
+            return
+        if self.mode != "challenge" or not self.started:
+            return
+        c = self._current()
+        _, code = example_code(c.get("example", ""))
+        if not code.strip():
+            # no worked example — step through the user's own code instead
+            code = self.query_one("#editor", VimEditor).get_text()
+            code = "\n".join(ln for ln in code.split("\n")
+                             if not ln.strip().startswith("#"))
+        if not code.strip():
+            return
+        self._step_code = code
+        self._step_gen += 1
+        self._step_on = True
+        self._step_auto = False
+        self.query_one("#step", Static).add_class("visible")
+        self.query_one("#step", Static).update(
+            Text("tracing your code…", style="dim"))
+        gen = self._step_gen
+        threading.Thread(target=self._step_capture,
+                         args=(code, c.get("stdin", ""), gen), daemon=True).start()
+
+    def _step_capture(self, code, stdin, gen):
+        out, err, events = trace_code(code, stdin)
+        if gen != self._step_gen:
+            return
+        self.call_from_thread(self._step_on_ready, out, err, events, gen)
+
+    def _step_on_ready(self, out, err, events, gen):
+        if gen != self._step_gen:
+            return
+        result = (out or err or "").rstrip("\n")
+        self._step_output = result
+        if not events:
+            self._step_steps = []
+            self._step_render_plain(result)
+            return
+        steps = []
+        for i, ev in enumerate(events):
+            ln = ev[0]
+            locs = ev[1]
+            out_before = (ev[2] if len(ev) > 2 else "").rstrip("\n")
+            after = events[i + 1][1] if i + 1 < len(events) else locs
+            if i + 1 < len(events):
+                nxt = events[i + 1]
+                out_after = (nxt[2] if len(nxt) > 2 else "").rstrip("\n")
+            else:
+                out_after = result
+            steps.append((ln, locs, after, out_before, out_after))
+        self._step_steps = steps
+        self._step_i = 0
+        self._step_render()
+
+    def _step_render_plain(self, result):
+        out = [Text("STEP — ", style="bold magenta"),
+               Text("couldn't trace this code", style="dim"), Text("")]
+        if result:
+            out.append(Text("  output:", style="bold green"))
+            out.append(Text(f"    {result}", style="#e8e8ef"))
+        out.append(Text(""))
+        out.append(Text("Esc to close", style="dim"))
+        self.query_one("#step", Static).update(
+            _center_screen(_box_lines(out), self.size.width, self.size.height - 1))
+
+    def _step_render(self):
+        if not self._step_steps:
+            return
+        ln, before, after, out_before, out_after = self._step_steps[self._step_i]
+        code_lines = self._step_code.split("\n")
+        total = len(self._step_steps)
+        out = [Text("STEP — ", style="bold magenta"),
+               Text(f"watch it run · step {self._step_i + 1}/{total}",
+                    style="bold yellow"),
+               Text(""), Text("")]
+        for i, ln_text in enumerate(code_lines, 1):
+            row = Text(f"{i:>2} ", style="dim")
+            if i == ln:
+                row.append("▶ ", style="bold yellow")
+                row.append_text(Text(ln_text, style="reverse bold"))
+            else:
+                row.append("  ")
+                row.append_text(_code_text(ln_text))
+            out.append(row)
+        out.append(Text(""))
+        if after:
+            out.append(Text("  variables now:", style="bold cyan"))
+            for k, v in after.items():
+                out.append(Text(f"    {k}  →  {v}", style="#e8e8ef"))
+        else:
+            out.append(Text("  (no variables yet)", style="dim"))
+        if out_after:
+            before_v = out_before or ""
+            new = out_after[len(before_v):] if before_v and out_after.startswith(before_v) else out_after
+            new_count = len([l for l in new.split("\n") if l != ""])
+            out.append(Text(""))
+            out.append(Text("  printed so far:", style="bold green"))
+            after_lines = out_after.split("\n")
+            if len(after_lines) > 10:
+                out.append(Text(f"    … {len(after_lines) - 10} earlier line(s)", style="dim"))
+                after_lines = after_lines[-10:]
+            n = len(after_lines)
+            for j, line in enumerate(after_lines):
+                is_new = line != "" and (n - j) <= new_count
+                style = "bold #facc15" if is_new else "bold green"
+                ol = Text("    ", style="dim")
+                ol.append(line if line != "" else " ", style=style)
+                out.append(ol)
+        if self._step_i + 1 >= total:
+            out.append(Text(""))
+            out.append(Text("END — ←/→ to replay   ·   Esc to close", style="bold #facc15"))
+        else:
+            out.append(Text(""))
+            out.append(Text("→ next · ← back · Space auto-play · Esc close", style="dim"))
+        body = _box_lines(out)
+        self.query_one("#step", Static).update(
+            _center_screen(body, self.size.width, self.size.height - 1))
+        self._step_narrate(ln, before, after)
+
+    def _step_narrate(self, ln, before, after):
+        if not self.voice_on:
+            return
+        changes = []
+        for k, v in after.items():
+            if k not in before:
+                changes.append(f"{k} is now {v}")
+            elif before[k] != v:
+                changes.append(f"{k} becomes {v}")
+        if changes:
+            speak(f"line {ln}: " + ", ".join(changes))
+            return
+        lines = self._step_code.split("\n")
+        line_text = lines[ln - 1].strip() if 0 < ln <= len(lines) else ""
+        if line_text:
+            speak(f"line {ln}: " + _line_explain(line_text))
+
+    def action_step_next(self):
+        if not self._step_on or not self._step_steps:
+            return
+        if self._step_i + 1 < len(self._step_steps):
+            self._step_i += 1
+            self._step_render()
+
+    def action_step_prev(self):
+        if not self._step_on or not self._step_steps:
+            return
+        if self._step_i > 0:
+            self._step_i -= 1
+            self._step_render()
+
+    def action_step_auto(self):
+        if not self._step_on or not self._step_steps:
+            return
+        self._step_auto = not self._step_auto
+        t = self._step_auto_timer
+        if t is not None:
+            t.stop()
+            self._step_auto_timer = None
+        if self._step_auto:
+            self._step_auto_tick()
+
+    def _step_auto_tick(self):
+        if not self._step_on or not self._step_auto:
+            self._step_auto_timer = None
+            return
+        if self._step_i + 1 < len(self._step_steps):
+            self._step_i += 1
+            self._step_render()
+            self._step_auto_timer = self.set_timer(0.9, self._step_auto_tick)
+        else:
+            self._step_auto = False
+            self._step_auto_timer = None
+
+    def _step_close(self):
+        self._step_on = False
+        self._step_auto = False
+        t = self._step_auto_timer
+        if t is not None:
+            t.stop()
+            self._step_auto_timer = None
+        self._step_steps = []
+        self.query_one("#step", Static).remove_class("visible")
+        self._focus_editor()
+
     # ---- caption (karaoke word highlight) -------------------------------- #
 
     def _caption_start(self, title, body):
@@ -22511,7 +22731,7 @@ class TutorApp(App):
             "  ·  " + " ".join(f"{kc(x)}={y}" for x, y in [("dd","delete line"),("yy","yank"),("p","paste"),("x","del char"),("u","undo")]),
             "### run / test (real nvim)\n" + "  ".join(kc(x) for x in [":w", ":!python3 %", ":submit", ":q"]) +
             "  ·  " + f"{kc('Ctrl+Enter')}=run+submit",
-            "### tutor\n" + " ".join(f"{kc(x)}={y}" for x, y in [("Ctrl+n","next"),("Ctrl+b","prev"),("Enter","dive in"),("w","watch"),("l","listen"),("e","lesson"),("F12","quick check"),("F1","keys"),("F2","cheat"),("F3","demo"),("F4","volume"),("Ctrl+G","ghost write"),("F6","voice"),("F7","review"),("F8","examples"),("F9","hints"),("F10","wider editor"),("F11","narrower editor"),("m","music"),("Esc","vim normal"),("q","quit")]),
+            "### tutor\n" + " ".join(f"{kc(x)}={y}" for x, y in [("Ctrl+n","next"),("Ctrl+b","prev"),("Enter","dive in"),("w","watch"),("l","listen"),("e","lesson"),("F12","quick check"),("F1","keys"),("F2","cheat"),("F3","demo"),("F4","volume"),("F5","step run"),("Ctrl+G","ghost write"),("F6","voice"),("F7","review"),("F8","examples"),("F9","hints"),("F10","wider editor"),("F11","narrower editor"),("m","music"),("Esc","vim normal"),("q","quit")]),
         ])
 
     # ---- examples panel (F8): static wall of worked examples ------------ #
