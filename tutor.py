@@ -257,6 +257,58 @@ GROUPS = [
              "prompt": "Print `first` and `last` with a space in between.",
              "starter": "first = \"ada\"\nlast = \"lovelace\"\n", "expect": ["ada lovelace"], "need": ["print"], "stdin": "",
              "example": "Same join, different names:\n```python\nfirst = \"Alan\"\nlast = \"Turing\"\nprint(first, last)\n```\n> print(a, b) puts a space between the two."},
+            {"title": "is it bigger", "topic": "conditionals",
+             "prompt": "Print `a > b`. The `>` reads 'is greater than'.",
+             "starter": "a = 7\nb = 3\n", "expect": ["true"], "need": [">"], "stdin": "",
+             "example": "A different pair:\n```python\nprint(9 > 1)\n```\n> `>` is 'greater than'. 9 > 1 is True."},
+            {"title": "which is less", "topic": "conditionals",
+             "prompt": "Print `a < b`. The `<` reads 'is less than'.",
+             "starter": "a = 2\nb = 9\n", "expect": ["true"], "need": ["<"], "stdin": "",
+             "example": "A different pair:\n```python\nprint(1 < 4)\n```\n> `<` is 'less than'. 1 < 4 is True."},
+            {"title": "are they equal", "topic": "conditionals",
+             "prompt": "Print `a == b`. The `==` reads 'is equal to'.",
+             "starter": "a = 5\nb = 5\n", "expect": ["true"], "need": ["=="], "stdin": "",
+             "example": "An unequal pair:\n```python\nprint(3 == 7)\n```\n> `==` is 'is equal to'. 3 == 7 is False."},
+            {"title": "starting point", "topic": "variables",
+             "prompt": "`n` is the starting point. Print `n`, then print `n + 5`.",
+             "starter": "n = 10\n", "expect": ["10", "15"], "need": ["print"], "stdin": "",
+             "example": "A different start:\n```python\nn = 1\nprint(n)\nprint(n + 5)\n```\n> `n = 10` stores 10 in n. n + 5 adds 5 to whatever n holds."},
+            {"title": "count down", "topic": "loops",
+             "prompt": "Use a `while` loop to print 3, then 2, then 1.",
+             "starter": "n = 3\n", "expect": ["3", "2", "1"], "need": ["while"], "stdin": "",
+             "example": "Count from 2:\n```python\nn = 2\nwhile n > 0:\n    print(n)\n    n = n - 1\n```\n> while repeats as long as the condition is true."},
+            {"title": "first letter", "topic": "strings",
+             "prompt": "Print the first character of `s`.",
+             "starter": "s = \"python\"\n", "expect": ["p"], "need": ["[0]"], "stdin": "",
+             "example": "First of another word:\n```python\nprint(\"code\"[0])\n```\n> s[0] grabs the character at position 0 — the first one."},
+            {"title": "last letter", "topic": "strings",
+             "prompt": "Print the last character of `s` using a negative index.",
+             "starter": "s = \"python\"\n", "expect": ["n"], "need": ["-1"], "stdin": "",
+             "example": "Last of another word:\n```python\nprint(\"code\"[-1])\n```\n> s[-1] counts backwards from the end."},
+            {"title": "add them", "topic": "strings",
+             "prompt": "Print `greeting + name` to join them together.",
+             "starter": "greeting = \"Hi, \"\nname = \"bean\"\n", "expect": ["hi, bean"], "need": ["+"], "stdin": "",
+             "example": "Join two other strings:\n```python\nprint(\"Bye, \" + \"bean\")\n```\n> + glues two strings into one."},
+            {"title": "both true", "topic": "conditionals",
+             "prompt": "Print `a > 0 and b > 0`. `and` means both must be true.",
+             "starter": "a = 5\nb = -2\n", "expect": ["false"], "need": ["and"], "stdin": "",
+             "example": "Both positive:\n```python\nprint(1 > 0 and 2 > 0)\n```\n> `and` is true only when BOTH sides are true."},
+            {"title": "not that", "topic": "conditionals",
+             "prompt": "Print `not a`. `not` flips true to false and false to true.",
+             "starter": "a = False\n", "expect": ["true"], "need": ["not"], "stdin": "",
+             "example": "Flip a true:\n```python\nprint(not True)\n```\n> `not` turns True into False and False into True."},
+            {"title": "floor divide", "topic": "math",
+             "prompt": "Print `17 // 5`. `//` divides and drops the remainder.",
+             "starter": "", "expect": ["3"], "need": ["//"], "stdin": "",
+             "example": "A different split:\n```python\nprint(10 // 3)\n```\n> // is floor division — 10 // 3 is 3, throwing away the leftover."},
+            {"title": "twice over", "topic": "variables",
+             "prompt": "Print `x`, then double it with `x = x * 2` and print `x` again.",
+             "starter": "x = 4\n", "expect": ["4", "8"], "need": ["="], "stdin": "",
+             "example": "Triple it instead:\n```python\nx = 2\nprint(x)\nx = x * 3\nprint(x)\n```\n> `x = x * 2` overwrites x with a new value built from the old one."},
+            {"title": "even or odd", "topic": "conditionals",
+             "prompt": "Print `even` if `n` is even, otherwise `odd`.",
+             "starter": "n = 8\n", "expect": ["even"], "need": ["if", "%"], "stdin": "",
+             "example": "Check a different number:\n```python\nn = 7\nif n % 2 == 0:\n    print(\"even\")\nelse:\n    print(\"odd\")\n```\n> n % 2 is 0 for even numbers, 1 for odd."},
         ],
     },
     {
@@ -15212,18 +15264,10 @@ class TutorApp(App):
             self._advance_after_pass()
 
     def _plan_template(self, c):
-        """A 'think before you type' comment block that trains decomposition —
-        the student replaces the placeholders with their own plan. Pure English,
-        no code tokens, so it never falsely satisfies a `need` check."""
-        if c.get("predict") or c.get("free"):
-            return ""   # read-the-output and free-answer don't need a plan
-        return (
-            "# your plan — think before you type:\n"
-            "# 1. goal — what should this print or return?\n"
-            "# 2. tool — loop, decision, or a function?\n"
-            "# 3. steps — list them, then write the code below\n"
-            "\n"
-        )
+        """No pre-loaded comment block — the editor opens straight into the
+        starter so the ghost writing and the work itself come first, not a wall
+        of plan comments. (Kept as a hook in case a challenge opts back in.)"""
+        return ""
 
     def _render_challenge(self):
         c = self._current()
@@ -21134,12 +21178,14 @@ class TutorApp(App):
                 if self.voice_on:
                     speak("what's off. " + " ".join(real[:2]))
         if a >= 2:
-            tip = TOPIC_CHEATS.get(topic, {}).get("tip", "hit F2 for the cheat sheet")
+            # twice in a row = you're stuck on this line's syntax, not unlucky.
+            # Pull back: re-drill the ghost on the exact code, then return to retry.
             t.append("\n")
-            t.append("HINT: ", style="bold")
-            t.append(tip)
+            t.append("stuck? ", style="bold #facc15")
+            t.append("let's rebuild it together — re-drilling the ghost…", style="#f0f0f5")
             if self.voice_on and not crash:
-                speak(f"not approved. hint: {tip}")
+                speak("let's rebuild it together. watch the ghost.")
+            self._schedule_retrain()
         else:
             if not crash:
                 t.append("  ·  fix it and run again (:!python3 %)", style="dim")
@@ -21149,6 +21195,29 @@ class TutorApp(App):
             speak("what this means. " + why)
         self._set_output(t)
         self._update_guide()
+
+    # ---- pull-back retrain: stuck twice → re-drill the ghost, then retry ---- #
+    def _schedule_retrain(self):
+        if self._ghost_on or self._mastery_on:
+            return
+        t = getattr(self, "_retrain_timer", None)
+        if t is not None:
+            t.stop()
+        # a beat to read the failure, then the drill starts on its own
+        self._retrain_timer = self.set_timer(1.8, self._start_retrain)
+
+    def _start_retrain(self):
+        self._retrain_timer = None
+        if self.mode != "challenge" or self._ghost_on or self._mastery_on:
+            return
+        self._ghost_on_done = self._retrain_done
+        self._start_ghost_required()
+
+    def _retrain_done(self):
+        """Back from the re-drill — a fresh attempt, no hand-holding."""
+        self._focus_editor()
+        if self.voice_on:
+            speak("now you try again. you've got the shape.")
 
     # ---- mastery exam pass/fail finalizers -------------------------------- #
     def _mastery_mark_pass(self, out):
