@@ -12754,9 +12754,11 @@ class VolumeBar(Static):
     mutes it. The app auto-closes the bar after a few idle seconds."""
 
     can_focus = True
-    METER_W = 22   # meter width in terminal cells
+    METER_W = 20   # meter width in terminal cells
     ICON_X = 2     # column where the (♪)/(✕) icon starts
     METER_X = 6    # column where the meter starts
+    MINUS_X = 32   # [-] button
+    PLUS_X = 35    # [+] button
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -12778,13 +12780,15 @@ class VolumeBar(Static):
             icon = "[bold #7dd3fc](♪)[/]"
         pct = f"{int(round(vol * 100)):3d}%"
         marker = "[bold #7dd3fc]>[/]" if active else " "
-        return f"{marker} {icon} {meter} [bold]{pct}[/]  [dim]{label}[/]"
+        minus = "[bold #f9a8d4 on #2a1a1a](-)[/]"
+        plus = "[bold #a3f7bf on #1a2a1a](+)[/]"
+        return f"{marker} {icon} {meter} [bold]{pct}[/] {minus}{plus} [dim]{label}[/]"
 
     def _bar_markup(self) -> str:
         voice = self._row_markup(0, self._active == 0)
         sfx = self._row_markup(1, self._active == 1)
         write = self._row_markup(2, self._active == 2)
-        hint = "[dim]↑/↓ switch · ←/→ level · m mute · click to set · F4 close[/]"
+        hint = "[dim]click ♪ to mute · click meter to jump · [-] [+] to nudge · F4 close[/]"
         return f"{voice}\n{sfx}\n{write}\n{hint}"
 
     def repaint(self) -> None:
@@ -12820,6 +12824,12 @@ class VolumeBar(Static):
             self._toggle_row_mute(row)
         elif self.METER_X <= x < self.METER_X + self.METER_W:
             self._set_row_vol(row, (x - self.METER_X + 0.5) / self.METER_W)
+        elif self.MINUS_X <= x <= self.MINUS_X + 2:
+            self._set_row_vol(row, self._row_vol(row) - 0.05)
+        elif self.PLUS_X <= x <= self.PLUS_X + 2:
+            self._set_row_vol(row, self._row_vol(row) + 0.05)
+        else:
+            return
         self.app._volume_changed(self)
 
     def on_key(self, event: events.Key) -> None:
@@ -12864,9 +12874,9 @@ class VolumeIcon(Static):
     opens the fader bar when clicked (same as F4)."""
 
     def _icon_markup(self) -> str:
-        if _VOICE_MUTED or _SFX_MUTED:
-            return "[bold red](✕)[/]"
-        return "[bold #7dd3fc](♪)[/]"
+        if _VOICE_MUTED or _SFX_MUTED or _WRITE_MUTED:
+            return "[bold #f38ba8 on #2a1a1a]( ✕ VOL )[/]"
+        return "[bold #7dd3fc on #1e3a5f]( ♪ VOL )[/]"
 
     def repaint(self) -> None:
         self.update(Text.from_markup(self._icon_markup()))
@@ -12879,12 +12889,33 @@ class VolumeIcon(Static):
         self.app.action_toggle_volume()
 
 
+class BackButton(Static):
+    """Top-left back arrow — the ONLY way to leave a challenge (Esc never quits).
+    Hidden on the top-level series menu; shows everywhere else."""
+
+    can_focus = False
+
+    def on_mount(self) -> None:
+        self.repaint()
+
+    def repaint(self) -> None:
+        self.update(Text.from_markup("[bold #7dd3fc on #1e3a5f]( ← )[/]"))
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app.action_back()
+
+
 class TutorApp(App):
     CSS = """
     Screen { background: #000000; }
     #topbar-row { height: 3; background: $boost; }
+    #back-btn { width: 6; padding: 0 1; }
+    #back-btn:hover { background: $surface; }
     #topbar { width: 1fr; padding: 1 2; }
-    #volume-icon { width: 5; padding: 1 1; }
+    #profile-icon { width: 6; padding: 1 1; }
+    #profile-icon:hover { background: $surface; }
+    #volume-icon { width: 9; padding: 1 1; }
     #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
     #challenge-box { width: 30%; border: tall $accent; display: none; }
@@ -13356,6 +13387,7 @@ class TutorApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="topbar-row"):
+            yield BackButton(id="back-btn")
             yield Static("", id="topbar")
             yield ProfileIcon(id="profile-icon")
             yield VolumeIcon(id="volume-icon")
@@ -13547,6 +13579,7 @@ class TutorApp(App):
         self._render_menu()
         self._sync_settings_checkboxes()
         self._sync_name_field()
+        self._sync_back_button()
 
     def _show_challenge(self):
         self.mode = "challenge"
@@ -13555,11 +13588,25 @@ class TutorApp(App):
             self.query_one(w).add_class("hidden")
         for w in ("#body", "#guide", "#status"):
             self.query_one(w).remove_class("hidden")
+        self._sync_back_button()
+
+    def _sync_back_button(self):
+        """Show the ← button anywhere there's a level to go back to; hide it on
+        the top-level series menu (there's nothing to go back to there)."""
+        show = self.mode == "challenge" or (
+            self.mode == "menu"
+            and self.menu_level in ("challenges", "dev_modules", "net_modules"))
+        btn = self.query_one("#back-btn", BackButton)
+        if show:
+            btn.remove_class("hidden")
+        else:
+            btn.add_class("hidden")
 
     def _render_menu(self):
         self.query_one("#menu-banner", Static).update(self._banner_text())
         self._start_menu_anim()
         self._render_progress()
+        self._sync_back_button()
         if self.menu_level == "series":
             self._render_series_list()
         elif self.menu_level == "dev_modules":
@@ -14127,7 +14174,7 @@ class TutorApp(App):
             t.append_text(line)
             t.append("\n")
             line_no += 1
-        t.append("\nEnter — start · Esc — back to series · j/k — move", style="dim")
+        t.append("\nEnter — start · ← back to series · j/k — move", style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
         self._snap_menu_scroll(sel_line)
 
@@ -14199,7 +14246,7 @@ class TutorApp(App):
             t.append_text(line)
             t.append("\n")
             line_no += 1
-        t.append("\nEnter — start · Esc — back to series · j/k — move", style="dim")
+        t.append("\nEnter — start · ← back to series · j/k — move", style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
         self._snap_menu_scroll(sel_line)
 
@@ -14349,7 +14396,7 @@ class TutorApp(App):
             t.append_text(line)
             t.append("\n")
             line_no += 1
-        t.append("\nEnter — start   ·   Esc — back to series   ·   j/k — move", style="dim")
+        t.append("\nEnter — start   ·   ← back to series   ·   j/k — move", style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
         self._snap_menu_scroll(sel_line)
 
@@ -14597,7 +14644,7 @@ class TutorApp(App):
         s = "[red](✕)[/]" if _SFX_MUTED else f"[bold]{int(round(_SFX_VOL * 100))}%[/]"
         vol = f"[dim]voice[/] {v} [dim]sfx[/] {s}"
         nav = ("[dim]j/k move · Enter open series · q quit[/]" if self.menu_level == "series"
-               else "[dim]j/k move · Enter start · Esc back to series[/]")
+               else "[dim]j/k move · Enter start · ← back[/]")
         self.query_one("#menu-help", Static).update(
             f"{nav}  {music} · {voice} · {vol}  ·  "
             f"[dim]·[/] [green]{self.p['done']} done[/] [dim]·[/] streak [yellow]{self.p['streak']}[/]"
@@ -14794,13 +14841,24 @@ class TutorApp(App):
             self.query_one("#editor", VimEditor).focus()
             return
         if self.mode == "menu":
+            # Esc never navigates backward — the ← button handles all "go back"
+            return
+        # challenge mode: Esc NEVER quits — use the ← back button (top-left)
+        # instead. Esc here is reserved for Vim normal mode in the editor.
+        return
+
+    def action_back(self):
+        """The ← back button (top-left): the ONLY way to leave a challenge."""
+        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on:
+            return
+        if self.mode == "challenge":
+            self._stop_demo_timers()
+            self.started = False
+            self._show_menu()
+        elif self.mode == "menu":
             if self.menu_level in ("challenges", "dev_modules", "net_modules"):
                 self.menu_level = "series"
                 self._render_menu()
-            return
-        self._stop_demo_timers()
-        self.started = False
-        self._show_menu()
 
     def _select_challenge(self):
         self.group_idx = self.series_sel
@@ -22453,7 +22511,7 @@ class TutorApp(App):
             "  ·  " + " ".join(f"{kc(x)}={y}" for x, y in [("dd","delete line"),("yy","yank"),("p","paste"),("x","del char"),("u","undo")]),
             "### run / test (real nvim)\n" + "  ".join(kc(x) for x in [":w", ":!python3 %", ":submit", ":q"]) +
             "  ·  " + f"{kc('Ctrl+Enter')}=run+submit",
-            "### tutor\n" + " ".join(f"{kc(x)}={y}" for x, y in [("Ctrl+n","next"),("Ctrl+b","prev"),("Enter","dive in"),("w","watch"),("l","listen"),("e","lesson"),("F12","quick check"),("F1","keys"),("F2","cheat"),("F3","demo"),("F4","volume"),("Ctrl+G","ghost write"),("F6","voice"),("F7","review"),("F8","examples"),("F9","hints"),("F10","wider editor"),("F11","narrower editor"),("m","music"),("Esc","menu"),("q","quit")]),
+            "### tutor\n" + " ".join(f"{kc(x)}={y}" for x, y in [("Ctrl+n","next"),("Ctrl+b","prev"),("Enter","dive in"),("w","watch"),("l","listen"),("e","lesson"),("F12","quick check"),("F1","keys"),("F2","cheat"),("F3","demo"),("F4","volume"),("Ctrl+G","ghost write"),("F6","voice"),("F7","review"),("F8","examples"),("F9","hints"),("F10","wider editor"),("F11","narrower editor"),("m","music"),("Esc","vim normal"),("q","quit")]),
         ])
 
     # ---- examples panel (F8): static wall of worked examples ------------ #
