@@ -12940,7 +12940,9 @@ class TutorApp(App):
     #editor-label.insert { background: #1e6b3f; }
     #example-ref { height: auto; padding: 1 2; background: #0d1117; border-bottom: solid $warning; }
     #editor { height: 1fr; padding: 1 2; }
-    #output { height: 7; border-top: solid $primary; background: $surface-darken-1; }
+    #output-scroll { height: 10; border-top: solid $primary; background: $surface-darken-1; }
+    #output { height: auto; padding: 0 1; }
+    #output-bar { height: 1; padding: 0 1; background: $boost; }
     #guide { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
     #task { height: 3; padding: 1 2; background: $accent; color: $text; }
     #cmd { dock: bottom; display: none; }
@@ -13453,7 +13455,9 @@ class TutorApp(App):
                 yield Static("", id="editor-label")
                 yield Static("", id="example-ref")
                 yield VimEditor(id="editor")
-                yield Static("", id="output")
+                with VerticalScroll(id="output-scroll"):
+                    yield Static("", id="output")
+                yield Static("", id="output-bar")
                 yield Static("", id="wildmenu")
                 yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
             yield Static("", id="split-drag")
@@ -15247,7 +15251,7 @@ class TutorApp(App):
                 "[dim]worked examples are on the right →  ([reverse]F8[/] hide/show · scroll for more)[/]")
             self.query_one("#editor", VimEditor).set_text(
                 self._plan_template(c) + c["starter"])
-        self.query_one("#output", Static).update("")
+        self._set_output("")
         self.last = None
         self._cancel_celebrate()
         self._cancel_output_reveal()
@@ -20616,7 +20620,7 @@ class TutorApp(App):
             t.append(out, style="green")
         else:
             t.append("(no output)", style="dim")
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
 
     # ---- predict-the-output (READ the code) ------------------------------- #
@@ -20668,7 +20672,7 @@ class TutorApp(App):
         t.append("\n")
         t.append("NEXT ▶", style="bold yellow")
         t.append("  press Enter", style="dim")
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
         win, _ = self._sounds_for(self._flat_index())
         self._cancel_celebrate()
@@ -20711,7 +20715,7 @@ class TutorApp(App):
         t.append("TRACE IT:", style="bold yellow")
         t.append("\n")
         t.append(hint, style="#f0f0f5")
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
         if self.voice_on:
             speak("not quite. " + hint)
@@ -20753,9 +20757,17 @@ class TutorApp(App):
     def _output_w(self) -> int:
         """Inner width (cols) of the #output console, so results wrap to fit."""
         try:
-            return max(12, self.query_one("#output", Static).size.width - 4)
+            return max(12, self.query_one("#output-scroll", VerticalScroll).size.width - 4)
         except Exception:
             return 60
+
+    def _set_output(self, renderable) -> None:
+        """Update the output console and auto-scroll to the newest line."""
+        self.query_one("#output", Static).update(renderable)
+        try:
+            self.query_one("#output-scroll", VerticalScroll).scroll_end(animate=False)
+        except Exception:
+            pass
 
     def _start_output_reveal(self, text: str, final_cb):
         """Stream `text` into the #output box (blue cursor + a sound per char),
@@ -20774,7 +20786,7 @@ class TutorApp(App):
             while self._out_reveal_i < len(text) and text[self._out_reveal_i] == "\n":
                 self._out_reveal_i += 1
             play_output_tick()
-            self.query_one("#output", Static).update(self._render_reveal_text(text, self._out_reveal_i))
+            self._set_output(self._render_reveal_text(text, self._out_reveal_i))
             return
         t = self._out_reveal_timer
         if t is not None:
@@ -20917,7 +20929,7 @@ class TutorApp(App):
         t.append("\n")
         t.append("NEXT ▶", style="bold yellow")
         t.append("  press Enter", style="dim")
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
         self._sync_continue_button()
         # the verdict just landed — green border flash, then celebrate
@@ -21029,7 +21041,7 @@ class TutorApp(App):
 
     def _flash_border_tick(self):
         try:
-            box = self.query_one("#output", Static)
+            box = self.query_one("#output-scroll", VerticalScroll)
         except Exception:
             t = getattr(self, "_flash_timer", None)
             if t is not None:
@@ -21105,7 +21117,7 @@ class TutorApp(App):
                 speak("not approved. fix it and run again.")
         if crash and self.voice_on and why:
             speak("what this means. " + why)
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
 
     # ---- mastery exam pass/fail finalizers -------------------------------- #
@@ -21136,7 +21148,7 @@ class TutorApp(App):
                  style="bold green")
         t.append("\n")
         t.append("NEXT ▶  press Enter", style="bold yellow")
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
         self._flash_output_border("#22c55e")
 
@@ -21204,7 +21216,7 @@ class TutorApp(App):
             t.append("ONE miss — you get a 2nd chance, a different problem. ",
                      style="bold #facc15")
         t.append("press Enter", style="dim")
-        self.query_one("#output", Static).update(t)
+        self._set_output(t)
         self._update_guide()
         if self.voice_on:
             if self._mastery_fails >= 1:
@@ -22701,7 +22713,7 @@ class TutorApp(App):
             save_progress(self.p)
             self.exit()
         elif raw in ("w", "write"):
-            self.query_one("#output", Static).update("[bold]\"challenge.py\" written[/]")
+            self._set_output("[bold]\"challenge.py\" written[/]")
         elif raw == "run":
             # Run only — execute and show output, no pass/fail verdict
             self._run_only()
@@ -22714,7 +22726,7 @@ class TutorApp(App):
             # the real nvim way to complete: :!python3 %  — runs AND checks
             self._run_and_submit()
         else:
-            self.query_one("#output", Static).update(f"[dim]Unknown command: :{raw}[/]")
+            self._set_output(f"[dim]Unknown command: :{raw}[/]")
 
     # ---- nvim wildmenu (command-line autocomplete) ------------------------ #
 
@@ -23230,7 +23242,7 @@ class TutorApp(App):
         self._vis_n = int(spec.get("n", 6))
         self._vis_step = 0
         # keep the raw result visible in the output box under the overlay
-        self.query_one("#output", Static).update(
+        self._set_output(
             Text((out or "(no output)").rstrip("\n") + "\n✓ passed", style="green"))
         self.query_one("#visual", Static).add_class("visible")
         self._visual_render()
@@ -23301,7 +23313,7 @@ class TutorApp(App):
         got = len([l for l in (out or "").splitlines() if l.strip()])
         self._vis_got = max(0, min(got, self._vis_n))
         self._vis_step = 0
-        self.query_one("#output", Static).update(
+        self._set_output(
             Text((out or "(no output)").rstrip("\n"), style="green"))
         self.query_one("#visual", Static).add_class("visible")
         self._visual_render_fail()
