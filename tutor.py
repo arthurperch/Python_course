@@ -4947,6 +4947,7 @@ class VimEditor(Static):
         self._pending: str | None = None
         self._insert_snapshot: list[str] | None = None
         self.hint_lines: set[int] = set()
+        self.scroll_top = 0   # first visible line (viewport follows the cursor)
 
     def set_text(self, text: str) -> None:
         # strip a trailing newline so the buffer has no phantom empty last line
@@ -4959,6 +4960,7 @@ class VimEditor(Static):
         self.undo_stack = []
         self._pending = None
         self.hint_lines = set()
+        self.scroll_top = 0
         self._redraw()
 
     def get_text(self) -> str:
@@ -4982,8 +4984,20 @@ class VimEditor(Static):
 
     def render(self) -> Text:
         t = Text()
-        for i, line in enumerate(self.buffer):
-            if i > 0:
+        # viewport: only draw the visible window and keep the cursor on screen
+        try:
+            h = max(3, self.size.height - 2)   # minus the 1px top/bottom padding
+        except Exception:
+            h = 20
+        if self.cursor_row < self.scroll_top:
+            self.scroll_top = self.cursor_row
+        elif self.cursor_row >= self.scroll_top + h:
+            self.scroll_top = self.cursor_row - h + 1
+        self.scroll_top = max(0, min(self.scroll_top, max(0, len(self.buffer) - 1)))
+        end = min(len(self.buffer), self.scroll_top + h)
+        for i in range(self.scroll_top, end):
+            line = self.buffer[i]
+            if i > self.scroll_top:
                 t.append("\n")
             # relative line numbers like LazyVim (current line = its number, others = distance)
             if i == self.cursor_row:
@@ -12992,7 +13006,7 @@ class TutorApp(App):
     #editor-label.insert { background: #1e6b3f; }
     #example-ref { height: auto; padding: 1 2; background: #0d1117; border-bottom: solid $warning; }
     #editor { height: 1fr; padding: 1 2; }
-    #output-scroll { height: 10; border-top: solid $primary; background: $surface-darken-1; }
+    #output-scroll { height: 7; border-top: solid $primary; background: $surface-darken-1; }
     #out-drag { height: 1; background: $surface-darken-2; }
     #out-drag:hover { background: $accent; }
     #output { height: auto; padding: 0 1; }
