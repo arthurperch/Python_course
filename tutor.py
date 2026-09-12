@@ -13094,6 +13094,8 @@ class TutorApp(App):
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
         self._ghost_reveal = 0               # "show code" countdown (0 = hidden)
         self._ghost_reveal_timer = None
+        self._ghost_error_flash = None       # char pos with a 2s yellow miss highlight
+        self._ghost_error_flash_timer = None
         self._ghost_exit_confirm = False     # the Y/N leave-ghost popup is up
         self._ghost_normal_mode = False      # Esc toggles vim normal mode (typing blocked)
         self._ghost_fill = False             # FILL mode: blank a value, user types it
@@ -15837,6 +15839,7 @@ class TutorApp(App):
                 self._ghost_errors[p] = ch
                 self._ghost_pos += 1
                 self._ghost_fade_wrong += 1
+                self._ghost_flash_error(p)
             elif self._ghost_blind_from is not None:
                 # no reset either — reveal a bit more of the answer as a hint and
                 # commit the miss in red to fix in place
@@ -15845,12 +15848,14 @@ class TutorApp(App):
                     self._ghost_blind_reveal + 8)
                 self._ghost_errors[p] = ch
                 self._ghost_pos += 1
+                self._ghost_flash_error(p)
             else:
                 # wrong char is COMMITTED (keep typing), flagged red to fix later
                 self._ghost_errors[p] = ch
                 self._ghost_pos += 1
                 play_ghost_error()   # comedic 'womp' so the miss is HEARD
                 self._ghost_shake()   # and FELT — the text jolts once
+                self._ghost_flash_error(p)
         self._ghost_done = (self._ghost_pos >= len(self._ghost_target)
                             and not self._ghost_errors)
         if self._ghost_done:
@@ -15864,6 +15869,21 @@ class TutorApp(App):
                     speak_write(cue)
             play_menu_blip(3)          # completion cue — you're at the end
             self._ghost_start_blink()
+        self._ghost_render()
+
+    def _ghost_flash_error(self, p):
+        """A 2-second yellow highlight at the miss, + a 'go fix it' voice cue."""
+        self._ghost_error_flash = p
+        t = getattr(self, "_ghost_error_flash_timer", None)
+        if t is not None:
+            t.stop()
+        self._ghost_error_flash_timer = self.set_timer(2.0, self._ghost_error_flash_clear)
+        if self.voice_on:
+            speak("go fix your error")
+
+    def _ghost_error_flash_clear(self):
+        self._ghost_error_flash = None
+        self._ghost_error_flash_timer = None
         self._ghost_render()
 
     def _ghost_blind_complete(self):
@@ -16295,7 +16315,8 @@ class TutorApp(App):
 
     def _ghost_stop_timers(self):
         for attr in ("_ghost_out_timer", "_ghost_blink_timer", "_ghost_nudge_timer",
-                     "_ghost_shake_timer", "_ghost_compare_timer", "_ghost_reveal_timer"):
+                     "_ghost_shake_timer", "_ghost_compare_timer", "_ghost_reveal_timer",
+                     "_ghost_error_flash_timer"):
             t = getattr(self, attr, None)
             if t is not None:
                 t.stop()
@@ -16651,10 +16672,13 @@ class TutorApp(App):
             j = 0
             while j < typed_n:
                 if (start + j) in self._ghost_errors:
-                    # the CORRECT char in red — the user knows they missed it,
-                    # but the rest of the ghost text STAYS visible (no collapsing)
+                    # the CORRECT char — red underline normally; a yellow block
+                    # for 2s right after the miss so the location pops
+                    flash = getattr(self, "_ghost_error_flash", None) == (start + j)
+                    style = ("bold #1e1e2e on #facc15" if flash
+                             else "bold underline #ff5555")
                     t.append(self._ghost_visible(self._ghost_target[start + j]),
-                             style="bold underline #ff5555")
+                             style=style)
                     j += 1
                 else:
                     run_start = j
@@ -16707,8 +16731,11 @@ class TutorApp(App):
                                      style="reverse bold #cba6f7" if cur else "#cba6f7")
                         elif ch == " ":
                             t.append(" ", style="reverse bold" if cur else "#585b70")
-                        elif ch.isalnum() or ch == "_":
-                            # word char: first letter shown, the rest as a blank
+                        elif ch.isdigit():
+                            # numbers stay visible — hiding a number is pointless
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
+                        elif ch.isalpha() or ch == "_":
+                            # word: first letter shown, the rest as a blank
                             prev = rest[k - 1] if k > 0 else (
                                 line[typed_n - 1] if typed_n > 0 else "")
                             is_first = not (prev.isalnum() or prev == "_")
