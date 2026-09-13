@@ -449,7 +449,7 @@ GROUPS = [
             {"title": "factorial", "topic": "recursion",
              "prompt": "Write a recursive `fact(n)` and print `fact(5)` (should be 120).",
              "starter": "", "expect": ["120"], "need": ["def"], "stdin": "",
-             "example": "Recursion that counts down:\n```python\ndef count(n):\n    if n == 0:\n        return\n    print(n)\n    count(n - 1)\n\ncount(3)\n```\n> recursion = a function that calls itself. count(3) runs it: 3, 2, 1."},
+             "example": "Factorial of a smaller number:\n```python\ndef fact(n):\n    if n == 0:\n        return 1\n    return n * fact(n - 1)\n\nprint(fact(4))\n```\n> recursion = a function that calls itself. fact(4) stacks up 4, 3, 2, 1, then multiplies on the way back: 24."},
             {"title": "lambda square", "topic": "lambda",
              "prompt": "Use a `lambda` to square 3 and print the result.",
              "starter": "", "expect": ["9"], "need": ["lambda"], "stdin": "",
@@ -499,7 +499,7 @@ GROUPS = [
             {"title": "fibonacci", "topic": "recursion",
              "prompt": "Write a recursive `fib(n)` and print `fib(6)` (should be 8).",
              "starter": "", "expect": ["8"], "need": ["def"], "stdin": "",
-             "example": "Recursive sum instead:\n```python\ndef add_up(n):\n    if n == 1:\n        return 1\n    return n + add_up(n - 1)\n\nprint(add_up(5))\n```\n> recursion = a function calling itself with a base case."},
+             "example": "Fibonacci of a smaller number:\n```python\ndef fib(n):\n    if n <= 1:\n        return n\n    return fib(n - 1) + fib(n - 2)\n\nprint(fib(5))\n```\n> fib calls ITSELF twice — each call branches into two smaller ones, down to the base case."},
             {"title": "map with lambda", "topic": "lambda",
              "prompt": "Use `map` with a `lambda` to double `[1, 2, 3]` and print the result as a list.",
              "starter": "", "expect": ["2", "4", "6"], "need": ["lambda", "map"], "stdin": "",
@@ -515,7 +515,7 @@ GROUPS = [
             {"title": "sum to n", "topic": "recursion",
              "prompt": "Write a recursive `add_up(n)` that returns 1 + 2 + ... + n, then print `add_up(5)`.",
              "starter": "def add_up(n):\n    pass\n", "expect": ["15"], "need": ["def", "return"], "stdin": "",
-             "example": "Recursive countdown instead:\n```python\ndef count(n):\n    if n == 0:\n        return\n    print(n)\n    count(n - 1)\n\ncount(3)\n```\n> recursion = a function calling itself with a base case. count(3) prints 3, 2, 1."},
+             "example": "Sum of a smaller number:\n```python\ndef add_up(n):\n    if n == 1:\n        return 1\n    return n + add_up(n - 1)\n\nprint(add_up(4))\n```\n> recursion = a function calling itself with a base case. add_up(4) stacks up 4, 3, 2, 1, then adds on the way back: 10."},
         ],
     },
     {
@@ -2524,7 +2524,7 @@ def final_vars_of(code: str, stdin: str = "", timeout: float = 10.0) -> dict[str
 # Python actually walks through a program (the #1 'top to bottom' confusion).
 TRACE_RUNNER = r'''
 import sys, json, io
-MAX_EVENTS = 120
+MAX_EVENTS = 400
 
 def render(v):
     if isinstance(v, str):
@@ -2559,7 +2559,29 @@ def main():
             real_stdout.flush()
     sys.stdout = _Tee()
     def tracer(frame, event, arg):
-        if event == "line" and frame.f_code.co_filename == code_path:
+        if frame.f_code.co_filename != code_path:
+            return tracer
+        fn = frame.f_code.co_name
+        if event == "call":
+            if fn == "<module>":
+                return tracer
+            depth[0] += 1
+            args = {}
+            for k, v in list(frame.f_locals.items()):
+                if k.startswith("__") or k == "self":
+                    continue
+                if (v is None or isinstance(v, (str, int, float, bool,
+                                                list, tuple, set, dict))):
+                    args[k] = render(v)
+            if len(events) < MAX_EVENTS:
+                events.append(["call", fn, args, depth[0], out_buf.getvalue()])
+        elif event == "return":
+            if fn == "<module>":
+                return tracer
+            if len(events) < MAX_EVENTS:
+                events.append(["return", fn, render(arg), depth[0], out_buf.getvalue()])
+            depth[0] -= 1
+        elif event == "line":
             if len(events) < MAX_EVENTS:
                 locs = {}
                 for k, v in list(frame.f_locals.items()):
@@ -2568,8 +2590,10 @@ def main():
                     if (v is None or isinstance(v, (str, int, float, bool,
                                                     list, tuple, set, dict))):
                         locs[k] = render(v)
-                events.append([frame.f_lineno, locs, out_buf.getvalue()])
+                events.append(["line", frame.f_lineno, locs, out_buf.getvalue(),
+                               depth[0]])
         return tracer
+    depth = [0]
     sys.settrace(tracer)
     g = {"__name__": "__main__"}
     try:
@@ -13161,6 +13185,9 @@ class TutorApp(App):
         Binding("right", "step_next", "Next", show=False),
         Binding("left", "step_prev", "Prev", show=False),
         Binding("space", "step_auto", "Auto", show=False),
+        Binding("r", "step_rewind", "Rewind", show=False),
+        Binding("plus,equals", "step_faster", "Faster", show=False),
+        Binding("minus", "step_slower", "Slower", show=False),
     ]
 
     def __init__(self):
@@ -13428,13 +13455,15 @@ class TutorApp(App):
         # replay of the current example (or your own code) — highlight the line,
         # show the variables, and watch the output build up.
         self._step_on = False
-        self._step_steps: list = []   # (ln, before, after, out_before, out_after)
+        self._step_steps: list = []   # recursion-aware step dicts
         self._step_i = 0
         self._step_code = ""
         self._step_gen = 0
         self._step_output = ""
         self._step_auto_timer = None
         self._step_auto = False
+        self._step_speed = 0.18       # seconds per step in auto-play (+ / - to change)
+        self._step_cur_line = 1
         self._tour_caption = ""
         self._tour_stdin = ""
         self._tour_why = ""
@@ -22150,7 +22179,10 @@ class TutorApp(App):
         if gen != self._lesson_gen:
             return
         result = (out or err or "").rstrip("\n")
-        if not events:
+        # keep only LINE events — call/return events are the recursion stack,
+        # used by STEP mode, not the lesson's line-by-line walk
+        line_events = [ev for ev in events if ev and ev[0] == "line"]
+        if not line_events:
             # tracing produced no line events — fall back to a plain reveal
             self._tour_on_result(result, gen)
             return
@@ -22160,14 +22192,14 @@ class TutorApp(App):
         # show the real prints accumulating line by line.
         self._tour_output = result
         steps = []
-        for i, ev in enumerate(events):
-            ln = ev[0]
-            locs = ev[1]
-            out_before = (ev[2] if len(ev) > 2 else "").rstrip("\n")
-            after = events[i + 1][1] if i + 1 < len(events) else locs
-            if i + 1 < len(events):
-                nxt = events[i + 1]
-                out_after = (nxt[2] if len(nxt) > 2 else "").rstrip("\n")
+        for i, ev in enumerate(line_events):
+            ln = ev[1]
+            locs = ev[2]
+            out_before = (ev[3] if len(ev) > 3 else "").rstrip("\n")
+            after = line_events[i + 1][2] if i + 1 < len(line_events) else locs
+            if i + 1 < len(line_events):
+                nxt = line_events[i + 1]
+                out_after = (nxt[3] if len(nxt) > 3 else "").rstrip("\n")
             else:
                 out_after = result
             steps.append((ln, locs, after, out_before, out_after))
@@ -22344,18 +22376,37 @@ class TutorApp(App):
             self._step_steps = []
             self._step_render_plain(result)
             return
+        # Build recursion-aware steps: each step is a dict carrying the CALL
+        # STACK (frames pushed/popped), the WIND/UNWIND phase, and the running
+        # result, so a recursive function can be watched stack-up and unwind.
         steps = []
-        for i, ev in enumerate(events):
-            ln = ev[0]
-            locs = ev[1]
-            out_before = (ev[2] if len(ev) > 2 else "").rstrip("\n")
-            after = events[i + 1][1] if i + 1 < len(events) else locs
-            if i + 1 < len(events):
-                nxt = events[i + 1]
-                out_after = (nxt[2] if len(nxt) > 2 else "").rstrip("\n")
-            else:
-                out_after = result
-            steps.append((ln, locs, after, out_before, out_after))
+        stack = []           # [(funcname, {arg: value})] — top of stack is last
+        peaked = False       # flips true at the first return (the unwind begins)
+        for ev in events:
+            if not ev:
+                continue
+            kind = ev[0]
+            if kind == "call":
+                fn, args = ev[1], ev[2]
+                stack.append((fn, args))
+                steps.append({"kind": "call", "fn": fn, "args": args,
+                              "stack": list(stack), "phase": "wind",
+                              "out": ev[4] if len(ev) > 4 else ""})
+            elif kind == "return":
+                fn, ret = ev[1], ev[2]
+                if stack:
+                    stack.pop()
+                peaked = True
+                steps.append({"kind": "return", "fn": fn, "ret": ret,
+                              "stack": list(stack), "phase": "unwind",
+                              "out": ev[4] if len(ev) > 4 else ""})
+            elif kind == "line":
+                ln, locs = ev[1], ev[2]
+                steps.append({"kind": "line", "line": ln, "locs": locs,
+                              "stack": list(stack),
+                              "phase": "unwind" if peaked else "wind",
+                              "out": ev[3] if len(ev) > 3 else ""})
+        # keep only steps that add something to SEE (a line, or a stack change)
         self._step_steps = steps
         self._step_i = 0
         self._step_render()
@@ -22371,19 +22422,41 @@ class TutorApp(App):
         self.query_one("#step", Static).update(
             _center_screen(_box_lines(out), self.size.width, self.size.height - 1))
 
+    def _find_def_line(self, fn):
+        # line number of `def fn(...)` in the traced code, else None
+        for i, ln_text in enumerate(self._step_code.split("\n"), 1):
+            if re.match(rf"\s*def\s+{re.escape(fn)}\s*\(", ln_text):
+                return i
+        return None
+
     def _step_render(self):
         if not self._step_steps:
             return
-        ln, before, after, out_before, out_after = self._step_steps[self._step_i]
+        step = self._step_steps[self._step_i]
+        kind = step["kind"]
         code_lines = self._step_code.split("\n")
         total = len(self._step_steps)
+        # which line to highlight: the executing line, or the def line on
+        # call/return (a new copy starts / a copy hands back its answer)
+        if kind == "line":
+            cur = step["line"]
+            self._step_cur_line = cur
+        else:
+            cur = self._find_def_line(step["fn"]) or getattr(self, "_step_cur_line", 1)
+
         out = [Text("STEP — ", style="bold magenta"),
                Text(f"watch it run · step {self._step_i + 1}/{total}",
-                    style="bold yellow"),
-               Text(""), Text("")]
+                    style="bold yellow")]
+        if step["phase"] == "wind":
+            out.append(Text("  WINDING ↓   each call pauses & asks a smaller one",
+                            style="bold #a78bfa"))
+        else:
+            out.append(Text("  UNWINDING ↑   answers multiply on the way back",
+                            style="bold #7dd3fc"))
+        out.append(Text(""))
         for i, ln_text in enumerate(code_lines, 1):
             row = Text(f"{i:>2} ", style="dim")
-            if i == ln:
+            if i == cur:
                 row.append("▶ ", style="bold yellow")
                 row.append_text(Text(ln_text, style="reverse bold"))
             else:
@@ -22391,56 +22464,59 @@ class TutorApp(App):
                 row.append_text(_code_text(ln_text))
             out.append(row)
         out.append(Text(""))
-        if after:
+        # ---- call stack panel (the star) --------------------------------
+        out.append(Text("  call stack:", style="bold cyan"))
+        stack = step["stack"]
+        if kind == "return":
+            # the returned frame is already popped; show it handing back its value
+            row = Text("  ↩ ", style="bold #facc15")
+            row.append(Text(f"{step['fn']} → returns {step['ret']}",
+                            style="bold #facc15"))
+            out.append(row)
+        for j, (fn, args) in enumerate(reversed(stack)):
+            arg_str = ", ".join(f"{k}={v}" for k, v in args.items())
+            label = f"{fn}({arg_str})" if arg_str else f"{fn}()"
+            if j == 0 and kind == "call":
+                out.append(Text(f"  ▶ {label}   ← running now", style="bold yellow"))
+            else:
+                out.append(Text(f"    {label}   waiting…", style="#a5b4fc"))
+        if not stack and kind != "return":
+            out.append(Text("    (empty — about to start)", style="dim"))
+        # ---- variables / result -----------------------------------------
+        if kind == "line" and step.get("locs"):
+            out.append(Text(""))
             out.append(Text("  variables now:", style="bold cyan"))
-            for k, v in after.items():
+            for k, v in step["locs"].items():
                 out.append(Text(f"    {k}  →  {v}", style="#e8e8ef"))
-        else:
-            out.append(Text("  (no variables yet)", style="dim"))
-        if out_after:
-            before_v = out_before or ""
-            new = out_after[len(before_v):] if before_v and out_after.startswith(before_v) else out_after
-            new_count = len([l for l in new.split("\n") if l != ""])
+        if step.get("out"):
             out.append(Text(""))
             out.append(Text("  printed so far:", style="bold green"))
-            after_lines = out_after.split("\n")
-            if len(after_lines) > 10:
-                out.append(Text(f"    … {len(after_lines) - 10} earlier line(s)", style="dim"))
-                after_lines = after_lines[-10:]
-            n = len(after_lines)
-            for j, line in enumerate(after_lines):
-                is_new = line != "" and (n - j) <= new_count
-                style = "bold #facc15" if is_new else "bold green"
-                ol = Text("    ", style="dim")
-                ol.append(line if line != "" else " ", style=style)
-                out.append(ol)
+            for line in step["out"].split("\n")[-6:]:
+                out.append(Text(f"    {line}", style="bold #facc15"))
+        out.append(Text(""))
+        spd = f"{int(round(1000 * self._step_speed))}ms/step"
         if self._step_i + 1 >= total:
-            out.append(Text(""))
-            out.append(Text("END — ←/→ to replay   ·   Esc to close", style="bold #facc15"))
+            out.append(Text(f"END — ←/→ replay · R rewind · +/- speed ({spd}) · Esc close",
+                            style="bold #facc15"))
         else:
-            out.append(Text(""))
-            out.append(Text("→ next · ← back · Space auto-play · Esc close", style="dim"))
+            out.append(Text(f"→ next · ← back · Space auto · R rewind · +/- speed ({spd}) · Esc close",
+                            style="dim"))
         body = _box_lines(out)
         self.query_one("#step", Static).update(
             _center_screen(body, self.size.width, self.size.height - 1))
-        self._step_narrate(ln, before, after)
+        self._step_narrate(step)
 
-    def _step_narrate(self, ln, before, after):
+    def _step_narrate(self, step):
         if not self.voice_on:
             return
-        changes = []
-        for k, v in after.items():
-            if k not in before:
-                changes.append(f"{k} is now {v}")
-            elif before[k] != v:
-                changes.append(f"{k} becomes {v}")
-        if changes:
-            speak(f"line {ln}: " + ", ".join(changes))
-            return
-        lines = self._step_code.split("\n")
-        line_text = lines[ln - 1].strip() if 0 < ln <= len(lines) else ""
-        if line_text:
-            speak(f"line {ln}: " + _line_explain(line_text))
+        kind = step["kind"]
+        if kind == "call":
+            arg_str = ", ".join(f"{k} {v}" for k, v in step["args"].items())
+            speak(f"{step['fn']} starts with {arg_str or 'no arguments'}")
+        elif kind == "return":
+            speak(f"{step['fn']} returns {step['ret']}")
+        elif step.get("locs"):
+            speak(f"line {step['line']}")
 
     def action_step_next(self):
         if not self._step_on or not self._step_steps:
@@ -22474,10 +22550,31 @@ class TutorApp(App):
         if self._step_i + 1 < len(self._step_steps):
             self._step_i += 1
             self._step_render()
-            self._step_auto_timer = self.set_timer(0.9, self._step_auto_tick)
+            self._step_auto_timer = self.set_timer(self._step_speed, self._step_auto_tick)
         else:
             self._step_auto = False
             self._step_auto_timer = None
+
+    def action_step_rewind(self):
+        # jump straight back to the very first step (keeps auto-play going)
+        if not self._step_on or not self._step_steps:
+            return
+        self._step_i = 0
+        self._step_render()
+        if self._step_auto and self._step_auto_timer is None:
+            self._step_auto_tick()
+
+    def action_step_faster(self):
+        if not self._step_on:
+            return
+        self._step_speed = max(0.03, self._step_speed * 0.6)
+        self._step_render()
+
+    def action_step_slower(self):
+        if not self._step_on:
+            return
+        self._step_speed = min(1.5, self._step_speed * 1.6)
+        self._step_render()
 
     def _step_close(self):
         self._step_on = False
