@@ -1678,6 +1678,8 @@ LESSONS = {
             {"caption": "read by index", "code": 'fruits = ["apple", "banana", "cherry"]\nprint(fruits[0])'},
             {"caption": "add to the end", "code": 'fruits = ["apple", "banana"]\nfruits.append("cherry")\nprint(fruits)'},
             {"caption": "remove one", "code": 'fruits = ["apple", "banana"]\nfruits.remove("apple")\nprint(fruits)'},
+            {"caption": "pop the last one", "code": 'fruits = ["apple", "banana"]\nfruits.pop()\nprint(fruits)'},
+            {"caption": "insert in the middle", "code": 'fruits = ["apple", "banana"]\nfruits.insert(1, "cherry")\nprint(fruits)'},
         ],
         "outro": "Lists = ordered [ ] collections. Index with [0], grow with .append(), delete with .remove(). Zero-based indexing is non-negotiable.",
     },
@@ -1723,6 +1725,8 @@ LESSONS = {
             {"caption": "first letter", "code": 's = "hello"\nprint(s[0])'},
             {"caption": "how long", "code": 's = "hello"\nprint(len(s))'},
             {"caption": "shout it", "code": 's = "hello world"\nprint(s.upper())'},
+            {"caption": "swap a word", "code": 's = "hello world"\nprint(s.replace("world", "bean"))'},
+            {"caption": "capitalize each word", "code": 's = "hello bean"\nprint(s.title())'},
         ],
         "outro": "Strings are lists of characters. [0] grabs a letter, len() counts, and dot-methods transform. Reading is free; editing is not allowed.",
     },
@@ -2231,6 +2235,47 @@ LESSON_RULES = {
     "custom": ["read the prompt twice",
                "start with the smallest step",
                "run early and run often"],
+}
+
+# Repeatable "remember" lines re-played at the start of EVERY lesson so the
+# core syntax (int(), input(), .remove(), etc.) stays fresh. Each topic has one
+# or two phrasings; they rotate so it reads as a reminder, not a broken record.
+RECAPS = {
+    "print": ["Remember — print shows things on the screen. Words go in quotes, numbers don't."],
+    "name": ["Remember — a variable is a named box. The left side is the box, the right side is what goes inside."],
+    "math": ["Remember — Python does the math for you. The star means multiply, and parentheses decide what goes first."],
+    "input": [
+        "Remember — input asks the user for text, and int turns that text into a real number you can do math on.",
+        "Remember — everything input gives you is text. Wrap it in int to make it a number.",
+    ],
+    "fstrings": ["Remember — an f right before the quotes, and curly braces fill in the values."],
+    "conditionals": ["Remember — if asks a yes-or-no question, else is the fallback, and the percent sign gives you the remainder."],
+    "loops": ["Remember — range makes the numbers, and the stop number is not included. Range of one to eleven gives one through ten."],
+    "while": ["Remember — while repeats until the condition is false, and something inside must change or it loops forever."],
+    "lists": [
+        "Remember — lists hold more than one thing. Index with square brackets, add with dot append, delete with dot remove.",
+        "Remember — dot remove deletes the first matching item, and dot append adds to the end.",
+    ],
+    "dicts": ["Remember — a dict looks things up by key, not position. Curly braces, a colon between key and value."],
+    "functions": ["Remember — def makes a function, return hands a value back, and calling it by name runs it."],
+    "strings": [
+        "Remember — a string is a list of letters. Dot upper shouts, dot lower whispers, and len counts them.",
+        "Remember — dot title capitalizes each word, and dot replace swaps one bit of text for another.",
+    ],
+    "slicing": ["Remember — slicing cuts a piece with start and stop, and the stop is always excluded."],
+    "comprehension": ["Remember — a list comprehension is a loop in one line, square brackets around an expression and a for."],
+    "sorting": ["Remember — dot sort puts a list in order right where it stands, and sorted returns a new one."],
+    "try": ["Remember — try runs risky code, and except catches the error so the program doesn't crash."],
+    "sets": ["Remember — a set holds only unique items, and duplicates are quietly dropped."],
+    "tuples": ["Remember — a tuple is a fixed list that can't be changed, made with round brackets."],
+    "class": ["Remember — class is the blueprint, and each object is a copy of it with its own data."],
+    "recursion": ["Remember — recursion is a function calling itself, and the base case is what stops it."],
+    "lambda": ["Remember — lambda is a tiny function with no name, one expression in and one value out."],
+    "generator": ["Remember — a generator hands out values one at a time with yield, and a for loop collects them."],
+    "decorator": ["Remember — a decorator wraps another function, and the at-sign applies it."],
+    "error": ["Remember — the last line of an error says what went wrong, and the type tells you how."],
+    "file": ["Remember — open reads a file, with closes it for you automatically, and dot write puts text in."],
+    "read": ["Remember — Python runs top to bottom, so a variable holds whatever it was last set to."],
 }
 
 # Similar mini-challenges to solve after the main one (YOUR TURN).
@@ -13207,6 +13252,7 @@ class TutorApp(App):
         # every app restart (in-memory-only meant "how python works" each session)
         self._structure_taught = bool(self.p.get("structure_taught", False))
         self._topics_taught = set(self.p.get("topics_taught", []))
+        self._recap_rot = 0                       # rotates the "remember" recap line
         # voice + sfx faders (the docked bottom volume bar) — restored here
         set_voice_volume(float(self.p.get("voice_volume", self.p.get("volume", 1.0))))
         set_voice_mute(bool(self.p.get("voice_muted", self.p.get("muted", False))))
@@ -13275,6 +13321,7 @@ class TutorApp(App):
         self._ghost_lab_revealed = 0        # how many lab variants have been revealed
         self._ghost_blind_from = None       # pos to write blind from (None = normal)
         self._ghost_blind_reveal = 0        # how much of the blind section is shown
+        self._ghost_blind_misses = 0        # misses since last reveal (forgiving buffer)
         self._ghost_fade = False            # FADE recall mode (faint purple ghost, silent)
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
         self._ghost_silhouette = False      # SILHOUETTE recall (shape-only, words hidden)
@@ -15984,6 +16031,7 @@ class TutorApp(App):
         self._ghost_lab = ex.get("lab")               # card id for a WATCH lab
         self._ghost_blind_from = None                 # reset unless this step is blind
         self._ghost_blind_reveal = 0
+        self._ghost_blind_misses = 0
         self._ghost_mastery_streak = 0
         self._ghost_fade = bool(ex.get("fade"))       # FADE recall mode
         self._ghost_fade_strength = ex.get("fade_strength", 1.0)
@@ -16337,13 +16385,17 @@ class TutorApp(App):
                         speak("here's a nudge — the first letter of each word")
                 self._ghost_flash_error(p)
             elif self._ghost_blind_from is not None:
-                # no reset either — reveal a bit more of the answer as a hint and
-                # commit the miss in red to fix in place
-                self._ghost_blind_reveal = min(
-                    len(self._ghost_target) - self._ghost_blind_from,
-                    self._ghost_blind_reveal + 8)
+                # no reset — but be forgiving of fast slips: a miss flags red
+                # without revealing anything. Only after a few misses in a row
+                # do we unveil a little more of the answer as a hint.
                 self._ghost_errors[p] = ch
                 self._ghost_pos += 1
+                self._ghost_blind_misses += 1
+                if self._ghost_blind_misses >= 3:
+                    self._ghost_blind_reveal = min(
+                        len(self._ghost_target) - self._ghost_blind_from,
+                        self._ghost_blind_reveal + 4)
+                    self._ghost_blind_misses = 0
                 self._ghost_flash_error(p)
             else:
                 # wrong char is COMMITTED (keep typing), flagged red to fix later
@@ -16368,14 +16420,12 @@ class TutorApp(App):
         self._ghost_render()
 
     def _ghost_flash_error(self, p):
-        """A 2-second yellow highlight at the miss, + a 'go fix it' voice cue."""
+        """A 2-second yellow highlight at the miss (no voice — the flash says it)."""
         self._ghost_error_flash = p
         t = getattr(self, "_ghost_error_flash_timer", None)
         if t is not None:
             t.stop()
         self._ghost_error_flash_timer = self.set_timer(2.0, self._ghost_error_flash_clear)
-        if self.voice_on:
-            speak("go fix your error")
 
     def _ghost_error_flash_clear(self):
         self._ghost_error_flash = None
@@ -21643,6 +21693,16 @@ class TutorApp(App):
         focus = self._lesson_focus(c)
         if focus:
             steps.append({"t": "text", "title": "What's new here", "body": focus})
+        # repeatable warm-up: every lesson re-plays ONE "remember" line from the
+        # topics you've ALREADY learned (rotating), so int()/input()/.remove()
+        # and friends stay fresh instead of fading after their one lecture.
+        recap_lines = []
+        for t in sorted(self._topics_taught):
+            recap_lines.extend(RECAPS.get(t, []))
+        if recap_lines:
+            line = recap_lines[self._recap_rot % len(recap_lines)]
+            self._recap_rot += 1
+            steps.append({"t": "text", "title": "Remember", "body": line})
         # First time this TOPIC is taught -> full lesson (intro, points, rules,
         # pitfall). Already taught -> skip the repeated lecture so the W
         # walkthrough stays challenge-specific instead of re-reading the same
