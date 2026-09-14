@@ -2281,6 +2281,8 @@ _GHOST_MODE_CUE = {
     "finish": "Now you finish it. I started it, you type the rest.",
     "write": "Now the whole thing yourself, no help.",
     "change": "Now a change-it. I edited one thing — type it and watch the output change.",
+    "silhouette": "Silhouette. Only the shape shows — indentation and punctuation — the words are on you. Miss five times and I'll show the first letter of each word.",
+    "blind": "Blind. Now write it from memory, nothing shown.",
 }
 
 
@@ -13129,8 +13131,6 @@ class TutorApp(App):
     #menu-preview-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
     #menu-preview-scroll { height: 1fr; }
     #menu-preview-inner { height: auto; padding: 1 2; }
-    #menu-keys { width: 38; padding: 1 2; border-left: solid $primary; background: $boost; }
-    #menu-keys-inner { width: 1fr; height: auto; }
     #menu-name-title { height: 1; padding: 1 1 0 1; text-style: bold; color: $text; }
     #menu-name-row { height: 3; padding: 0 1; }
     #menu-name-row Input { width: 1fr; min-width: 14; }
@@ -13145,7 +13145,6 @@ class TutorApp(App):
     #profile-settings-title { height: 1; text-style: bold; color: $text; }
     #profile-popout Checkbox { height: 1; }
     #profile-popout-close { height: 1; color: $text-muted; }
-    #menu-keys Checkbox { margin: 0 1; height: 1; }
     #menu-help { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
     """
 
@@ -13278,6 +13277,9 @@ class TutorApp(App):
         self._ghost_blind_reveal = 0        # how much of the blind section is shown
         self._ghost_fade = False            # FADE recall mode (faint purple ghost, silent)
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
+        self._ghost_silhouette = False      # SILHOUETTE recall (shape-only, words hidden)
+        self._ghost_silhouette_fails = 0    # letter-by-letter misses (reveal at 5+)
+        self._ghost_silhouette_help = False # after 5 misses: show word first-letters
         self._ghost_reveal = 0               # "show code" countdown (0 = hidden)
         self._ghost_reveal_timer = None
         self._ghost_error_flash = None       # char pos with a 2s yellow miss highlight
@@ -13495,8 +13497,6 @@ class TutorApp(App):
                     yield Static("", id="menu-preview-inner")
             with VerticalScroll(id="menu-list"):
                 yield Static("", id="menu-list-inner")
-            with VerticalScroll(id="menu-keys"):
-                yield Static("", id="menu-keys-inner")
         yield Static("", id="menu-help")
         # profile popout (name + settings) — opened via the blue ◉ icon, any time
         with Vertical(id="profile-popout", classes="hidden"):
@@ -13731,7 +13731,6 @@ class TutorApp(App):
             self._render_challenge_list()
         self._render_menu_preview()
         self._render_menu_help()
-        self._render_menu_keys()
 
     # ---- progress --------------------------------------------------------- #
 
@@ -14762,18 +14761,6 @@ class TutorApp(App):
         self.query_one("#menu-help", Static).update(
             f"{nav}  {music} · {voice} · {vol}  ·  "
             f"[dim]·[/] [green]{self.p['done']} done[/] [dim]·[/] streak [yellow]{self.p['streak']}[/]"
-        )
-
-    def _render_menu_keys(self):
-        kc = lambda k: f"[on #3a3a3a]{k}[/]"
-        self.query_one("#menu-keys-inner", Static).update(
-            Text.from_markup(
-                f"{kc('Enter')}  open / start\n"
-                f"{kc('Esc')}  back\n"
-                f"{kc('j')}{kc('k')}   move\n"
-                f"{kc('q')}   quit\n\n"
-                f"[dim]{kc('F1')} full keymap[/]"
-            )
         )
 
     # ---- name field (menu) ---------------------------------------------- #
@@ -15822,8 +15809,8 @@ class TutorApp(App):
                                       "prefix": "", "compare_side": side.upper(),
                                       "card": card_id})
         # the recall step: ONE fade (purple-disappearing) recall, then (for
-        # intermediate+) ONE blind recall. Each rep is value-swapped, so you
-        # never rewrite the identical text — you see the syntax on a fresh value.
+        # intermediate+) a SILHOUETTE (shape-only) recall, then TWO blind reps
+        # on different values — so recall is drilled harder as you improve.
         main = example_code(self._current().get("example", ""))[1]
         if main:
             # FADE (disappearing ghost) appears from level 1 onward — the ghost
@@ -15833,10 +15820,20 @@ class TutorApp(App):
                 strength = [0.85, 0.6, 0.4, 0.2][level]
                 codes.append({"code": main, "stdin": "", "prefix": "",
                               "fade": True, "fade_strength": strength})
-            # BLIND (recall from memory, nothing shown) only once you're deep in.
+            # SILHOUETTE (shape-only: indentation + punctuation outline, words
+            # hidden) from level 2 — the bridge between fade and full blind.
+            if level >= 2:
+                codes.append({"code": main, "stdin": "", "prefix": "",
+                              "silhouette": True})
+            # BLIND (recall from memory, nothing shown) — TWO reps from level 2,
+            # the second on a value-swapped variant so it's a fresh recall.
             if level >= 2:
                 codes.append({"code": main, "stdin": "", "prefix": "",
                               "blind": True})
+                blind_var = _ghost_variant(main, "", "")
+                if blind_var and blind_var != main:
+                    codes.append({"code": blind_var, "stdin": "", "prefix": "",
+                                  "blind": True})
         return codes
 
     def _start_ghost_required(self):
@@ -15940,6 +15937,8 @@ class TutorApp(App):
             return 0, "change"
         if self._ghost_examples[idx].get("fade"):
             return 0, "fade"
+        if self._ghost_examples[idx].get("silhouette"):
+            return 0, "silhouette"
         if self._ghost_examples[idx].get("blind"):
             return 0, "blind"
         if n <= 1:
@@ -15989,6 +15988,9 @@ class TutorApp(App):
         self._ghost_fade = bool(ex.get("fade"))       # FADE recall mode
         self._ghost_fade_strength = ex.get("fade_strength", 1.0)
         self._ghost_fade_wrong = 0
+        self._ghost_silhouette = bool(ex.get("silhouette"))   # SILHOUETTE recall
+        self._ghost_silhouette_fails = 0
+        self._ghost_silhouette_help = False
         self._ghost_used_hint = False                 # fresh per step
         self._ghost_reveal = 0
         if self._ghost_reveal_timer:
@@ -16027,9 +16029,9 @@ class TutorApp(App):
             self._ghost_fill_hint_said = False
         else:
             self._ghost_fill = False
-        # recall modes (fade/blind): show the EXPECTED output as the goal, so the
-        # user knows what their code should print while they recall it
-        if self._ghost_mode in ("fade", "blind"):
+        # recall modes (fade/silhouette/blind): show the EXPECTED output as the
+        # goal, so the user knows what their code should print while recalling it
+        if self._ghost_mode in ("fade", "silhouette", "blind"):
             self._ghost_goal_out = self._ghost_goal_output()
         else:
             self._ghost_goal_out = ""
@@ -16322,6 +16324,17 @@ class TutorApp(App):
                 self._ghost_errors[p] = ch
                 self._ghost_pos += 1
                 self._ghost_fade_wrong += 1
+                self._ghost_flash_error(p)
+            elif self._ghost_silhouette:
+                # silent miss, committed in red — but count letter-by-letter fails;
+                # after 5 the word first-letters appear as a stronger nudge
+                self._ghost_errors[p] = ch
+                self._ghost_pos += 1
+                self._ghost_silhouette_fails += 1
+                if self._ghost_silhouette_fails >= 5 and not self._ghost_silhouette_help:
+                    self._ghost_silhouette_help = True
+                    if self.voice_on:
+                        speak("here's a nudge — the first letter of each word")
                 self._ghost_flash_error(p)
             elif self._ghost_blind_from is not None:
                 # no reset either — reveal a bit more of the answer as a hint and
@@ -16827,6 +16840,7 @@ class TutorApp(App):
             "write": "WRITE IT ALL  —  you're locked in, type it out",
             "change": "CHANGE IT  —  I edited one thing, type it and see the output change",
             "fade": "FIX THIS CODE  —  syntax shows, words are hinted by their first letter",
+            "silhouette": "SILHOUETTE  —  only the shape shows, the words are on you",
             "blind": "BLIND  —  write it from memory, no ghost",
         }.get(self._ghost_mode, "GHOST WRITE")
         if self._ghost_required:
@@ -16844,6 +16858,7 @@ class TutorApp(App):
             "write": "type the ghost · Enter = new line · Tab = indent · Enter at the end = run",
             "change": "type the changed code · Enter = new line · Tab = indent · Enter at the end = run",
             "fade": "fix the code · syntax stays, words show their first letter · silent on miss",
+            "silhouette": "shape only · indentation + punctuation · 5 misses = word first-letters appear",
             "blind": "write from memory · two clean runs in a row = mastered",
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
@@ -17229,6 +17244,28 @@ class TutorApp(App):
                         else:
                             # syntax symbol — always visible (the clear hint)
                             t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
+                elif self._ghost_silhouette:
+                    # SILHOUETTE: show the line's SHAPE, not its words. Indentation
+                    # (spaces) and punctuation are faint outlines — you see WHERE
+                    # the symbols go — but every letter/digit is a hidden ▢. After
+                    # 5 letter-by-letter misses the word first-letters appear.
+                    for k, ch in enumerate(rest):
+                        a = start + typed_n + k
+                        cur = (a == pos and a < end)
+                        if ch == " ":
+                            # indentation / spacing stays visible — block structure
+                            t.append(" ", style="reverse bold" if cur else "#585b70")
+                        elif ch.isalnum() or ch == "_":
+                            prev = rest[k - 1] if k > 0 else (
+                                line[typed_n - 1] if typed_n > 0 else "")
+                            is_first = not (prev.isalnum() or prev == "_")
+                            if self._ghost_silhouette_help and is_first:
+                                t.append(ch, style="reverse bold #a78bfa" if cur else "#a78bfa")
+                            else:
+                                t.append("▢", style="reverse bold #6d5c9e" if cur else "#3a3a44")
+                        else:
+                            # punctuation / symbol — a faint outline (the shape hint)
+                            t.append(ch, style="reverse bold #6d5c9e" if cur else "#4a4a58")
                 elif blind:
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
