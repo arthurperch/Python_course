@@ -10490,7 +10490,176 @@ DEV_LESSONS = [
      "say": "Check what's changed in the repo.",
      "why": "git status is the habit every engineer runs before touching anything — know what's dirty first.",
      "on_win": "Clean working tree — you know exactly where you stand."},
+
+    # ==== PILLAR · Memory & Typing in Production ===========================
+    {"module": "Memory & Typing in Production", "kind": "info", "title": "memory is a budget",
+     "say": "Before you write more automation, learn to write code that treats memory like a budget. Generators and streaming are how seniors process a million rows without a million-row list.",
+     "why": "RAM is finite and expensive in production. A generator yields one item at a time, so a million-line file or data feed costs almost nothing. Loading it all into a list first is the junior habit that blows up under real load."},
+
+    {"module": "Memory & Typing in Production", "kind": "write", "title": "stream a big feed",
+     "file": "stream.py",
+     "content": "import sys\n\ndef read_lines(lines):\n    for line in lines:\n        yield line.strip()\n\ndata = [\"record \" + str(i) for i in range(100000)]\nmatches = sum(1 for line in read_lines(data) if line.endswith(\"0\"))\nprint(\"matched\", matches, \"of\", len(data), \"lines\")\nprint(\"list bytes:\", sys.getsizeof(data))\n",
+     "say": "Type out a generator that streams a hundred thousand records one at a time instead of holding them all.",
+     "why": "read_lines yields one line at a time and pauses — the loop never builds a second list. A list of 100000 strings would eat megabytes; the generator stays flat no matter how big the feed grows.",
+     "on_win": "That's streaming. One record at a time, constant memory, any size."},
+
+    {"module": "Memory & Typing in Production", "kind": "run", "title": "run the stream",
+     "expect": ["python3 stream.py"], "cmd_hint": "python3 stream.py",
+     "say": "Run the streamer and watch it process the whole feed.",
+     "why": "python3 runs your file. It matches 10000 records of 100000 — and the generator never built a giant list. That's the whole point: same answer, a fraction of the memory.",
+     "on_win": "A hundred thousand records, streamed. Your memory use stayed flat."},
+
+    {"module": "Memory & Typing in Production", "kind": "write", "title": "a lazy pipeline",
+     "file": "gen.py",
+     "content": "def numbers():\n    n = 0\n    while True:\n        yield n\n        n += 1\n\nevens = (x for x in numbers() if x % 2 == 0)\nsquares = (x * x for x in evens)\nfirst = [next(squares) for _ in range(5)]\nprint(\"first 5 squares of evens:\", first)\n",
+     "say": "Type out a lazy pipeline — generators chained so each value is computed only when asked.",
+     "why": "numbers is an infinite generator, evens filters it, squares maps it — and nothing runs until next() is called. That's lazy evaluation: an infinite stream that only does work for the five values you actually pull.",
+     "on_win": "An infinite pipeline, computed five steps deep. Nothing ran that you didn't ask for."},
+
+    {"module": "Memory & Typing in Production", "kind": "run", "title": "run the pipeline",
+     "expect": ["python3 gen.py"], "cmd_hint": "python3 gen.py",
+     "say": "Run the lazy pipeline.",
+     "why": "Watch it print 0, 4, 16, 36, 64 — the squares of the first five even numbers. It computed exactly those five, from an infinite source, with no list anywhere.",
+     "on_win": "Lazy, on demand, infinite source. That's the generator superpower."},
+
+    {"module": "Memory & Typing in Production", "kind": "write", "title": "type-check before you run",
+     "file": "guarded.py",
+     "content": "from typing import Iterable\n\ndef total(nums: Iterable[int]) -> int:\n    return sum(nums)\n\ndef checked(value: int) -> int:\n    assert isinstance(value, int), \"expected an int\"\n    return value * 2\n\nresult: int = total([1, 2, 3])\nprint(\"total:\", result)\nprint(\"checked:\", checked(result))\n",
+     "say": "Type out a typed function plus a guard that catches a bad value before it breaks anything.",
+     "why": "Type hints document what goes in and out, and a checker like mypy reads them to catch mistakes BEFORE the app runs. The assert is the same idea at runtime — fail fast, fail loud.",
+     "on_win": "Typed and guarded. Errors surface early, not at 3am in production."},
+
+    {"module": "Memory & Typing in Production", "kind": "run", "title": "run it typed",
+     "expect": ["python3 guarded.py"], "cmd_hint": "python3 guarded.py",
+     "say": "Run the typed, guarded code.",
+     "why": "It prints 6 and 12. The types match, the guard passes. If someone later passes a string, the assert fires immediately instead of failing somewhere far away.",
+     "on_win": "Clean run — and the guard is live, ready to catch the next mistake."},
+
+    {"module": "Memory & Typing in Production", "kind": "write", "title": "generator from memory",
+     "file": "remember.py",
+     "content": "def evens(limit):\n    for n in range(limit):\n        if n % 2 == 0:\n            yield n\n\nprint(list(evens(10)))\n",
+     "say": "From memory, write a generator that yields the even numbers up to a limit.",
+     "why": "No ghost this time — the yield shape should be in your fingers now. def, a loop, yield instead of return, then consume it with list() to see the results.",
+     "on_win": "A generator from memory. That's the pattern, internalized."},
+
+    # ==== PILLAR · IaC Replication & State =================================
+    {"module": "IaC Replication & State", "kind": "info", "title": "replicate everything",
+     "say": "Infrastructure as code isn't just describing one server — it's being able to rebuild your ENTIRE environment from a script, identically, every time.",
+     "why": "Environment replication means one command reproduces a perfect copy of production: same network, same servers, same config. You can spin up a staging copy, or rebuild prod after a disaster, without clicking anything."},
+
+    {"module": "IaC Replication & State", "kind": "write", "title": "one command up",
+     "file": "env.py",
+     "content": "steps = [\n    (\"terraform\", \"init\"),\n    (\"terraform\", \"apply -auto-approve\"),\n    (\"docker\", \"build -t app:latest .\"),\n    (\"kubectl\", \"apply -f deploy.yaml\"),\n    (\"kubectl\", \"apply -f svc.yaml\"),\n]\nfor tool, args in steps:\n    print(f\"$ {tool} {args}\")\nprint(\"environment up — every layer, in order\")\n",
+     "say": "Type out a script that reproduces the whole environment — infrastructure, image, and cluster — in one run.",
+     "why": "This is the runbook as code: terraform builds the machines, docker bakes the image, kubectl deploys the app. One command walks the whole stack in order, so 'spin up a copy of prod' stops being a mystery.",
+     "on_win": "One command, the whole environment. That's replication."},
+
+    {"module": "IaC Replication & State", "kind": "run", "title": "spin it up",
+     "expect": ["python3 env.py"], "cmd_hint": "python3 env.py",
+     "say": "Run the one-command spin-up.",
+     "why": "Watch it walk the stack: terraform, docker, kubectl — each layer in the right order. In a real setup each line would be a real tool call; the ORDER is the lesson.",
+     "on_win": "Environment up, in order, from one command."},
+
+    {"module": "IaC Replication & State", "kind": "write", "title": "one command down",
+     "file": "teardown.py",
+     "content": "steps = [\n    (\"kubectl\", \"delete -f svc.yaml\"),\n    (\"kubectl\", \"delete -f deploy.yaml\"),\n    (\"docker\", \"rmi app:latest\"),\n    (\"terraform\", \"destroy -auto-approve\"),\n]\nfor tool, args in steps:\n    print(f\"$ {tool} {args}\")\nprint(\"environment down — nothing left running\")\n",
+     "say": "Type out the matching teardown — one command that removes everything so nothing keeps billing.",
+     "why": "Replication has two sides. Tearing down in the right order (app first, then machines) means no orphaned resources and no surprise cloud bill at the end of the month.",
+     "on_win": "One command down. Clean teardown is how you don't pay for ghosts."},
+
+    {"module": "IaC Replication & State", "kind": "run", "title": "tear it down",
+     "expect": ["python3 teardown.py"], "cmd_hint": "python3 teardown.py",
+     "say": "Run the teardown.",
+     "why": "The reverse of spin-up: app, image, machines — each gone in order. The environment is reproducible AND disposable, which is the senior mindset.",
+     "on_win": "Torn down cleanly. Spin it up again any time."},
+
+    {"module": "IaC Replication & State", "kind": "write", "title": "lock the state",
+     "file": "backend.tf",
+     "content": "terraform {\n  backend \"s3\" {\n    bucket = \"my-org-tfstate\"\n    key    = \"prod/terraform.tfstate\"\n    region = \"us-east-1\"\n  }\n}\n",
+     "say": "Type out a remote-state backend that locks your infrastructure state in cloud storage.",
+     "why": "Terraform's state file IS the record of what's deployed. Keeping it on your laptop means one machine failure loses the map. A remote backend stores it securely and locks it, so your team shares one source of truth — and two people can't apply over each other.",
+     "on_win": "State locked remotely. Now your infrastructure record survives any one machine."},
+
+    # ==== PILLAR · Containers & Orchestration II ===========================
+    {"module": "Containers & Orchestration II", "kind": "info", "title": "lean images, safe images",
+     "say": "A container image should ship your app and nothing else. Multi-stage builds split build from runtime, so the final image is small and hard to attack.",
+     "why": "Every package in an image is a potential vulnerability and a slower deploy. Multi-stage: one stage installs the build tools, the final stage copies only the finished artifact. No compiler, no source, no attack surface."},
+
+    {"module": "Containers & Orchestration II", "kind": "write", "title": "slim multi-stage build",
+     "file": "Dockerfile.prod",
+     "content": "FROM python:3.11 AS builder\nWORKDIR /build\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY app.py .\n\nFROM python:3.11-slim\nWORKDIR /app\nCOPY --from=builder /build /app\nCMD [\"python3\", \"/app/app.py\"]\n",
+     "say": "Type out a multi-stage build: a builder stage with the toolchain, then a slim runtime stage with only the finished app.",
+     "why": "The builder installs everything and compiles. The final stage copies only the result into a slim base — so the running image drops the compiler, the caches, and half the packages. Same app, much smaller, fewer holes.",
+     "on_win": "A lean two-stage image. Build tools stay in the builder; runtime ships slim."},
+
+    {"module": "Containers & Orchestration II", "kind": "run", "title": "build it slim",
+     "expect": ["docker build -t app:prod ."], "cmd_hint": "docker build -t app:prod .",
+     "say": "Build the slim production image.",
+     "why": "docker build bakes the image from the Dockerfile. The multi-stage layout means the final layer only holds the slim runtime plus your app — not pip's cache, not the compiler.",
+     "on_win": "Built. The image is small because the build stage never shipped."},
+
+    {"module": "Containers & Orchestration II", "kind": "info", "title": "orchestrate traffic & memory",
+     "say": "Once you have many containers, Kubernetes answers two questions: how does traffic reach them, and how much memory is each one allowed.",
+     "why": "A Service balances traffic across pods so the load is shared and one pod can die without dropping users. Resource requests and limits tell the cluster exactly how much CPU and memory each container needs — and how much it's never allowed to grab."},
+
+    {"module": "Containers & Orchestration II", "kind": "write", "title": "balance the traffic",
+     "file": "svc.yaml",
+     "content": "apiVersion: v1\nkind: Service\nmetadata:\n  name: web\nspec:\n  selector:\n    app: web\n  ports:\n    - port: 80\n      targetPort: 5000\n  type: LoadBalancer\n",
+     "say": "Type out a Service that balances traffic across the web pods.",
+     "why": "The selector picks every pod labeled app: web, and the Service spreads incoming traffic across them on port 80 → 5000. LoadBalancer opens it to the outside world. If one pod dies, traffic just stops going there.",
+     "on_win": "A load-balanced Service. Traffic spreads, and single-pod failure disappears."},
+
+    {"module": "Containers & Orchestration II", "kind": "write", "title": "ask for memory",
+     "file": "deploy.yaml",
+     "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      containers:\n        - name: web\n          image: app:prod\n          resources:\n            requests:\n              memory: \"64Mi\"\n              cpu: \"100m\"\n            limits:\n              memory: \"128Mi\"\n              cpu: \"500m\"\n",
+     "say": "Type out a deployment that declares how much memory and CPU each pod requests and is limited to.",
+     "why": "requests is the floor — the cluster guarantees each pod at least 64Mi of memory. limits is the ceiling — a pod can never blow past 128Mi and starve its neighbors. Declaring both is how you stop one runaway container from taking down the node.",
+     "on_win": "Requests and limits set. Each pod gets its share, and none can hog the node."},
+
+    # ==== PILLAR · Observability & Least Privilege =========================
+    {"module": "Observability & Least Privilege", "kind": "info", "title": "see the whole system",
+     "say": "You can't fix what you can't see. Prometheus collects metrics, Grafana turns them into dashboards, and alerts fire before your users notice.",
+     "why": "Production telemetry — error rate, CPU load, memory, crashes — is the difference between 'it broke and users are angry' and 'the graph trended up an hour ago, we fixed it before it bit.' Metrics are collected on a schedule and graphed as time series."},
+
+    {"module": "Observability & Least Privilege", "kind": "write", "title": "a grafana dashboard",
+     "file": "dashboard.json",
+     "content": "{\n  \"title\": \"Web Service Health\",\n  \"panels\": [\n    {\"title\": \"Error rate\", \"query\": \"rate(http_errors_total[5m])\", \"kind\": \"line\"},\n    {\"title\": \"CPU load\", \"query\": \"node_cpu_seconds_total\", \"kind\": \"gauge\"},\n    {\"title\": \"Crashes\", \"query\": \"process_crash_total\", \"kind\": \"stat\"}\n  ]\n}\n",
+     "say": "Type out a Grafana dashboard that tracks error rate, CPU load, and crashes.",
+     "why": "Each panel is one graph over one metric: errors trended over five minutes, live CPU, and a crash counter. That's the three things you want on a wall screen — error rate, load, and whether anything's dying.",
+     "on_win": "A dashboard with the three signals that matter. Now you'd see trouble before users do."},
+
+    {"module": "Observability & Least Privilege", "kind": "write", "title": "the metrics scraper",
+     "file": "metrics.py",
+     "content": "error_rate = 0\nfor minute in range(1, 6):\n    if minute >= 3:\n        error_rate += 1\n    print(f\"minute {minute}: error_rate={error_rate}\")\n",
+     "say": "Type out the metrics scraper that samples the error rate every minute.",
+     "why": "A toy version of a scrape loop: each minute it samples the error rate and reports it. From minute three the rate starts climbing — the exact trend a dashboard line and an alert threshold would catch.",
+     "on_win": "Scraper written. Five samples, one rising line."},
+
+    {"module": "Observability & Least Privilege", "kind": "run", "title": "point at the metrics",
+     "expect": ["python3 metrics.py"], "cmd_hint": "python3 metrics.py",
+     "say": "Run a tiny metrics scraper to see the dashboard's data in motion.",
+     "why": "This script mimics what Prometheus does — pull a metric on a schedule and report a trend. Watching error_rate climb from 0 to 3 over time is exactly the shape a Grafana line graph would draw.",
+     "on_win": "Metrics trending. That climb is what an alert watches for."},
+
+    {"module": "Observability & Least Privilege", "kind": "write", "title": "a scoped token policy",
+     "file": "token-policy.json",
+     "content": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:GetObject\"],\n      \"Resource\": \"arn:aws:s3:::my-org-logs/*\"\n    }\n  ]\n}\n",
+     "say": "Type out a least-privilege policy for a programmatic token — one action, one bucket, nothing else.",
+     "why": "A token should carry exactly the permissions its job needs. This one can read objects from one logs bucket and literally nothing else. If it leaks, the blast radius is a single bucket, not your whole account.",
+     "on_win": "Least privilege in a policy. One action, one resource, zero extras."},
+
+    {"module": "Observability & Least Privilege", "kind": "run", "title": "attach the policy",
+     "verify": lambda c: c.startswith("aws iam create-policy") and "token-policy" in c,
+     "cmd_hint": "aws iam create-policy --policy-name token-policy --description scoped-read",
+     "say": "Create the scoped policy so it can be attached to a token or role.",
+     "why": "aws iam create-policy registers the policy under a name, so a role or access token can be attached to it. Attach only what's needed — that's the whole discipline, applied.",
+     "on_win": "Policy created. Now a token can be granted exactly this — nothing more."},
+
+    {"module": "Observability & Least Privilege", "kind": "info", "title": "every token, least privilege",
+     "say": "The rule applies everywhere: every programmatic token, role, and service account gets the minimum permissions its job needs — never a broad admin key.",
+     "why": "Broad keys are how breaches become disasters. A leaked admin token is the whole account; a leaked scoped token is one bucket. Scope every credential to its exact job, rotate them, and revoke the ones nobody uses."},
 ]
+
 
 # Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
 DEV_MODULES = []
