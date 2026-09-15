@@ -3364,6 +3364,14 @@ def set_current_name(name: str) -> None:
     _CURRENT_NAME = (name or "").strip()
 
 
+def _short_say(text: str) -> str:
+    """Trim to the FIRST sentence — the spoken intro stays terse; the full text
+    remains on screen to read. Used so the voice doesn't over-explain."""
+    s = (text or "").strip()
+    i = s.find(". ")
+    return (s[:i + 1] if i != -1 else s).strip()
+
+
 def speak(text: str, rate: float = 1.0) -> None:
     global _PIPER_GEN
     clean = _prep_tts(_pers(text))
@@ -14738,6 +14746,8 @@ class TutorApp(App):
         self._dev_attempts = 0
         self._dev_chal_done = set()   # challenge: toolbox step indices completed
         self._dev_confirm = False
+        self._dev_won = False         # a command/file just succeeded — show output
+                                       # and wait for Enter before advancing
         self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
@@ -20097,7 +20107,7 @@ class TutorApp(App):
         # queue the audio through the ONE sequential voice queue (no overlap
         # with the explain-as-you-type cues), and advance after a short fixed
         # pause — never gate the flow on the audio finishing
-        speak_write(text, rate=2 / 3, main=True)
+        speak_write(text, rate=4 / 7, main=True)
         setattr(self, timer_attr, self.set_timer(0.6, advance_fn))
 
     def _on_win_ready(self, text, raw, gen, advance_fn, timer_attr):
@@ -20597,29 +20607,23 @@ class TutorApp(App):
         if not self.voice_on or self._dev_idx >= len(DEV_LESSONS):
             return
         lesson = self._dev_lesson()
-        tier = self._dev_hand_hold()
         if lesson["kind"] == "info":
-            # pure narration: read it aloud, then flow straight into the next
-            # lesson — no "press Enter to continue" dead-end. (Voice-off keeps
-            # the manual Enter so the learner can read at their own pace.)
-            self._speak_win_then(_pers(lesson.get("say", lesson.get("why", ""))),
-                                 self._dev_next, self._dev_render, "_dev_adv_timer")
+            # pure narration: read it aloud AND leave the text on screen until
+            # the learner presses Enter — never auto-advance past it
+            self._dev_render()
+            speak_write(_pers(_short_say(lesson.get("say", lesson.get("why", "")))), rate=4 / 7, main=True)
             return
         say = lesson.get("say", "")
         if lesson["kind"] == "challenge":
             # challenges get a spoken RECALL line first: the key facts from
             # the lessons you just did, so the blank terminal isn't scary
             recall = lesson.get("recall", "")
-            text = say + (" Quick recall: " + recall if recall else "")
-            speak_write(_pers(text), rate=2 / 3, main=True)
+            text = _short_say(say) + (" Quick recall: " + recall if recall else "")
+            speak_write(_pers(text), rate=4 / 7, main=True)
             return
-        # keep the spoken intro SHORT — just the instruction, not the full
-        # say+why (the why stays on screen). The per-piece explanations while
-        # you type do the teaching, and it must not over-talk.
-        if tier <= 1:
-            speak_write(_pers(say), rate=2 / 3, main=True)
-        else:
-            speak_write(_pers(say.split(". ")[0].rstrip(".") + "."), rate=2 / 3, main=True)
+        # keep the spoken intro SHORT — just the first sentence of the
+        # instruction (the full why stays on screen to read)
+        speak_write(_pers(_short_say(say)), rate=4 / 7, main=True)
 
     # -- write-phase ghost typing (the "white transparent text") ------------ #
 
@@ -20647,7 +20651,7 @@ class TutorApp(App):
         for sub, explain in lines:
             if sub in cur_line and sub not in self._dev_explained:
                 self._dev_explained.add(sub)
-                speak_write(_pers(explain), rate=2 / 3, main=True)  # 1.5x, queued
+                speak_write(_pers(explain), rate=4 / 7, main=True)  # 1.5x, queued
 
     def _dev_current_line_hint(self):
         lesson = self._dev_lesson()
@@ -20715,16 +20719,24 @@ class TutorApp(App):
             play_ghost_error()
             self._dev_render()
 
+    def _dev_mark_won(self, on_win):
+        """A command/file just succeeded — stamp the win, speak it, and hold the
+        screen (waiting for Enter) so the learner can read the output and verify
+        before advancing. No auto-skip."""
+        self._dev_msg = on_win
+        self._dev_msg_kind = "win"
+        self._dev_won = True
+        play_console_result(True)
+        speak_write(_pers(on_win), rate=4 / 7, main=True)
+        self._dev_render()
+
     def _dev_write_done(self):
         lesson = self._dev_lesson()
         p = self._dev_lab.fs._resolve(lesson["file"])
         self._dev_lab.fs.files[p] = lesson["content"]
         self._dev_lab.fs.latest = p
-        self._dev_msg = f"saved {lesson['file']} ✓"
-        self._dev_msg_kind = "win"
-        play_console_result(True)
-        self._speak_win_then(_pers(lesson.get("on_win", "Nice work.")),
-                             self._dev_next, self._dev_render, "_dev_adv_timer")
+        # show the saved file and WAIT for Enter — let the learner verify it
+        self._dev_mark_won(f"saved {lesson['file']} ✓")
 
     # -- run-phase command entry -------------------------------------------- #
 
@@ -20744,7 +20756,7 @@ class TutorApp(App):
             explained.add(key)
             self._dev_msg = expl
             self._dev_msg_kind = "say"
-            speak_write(_pers(expl), rate=2 / 3, main=True)
+            speak_write(_pers(expl), rate=4 / 7, main=True)
         self._dev_explained_tokens = explained
 
     def _dev_tool_tokens(self, tool):
@@ -20799,11 +20811,9 @@ class TutorApp(App):
             self._dev_history.append(("err", line))
         self._dev_cmd = ""
         if self._dev_correct(lesson, cmd):
-            self._dev_msg = lesson.get("on_win", "Correct!")
-            self._dev_msg_kind = "win"
-            play_console_result(True)
-            self._speak_win_then(_pers(lesson.get("on_win", "Correct!")),
-                                 self._dev_next, self._dev_render, "_dev_adv_timer")
+            # show the output and WAIT for Enter — never skip past what the
+            # learner is supposed to see
+            self._dev_mark_won(lesson.get("on_win", "Correct!"))
             return
         if lesson.get("kind") == "challenge":
             # multi-step challenge: mark off toolbox steps — but ONLY when the
@@ -20904,6 +20914,11 @@ class TutorApp(App):
             if key == "enter":
                 self._dev_next()
             return
+        if self._dev_won:
+            # just succeeded — hold the output on screen until Enter continues
+            if key == "enter":
+                self._dev_next()
+            return
         if self._dev_phase == "write":
             self._dev_write_key(event)
             return
@@ -20947,6 +20962,7 @@ class TutorApp(App):
         self._dev_adv_timer = None
         # invalidate any in-flight win/info speech so a skip can't double-advance
         self._win_gen = getattr(self, "_win_gen", 0) + 1
+        self._dev_won = False
         self._dev_idx += 1
         self._dev_msg = ""
         self._dev_msg_kind = ""
@@ -21446,6 +21462,9 @@ class TutorApp(App):
                 t.append("→  ", style="bold #fbbf24")
                 t.append(self._dev_msg, style="bold #fbbf24")
             t.append("\n")
+        if self._dev_won:
+            t.append("press Enter to continue — you can read the output above", style="bold #22c55e")
+            return t
         if lesson["kind"] == "info":
             t.append("press Enter to continue · Esc exits · click [?] for the manual", style="dim")
             return t
