@@ -14394,6 +14394,16 @@ class BackButton(Static):
         self.app.action_back()
 
 
+class ExitIcon(Static):
+    """Red ✕ in a trainer's top bar — the visual way OUT to the main menu.
+    Mouse-only, so Esc stays free for vim normal mode. Clicking opens the
+    centered 'save your progress?' card instead of instantly quitting."""
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app.action_exit()
+
+
 class GateOverlay(Static):
     """The full-screen 'dive in' gate. Clicking ANYWHERE = Enter (dive in), so
     the mouse can't get stuck behind it — the run/submit buttons underneath are
@@ -14552,7 +14562,8 @@ class TutorApp(App):
     #lab-menu-foot { height: 2; padding: 0 1; background: #181825; }
     #lab-menu-run { width: 9; height: 1; }
     #lab-menu-hint { width: 1fr; content-align: right middle; color: #7f849c; }
-    #vim-head { width: 100%; text-align: center; }
+    #vim-topbar { width: 100%; height: auto; }
+    #vim-head { width: 1fr; text-align: center; }
     #vim-body { width: 100%; height: 1fr; }
     #vim-buffer { width: 100%; height: 1fr; }
     #vim-cmd { width: 100%; text-align: center; margin: 1 0; }
@@ -14579,6 +14590,22 @@ class TutorApp(App):
     #dev.visible { display: block; }
     #dev-topbar { width: 100%; height: auto; }
     #dev-head { width: 1fr; height: auto; }
+    #dev-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #dev-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #shell-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #shell-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #vim-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #vim-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #net-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #net-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #dev-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #dev-confirm.visible { display: block; }
+    #shell-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #shell-confirm.visible { display: block; }
+    #vim-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #vim-confirm.visible { display: block; }
+    #net-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #net-confirm.visible { display: block; }
     #net { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #net.visible { display: block; }
     #net-topbar { width: 100%; height: auto; }
@@ -15163,16 +15190,20 @@ class TutorApp(App):
                 yield Button("run", id="lab-menu-run", variant="primary")
                 yield Static("", id="lab-menu-hint")
         with VimTrainer(id="vim"):
-            yield Static("", id="vim-head")
+            with Horizontal(id="vim-topbar"):
+                yield Static("", id="vim-head")
+                yield ExitIcon(" ✕ ", id="vim-exit")
             with Vertical(id="vim-body"):
                 yield Static("", id="vim-buffer")
                 yield Static("", id="vim-cmd")
             yield Static("", id="vim-kb")
             yield Static("", id="vim-foot")
+        yield Static("", id="vim-confirm")
         with ShellTrainer(id="shell"):
             with Horizontal(id="shell-topbar"):
                 yield Static("", id="shell-head")
                 yield ShellHelpIcon(" ? ", id="shell-help-icon")
+                yield ExitIcon(" ✕ ", id="shell-exit")
             yield Static("", id="shell-ghost")
             with Horizontal(id="shell-body"):
                 with Vertical(id="shell-term"):
@@ -15183,10 +15214,12 @@ class TutorApp(App):
             yield Static("", id="shell-foot")
         yield Static("", id="shell-help")
         yield Static("", id="shell-explain")
+        yield Static("", id="shell-confirm")
         with CloudTrainer(id="dev"):
             with Horizontal(id="dev-topbar"):
                 yield Static("", id="dev-head")
                 yield CloudHelpIcon(" ? ", id="dev-help-icon")
+                yield ExitIcon(" ✕ ", id="dev-exit")
             yield Static("", id="dev-ghost")
             with Horizontal(id="dev-body"):
                 with Vertical(id="dev-term"):
@@ -15196,9 +15229,11 @@ class TutorApp(App):
                     yield Static("", id="dev-state-tree")
             yield Static("", id="dev-foot")
         yield Static("", id="dev-help")
+        yield Static("", id="dev-confirm")
         with NetTrainer(id="net"):
             with Horizontal(id="net-topbar"):
                 yield Static("", id="net-head")
+                yield ExitIcon(" ✕ ", id="net-exit")
             with Horizontal(id="net-body"):
                 with Vertical(id="net-canvas-box"):
                     yield Static("", id="net-canvas")
@@ -15206,6 +15241,7 @@ class TutorApp(App):
                     yield Static("", id="net-side-title")
                     yield Static("", id="net-side-body")
             yield Static("", id="net-foot")
+        yield Static("", id="net-confirm")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -16711,6 +16747,21 @@ class TutorApp(App):
             if self.menu_level in ("challenges", "dev_modules", "net_modules"):
                 self.menu_level = "series"
                 self._render_menu()
+
+    def action_exit(self):
+        """The red ✕ in a trainer's top bar: open the centered 'save progress?'
+        card for whichever session is open (never quits instantly)."""
+        if self._dev_on:
+            self._dev_confirm = True
+            self._dev_render()
+        elif self._shell_on:
+            self._shell_confirm = True
+            self._shell_render()
+        elif self._vim_on:
+            self._vim_confirm = True
+            self._vim_render()
+        elif self._net_on:
+            self._net_exit()
 
     def _select_challenge(self):
         self.group_idx = self.series_sel
@@ -19933,6 +19984,25 @@ class TutorApp(App):
         self.query_one("#vim-cmd", Static).update(self._vim_render_cmd())
         self.query_one("#vim-kb", Static).update(self._vim_render_kb())
         self.query_one("#vim-foot", Static).update(self._vim_render_foot())
+        cw = self.query_one("#vim-confirm", Static)
+        if self._vim_confirm:
+            cw.update(self._vim_render_confirm())
+            cw.add_class("visible")
+        else:
+            cw.remove_class("visible")
+
+    def _vim_render_confirm(self):
+        t = Text()
+        t.append("SAVE YOUR PROGRESS?", style="bold yellow")
+        t.append("\n\n")
+        t.append("Save a checkpoint so you can resume right here next time.", style="#f0f0f5")
+        t.append("\n\n")
+        t.append("[y] save & leave", style="bold green")
+        t.append("    ")
+        t.append("[n] leave without saving", style="bold #f87171")
+        t.append("    ")
+        t.append("[Esc] keep going", style="dim")
+        return t
 
     def _vim_mode(self):
         """NORMAL vs INSERT — so the trainer looks like a real editor whose
@@ -20097,13 +20167,7 @@ class TutorApp(App):
     def _vim_render_foot(self):
         t = Text()
         if self._vim_confirm:
-            t.append("Save a checkpoint so you can resume here later?", style="bold yellow")
-            t.append("\n")
-            t.append("[y] save & leave", style="bold green")
-            t.append("   ")
-            t.append("[n] leave without saving", style="#f0f0f5")
-            t.append("   ")
-            t.append("[Esc] keep going", style="dim")
+            # confirm lives in a centered overlay (#vim-confirm)
             return t
         if self._vim_challenge:
             if self._vim_done:
@@ -20628,6 +20692,25 @@ class TutorApp(App):
         self.query_one("#shell-output", Static).update(self._shell_render_term())
         self.query_one("#shell-fs-tree", Static).update(self._shell_render_fs())
         self.query_one("#shell-foot", Static).update(self._shell_render_foot())
+        cw = self.query_one("#shell-confirm", Static)
+        if self._shell_confirm:
+            cw.update(self._shell_render_confirm())
+            cw.add_class("visible")
+        else:
+            cw.remove_class("visible")
+
+    def _shell_render_confirm(self):
+        t = Text()
+        t.append("SAVE YOUR PROGRESS?", style="bold yellow")
+        t.append("\n\n")
+        t.append("Save a checkpoint so you can resume right here next time.", style="#f0f0f5")
+        t.append("\n\n")
+        t.append("[y] save & leave", style="bold green")
+        t.append("    ")
+        t.append("[n] leave without saving", style="bold #f87171")
+        t.append("    ")
+        t.append("[Esc] keep going", style="dim")
+        return t
 
     def _shell_render_head(self):
         t = Text()
@@ -20700,13 +20783,7 @@ class TutorApp(App):
     def _shell_render_foot(self):
         t = Text()
         if self._shell_confirm:
-            t.append("Save a checkpoint so you can resume here later?", style="bold yellow")
-            t.append("\n")
-            t.append("[y] save & leave", style="bold green")
-            t.append("   ")
-            t.append("[n] leave without saving", style="#f0f0f5")
-            t.append("   ")
-            t.append("[Esc] keep going", style="dim")
+            # confirm lives in a centered overlay (#shell-confirm)
             return t
         if self._shell_idx >= len(SHELL_LESSONS):
             t.append(self._shell_msg, style="bold green")
@@ -21401,21 +21478,25 @@ class TutorApp(App):
             if key == "escape":
                 self._dev_toggle_help()
             return
-        if key == "escape":
-            if self._dev_confirm:
-                self._dev_confirm = False
-                self._dev_render()
-                return
-            self._dev_confirm = True
-            self._dev_render()
-            return
+        # the centered 'save progress?' card owns the keys first (even over vim)
         if self._dev_confirm:
             ch = (event.character or "").lower()
-            if ch == "y":
+            if key == "escape":
+                self._dev_confirm = False
+                self._dev_render()
+            elif ch == "y":
                 self._dev_save_checkpoint()
                 self._dev_dismiss()
             elif ch == "n":
                 self._dev_dismiss()
+            return
+        # in the nvim editor, keys belong to vim — Esc is NORMAL mode, not exit
+        if self._dev_phase == "write" and getattr(self, "_dev_write_stage", "touch") == "vim":
+            self._dev_write_key(event)
+            return
+        if key == "escape":
+            self._dev_confirm = True
+            self._dev_render()
             return
         if self._dev_idx >= len(DEV_LESSONS):
             return
@@ -21627,6 +21708,25 @@ class TutorApp(App):
         self.query_one("#dev-output", Static).update(self._dev_render_output())
         self.query_one("#dev-state-tree", Static).update(self._dev_render_state())
         self.query_one("#dev-foot", Static).update(self._dev_render_foot())
+        cw = self.query_one("#dev-confirm", Static)
+        if self._dev_confirm:
+            cw.update(self._dev_render_confirm())
+            cw.add_class("visible")
+        else:
+            cw.remove_class("visible")
+
+    def _dev_render_confirm(self):
+        t = Text()
+        t.append("SAVE YOUR PROGRESS?", style="bold yellow")
+        t.append("\n\n")
+        t.append("Save a checkpoint so you can resume right here next time.", style="#f0f0f5")
+        t.append("\n\n")
+        t.append("[y] save & leave", style="bold green")
+        t.append("    ")
+        t.append("[n] leave without saving", style="bold #f87171")
+        t.append("    ")
+        t.append("[Esc] keep going", style="dim")
+        return t
 
     def _dev_render_head(self):
         t = Text()
@@ -21648,9 +21748,10 @@ class TutorApp(App):
         if lesson["kind"] == "info":
             t.append(lesson["why"], style="#f0f0f5")
         else:
-            t.append(lesson.get("say", ""), style="#f0f0f5")
+            t.append(lesson.get("say", ""), style="bold #f0f0f5")
             t.append("\n")
-            t.append(lesson["why"], style="#b0b0b8")
+            t.append("WHY: ", style="bold #fbbf24")
+            t.append(lesson["why"], style="#d8dce3")
         return t
 
     def _dev_render_ghost(self):
@@ -21756,46 +21857,62 @@ class TutorApp(App):
         return _box_lines(_lines_of(t), max_width=term_w, border=False)
 
     def _dev_render_vim(self):
-        """Render the nvim editor: the learner's buffer with vim line numbers,
-        a mode indicator, the ':' command line, and a dim 'target' reference."""
+        """Render a realistic nvim editor: line numbers, tilde on empty lines,
+        a block cursor in NORMAL mode / bar cursor in INSERT, the ':' command
+        line, a real statusline, and a clearly-readable target reference."""
         buf = self._dev_vim_buf
         if buf is None:
             return _box_lines([], max_width=self._dev_term_width(), border=False)
         fname = self._dev_lesson()["file"]
         t = Text()
-        t.append("✎ ", style="bold #7dd3fc")
-        t.append(f"nvim {fname}", style="bold #7dd3fc")
-        if buf.mode == "insert":
-            t.append("   -- INSERT --", style="bold #22c55e")
-        elif buf.mode == "normal":
-            t.append("   -- NORMAL --", style="bold #fbbf24")
-        else:
-            t.append("   -- CMD --", style="bold #f472b6")
+        # tab line
+        t.append(f" nvim {fname} ", style="bold #0d1117 on #7dd3fc")
         t.append("\n\n")
-        for i, line in enumerate(buf.lines):
+        # buffer: line numbers + cursor + '~' on empty lines (like real vim)
+        n = max(len(buf.lines), 3)
+        for i in range(n):
             t.append(f"{i + 1:>2} ", style="dim")
-            if i == buf.row:
-                col = min(buf.col, len(line))
-                t.append(line[:col], style="#f0f0f5")
-                cell = line[col:col + 1] or " "
-                if buf.mode == "insert":
-                    t.append(cell, style="underline bold #f0f0f5")
+            if i < len(buf.lines):
+                line = buf.lines[i]
+                if i == buf.row:
+                    col = min(buf.col, len(line))
+                    t.append(line[:col], style="#f0f0f5")
+                    cell = line[col:col + 1] or " "
+                    if buf.mode == "insert":
+                        t.append(cell, style="underline bold #f0f0f5")
+                    else:
+                        t.append(cell, style="black on #e6e6e6 bold")
+                    t.append(line[col + 1:], style="#f0f0f5")
                 else:
-                    t.append(cell, style="black on #e6e6e6 bold")
-                t.append(line[col + 1:], style="#f0f0f5")
+                    t.append(line, style="#f0f0f5")
             else:
-                t.append(line, style="#f0f0f5")
+                t.append("~", style="#3a3f4b")
             t.append("\n")
+        # command line (the ':' prompt)
         if buf.mode == "cmd":
             t.append("\n:" + buf.cmd, style="bold #f0f0f5")
             t.append("█", style="bold #22c55e")
-        # the target file, dim, as the reference to type
+        # the target file — clearly readable reference
         t.append("\n\n")
-        t.append("target (what to write):", style="bold #8b8b8b")
+        t.append("WRITE THIS FILE:", style="bold #fbbf24")
         t.append("\n")
         for line in buf.target.split("\n"):
-            t.append(line, style="#5a5a5a")
+            t.append("  " + line, style="#9aa0ae")
             t.append("\n")
+        t.append("\n")
+        # statusline — the real mode indicator, vim style (bottom bar)
+        if buf.mode == "insert":
+            t.append(" -- INSERT -- ", style="bold #0d1117 on #22c55e")
+            t.append(f" {fname}", style="bold #f0f0f5")
+            t.append("   Esc = normal mode", style="dim")
+        elif buf.mode == "normal":
+            t.append(" -- NORMAL -- ", style="bold #0d1117 on #7dd3fc")
+            t.append(f" {fname}", style="bold #f0f0f5")
+            t.append("   i insert · :wq save", style="dim")
+        else:
+            t.append(" -- CMD -- ", style="bold #0d1117 on #f472b6")
+            t.append(f" {fname}", style="bold #f0f0f5")
+            t.append("   wq = save & quit", style="dim")
         return _box_lines(_lines_of(t), max_width=self._dev_term_width(), border=False)
 
     def _dev_state_snapshot(self):
@@ -21988,13 +22105,8 @@ class TutorApp(App):
     def _dev_render_foot(self):
         t = Text()
         if self._dev_confirm:
-            t.append("Save a checkpoint so you can resume here later?", style="bold yellow")
-            t.append("\n")
-            t.append("[y] save & leave", style="bold green")
-            t.append("   ")
-            t.append("[n] leave without saving", style="#f0f0f5")
-            t.append("   ")
-            t.append("[Esc] keep going", style="dim")
+            # the confirm now lives in a CENTERED overlay (#dev-confirm) — the
+            # foot just dims out underneath it
             return t
         if self._dev_idx >= len(DEV_LESSONS):
             t.append(self._dev_msg, style="bold green")
