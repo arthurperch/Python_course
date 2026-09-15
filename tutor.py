@@ -1626,8 +1626,9 @@ LESSONS = {
         "intro": "if/else is where code starts making DECISIONS. It's the fork in the road — if this is true, go left; otherwise, go right.",
         "points": [
             ("if asks a yes/no question", "if n > 5: — the colon matters, and everything indented under it only runs when the answer is true."),
+            ("== asks, = stores", "ONE equals sign stores a value: x = 5 means 'x becomes 5'. TWO equals signs ask a question: x == 5 means 'is x the same as 5?' Mixing them up is the #1 beginner bug."),
+            ("% is the leftover", "n % 2 means 'divide n by 2 and give me the LEFTOVER.' 7 % 2 is 1, because 7 divided by 2 is 3 with 1 left over. So n % 2 == 0 means 'no leftover' → even."),
             ("else is the fallback", "else: catches everything the if didn't — the 'otherwise, do this' path."),
-            ("Percent means remainder", "n % 2 gives the remainder after dividing by 2. Zero remainder = even, one = odd. The classic even/odd trick."),
         ],
         "examples": [
             {"caption": "even or odd", "code": 'n = 7\nif n % 2 == 0:\n    print("even")\nelse:\n    print("odd")'},
@@ -2249,8 +2250,14 @@ RECAPS = {
         "Remember — everything input gives you is text. Wrap it in int to make it a number.",
     ],
     "fstrings": ["Remember — an f right before the quotes, and curly braces fill in the values."],
-    "conditionals": ["Remember — if asks a yes-or-no question, else is the fallback, and the percent sign gives you the remainder."],
-    "loops": ["Remember — range makes the numbers, and the stop number is not included. Range of one to eleven gives one through ten."],
+    "conditionals": [
+        "Remember — if asks a yes-or-no question, else is the fallback, and the percent sign gives you the remainder.",
+        "Remember — two equals signs is a question, one equals sign stores a value. And percent gives the leftover after dividing.",
+    ],
+    "loops": [
+        "Remember — range makes the numbers, and the stop number is not included. Range of one to eleven gives one through ten.",
+        "Remember — range of five gives zero through four. It starts at zero and stops just before the number you asked for.",
+    ],
     "while": ["Remember — while repeats until the condition is false, and something inside must change or it loops forever."],
     "lists": [
         "Remember — lists hold more than one thing. Index with square brackets, add with dot append, delete with dot remove.",
@@ -4024,6 +4031,23 @@ def _code_text(line: str) -> Text:
     return t
 
 
+def _indent_guides(line: str) -> Text | None:
+    """Render leading indentation with faint vertical guides at each 4-space
+    level, so nested blocks visually line up (Neovim-style). Returns None for
+    lines with no meaningful indent."""
+    indent = len(line) - len(line.lstrip(" "))
+    if indent < 4:
+        return None
+    t = Text()
+    levels = indent // 4
+    for _ in range(levels):
+        t.append("│", style="#2a2a35")
+        t.append("   ", style="#2a2a35")
+    if indent % 4:
+        t.append(" " * (indent % 4), style="#2a2a35")
+    return t
+
+
 def _reveal_output_lines(text: str, upto: int) -> list[Text]:
     """Render console output as it 'prints': the first `upto` characters in
     green, a BLUE block cursor on the leading edge (the 'thing running' marker),
@@ -5093,11 +5117,20 @@ class VimEditor(Static):
             elif (i + 1) in self.hint_lines:
                 # flagged line (the hint) — red arrow + underline so the fix spot pops
                 t.append("▸ ", style="bold red")
+                guides = _indent_guides(line)
+                if guides is not None:
+                    t.append_text(guides)
+                    line = line.lstrip(" ")
                 tt = highlight_line(line)
                 tt.stylize("underline #ff6b6b")
                 t.append_text(tt)
             else:
-                t.append_text(highlight_line(line))
+                guides = _indent_guides(line)
+                if guides is not None:
+                    t.append_text(guides)
+                    t.append_text(highlight_line(line.lstrip(" ")))
+                else:
+                    t.append_text(highlight_line(line))
         return t
 
     def _redraw(self) -> None:
