@@ -6499,7 +6499,8 @@ VIM_CHALLENGES = [
 SHELL_STAGES = ["Meet the Terminal", "Folders & Paths", "Make & Inspect Files",
                 "Write & Read", "Pipes & Search", "Copy, Move, Delete",
                 "Run & Build", "Shells & Tools", "Stream Editing",
-                "Columns & Fields", "Find & Bundle", "Env & Regex"]
+                "Columns & Fields", "Find & Bundle", "Env & Regex",
+                "Permissions & Processes", "Chain & Connect"]
 
 # A tiny, deterministic fake filesystem so the learner can practice REAL bash
 # (pwd / ls / mkdir / cd / touch / cat / echo / grep / pipes / chmod / …)
@@ -6578,6 +6579,47 @@ def _shell_split_on(s: str, delim: str) -> list[str]:
     return out
 
 
+def _shell_split_chain(s: str) -> list:
+    """Split a command line on top-level `;` and `&&` (outside quotes) into
+    (text, separator_after) pairs, so `mkdir x && cd x` runs as two commands."""
+    seps = ["&&", ";"]
+    segs = []
+    cur = []
+    in_single = in_double = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if in_single:
+            cur.append(c)
+            if c == "'":
+                in_single = False
+        elif in_double:
+            cur.append(c)
+            if c == '"':
+                in_double = False
+        elif c == "'":
+            in_single = True
+            cur.append(c)
+        elif c == '"':
+            in_double = True
+            cur.append(c)
+        else:
+            matched = None
+            for sep in seps:
+                if s.startswith(sep, i):
+                    matched = sep
+                    break
+            if matched:
+                segs.append(("".join(cur), matched))
+                cur = []
+                i += len(matched) - 1
+            else:
+                cur.append(c)
+        i += 1
+    segs.append(("".join(cur), None))
+    return segs
+
+
 class ShellFS:
     """A sandboxed home directory the learner fills up over the course.
 
@@ -6597,6 +6639,7 @@ class ShellFS:
         self.env = {"HOME": "/home/you", "USER": "you", "SHELL": "/bin/bash",
                     "PATH": "/usr/local/bin:/usr/bin:/bin"}
         self.archives = {}   # archive name -> {entry: content} for tar
+        self.processes = {1: "init", 42: "bash", 201: "python3 app.py"}   # pid -> cmd
 
     # -- path helpers ------------------------------------------------------ #
     def _resolve(self, path: str) -> str:
@@ -6672,6 +6715,18 @@ class ShellFS:
         if not cmdline:
             return [], []
         self.history.append(cmdline)
+        # `cmd1 && cmd2` / `cmd1 ; cmd2` chain top-level commands (quote-aware)
+        if "&&" in cmdline or ";" in cmdline:
+            chain = _shell_split_chain(cmdline)
+            all_out = []
+            for text, sep in chain:
+                out, err = self.run(text.strip())
+                all_out.extend(out)
+                if err:
+                    all_out.extend(err)
+                    if sep == "&&":
+                        return all_out, err   # short-circuit: later steps skipped
+            return all_out, []
         if "|" in cmdline:
             data = stdin_lines
             for stage in [s.strip() for s in _shell_split_on(cmdline, "|")]:
@@ -6771,9 +6826,14 @@ class ShellFS:
             return self._rm(args)
         if cmd == "chmod":
             return self._chmod(args)
+        if cmd == "ps":
+            return self._ps(args)
+        if cmd == "kill":
+            return self._kill(args)
         if cmd in ("man", "help", "--help"):
             return ["commands:  pwd  ls  mkdir  cd  touch  cat  echo  head  tail  wc  grep  sed  "
-                    "awk  find  tar  export  env  python3  mv  cp  rm  chmod  whoami  clear  history"], []
+                    "awk  find  tar  export  env  ps  kill  python3  mv  cp  rm  chmod  "
+                    "whoami  clear  history  (also:  cmd1 && cmd2   and   cmd1 ; cmd2)"], []
         if cmd.startswith("./") or cmd.startswith("/"):
             return self._run_executable(cmd)
         return [], [f"{cmd}: command not found"]
@@ -7189,7 +7249,45 @@ class ShellFS:
                     self.executable.add(p)
                     self.latest = p
             return [], []
+        if "-x" in mode or "u-x" in mode or "a-x" in mode:
+            for t in targets:
+                p = self._resolve(t)
+                if p in self.files:
+                    self.executable.discard(p)
+                    self.latest = p
+            return [], []
+        if mode.isdigit() and len(mode) <= 4:
+            # numeric octal mode (e.g. 755, 644): any execute bit -> runnable
+            make_x = bool(int(mode, 8) & 0o111)
+            for t in targets:
+                p = self._resolve(t)
+                if p in self.files:
+                    if make_x:
+                        self.executable.add(p)
+                    else:
+                        self.executable.discard(p)
+                    self.latest = p
+            return [], []
         return [], [f"chmod: invalid mode: '{mode}'"]
+
+    def _ps(self, args):
+        out = ["  PID TTY      TIME CMD"]
+        for pid in sorted(self.processes):
+            out.append(f"{pid:>5} pts/0    0:00 {self.processes[pid]}")
+        return out, []
+
+    def _kill(self, args):
+        if not args:
+            return [], ["kill: usage: kill <pid>"]
+        errs = []
+        for a in args:
+            if not a.isdigit():
+                errs.append(f"bash: kill: {a}: arguments must be process or job IDs")
+            elif int(a) in self.processes:
+                del self.processes[int(a)]
+            else:
+                errs.append(f"bash: kill: ({a}) - No such process")
+        return [], errs
 
 
 # ============================================================================
@@ -8876,6 +8974,7 @@ _SHELL_MEANING = {
     "sed": "edit text in a stream", "awk": "pull out a column",
     "find": "search the file tree", "tar": "bundle files together",
     "export": "set a variable", "env": "show all variables",
+    "ps": "list running processes", "kill": "stop a process",
 }
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
@@ -9245,6 +9344,50 @@ SHELL_LESSONS = [
      "say": "Use the env command to show every variable that's set.",
      "why": "env prints the whole environment — all the variables your shell knows about. You'll see HOME, USER, PATH, and the one you just exported.",
      "on_win": "There's your GREETING, plus the system variables that came with the shell."},
+
+    # ---- stage 12: Permissions & Processes -------------------------------- #
+    {"title": "permissions as numbers", "stage": 12,
+     "expect": ["chmod 755 hello.py"],
+     "cmd_hint": "chmod 755 hello.py",
+     "goal": "Make hello.py executable using the numeric shortcut 755.",
+     "say": "Use the change permissions command with the number 755, on hello dot p y.",
+     "why": "Instead of plus-x, you can give permissions as one number. 755 means owner can do everything, everyone else can read and run it. It's the classic number for scripts you want to run.",
+     "on_win": "755 is the same as plus-x — one number spells out the whole permission set."},
+
+    {"title": "see what's running", "stage": 12,
+     "expect": ["ps"],
+     "cmd_hint": "ps",
+     "goal": "List the processes running on this machine.",
+     "say": "Use the two-letter command that lists running processes.",
+     "why": "ps lists the processes alive right now — each has a number called a PID and the command that started it. Before you stop anything, you look it up here first.",
+     "on_win": "Every running program has a PID. That number is how you point at a process later."},
+
+    {"title": "stop a process", "stage": 12,
+     "expect": ["kill 201"],
+     "cmd_hint": "kill 201",
+     "goal": "Stop the python3 app by its PID (201).",
+     "say": "Use the kill command with the PID of the python app — 201 — to stop it.",
+     "why": "kill sends a 'stop now' signal to the process with that PID. Look it up with ps first, then kill it by number. It's how you turn off a runaway program.",
+     "on_win": "Process 201 is gone. Find it with ps, stop it with kill — that's the whole loop."},
+
+    # ---- stage 13: Chain & Connect ---------------------------------------- #
+    {"title": "two commands, one line", "stage": 13,
+     "expect": ["mkdir deploy && cd deploy"],
+     "cmd_hint": "mkdir deploy && cd deploy",
+     "goal": "Make a folder called deploy, and step inside it — all in one line.",
+     "say": "Make a folder called deploy, then two ampersands, then step inside it. One line.",
+     "why": "Two ampersands means 'run the next one only if the first worked'. So you create the folder, and only if that succeeded do you step inside. It chains steps that depend on each other.",
+     "on_win": "Made the folder AND stepped in, one line. The double-ampersand links steps that depend on each other."},
+
+    {"title": "meet ssh: log into another computer", "stage": 13, "kind": "info",
+     "goal": "Meet ssh — the remote login tool. Read along, then press Enter.",
+     "why": "ssh opens a secure connection to another computer, so you can run commands on a server from anywhere. You type ssh, then user at server, like ssh you at your-server. Every cloud server you'll ever touch — EC2, VPS, all of it — you reach through ssh. This sandbox has no real network, so we can't actually log in here, but the command shape is the same everywhere.",
+     "on_win": "ssh is how every professional reaches their servers. Remember the shape: ssh user at host."},
+
+    {"title": "meet curl: talk to the internet", "stage": 13, "kind": "info",
+     "goal": "Meet curl — the URL fetcher. Read along, then press Enter.",
+     "why": "curl downloads from a web address straight into your terminal. You point it at a URL and it prints the response. It's how you test an API, grab a file, or check that a website is up — all without a browser. Offline here, so we can't fetch a real site, but the shape is curl space the-url.",
+     "on_win": "curl is the terminal's web browser. Point it at a URL and read the response right here."},
 ]
 
 # the clickable bash manual — (command, what it does, a visual example)
@@ -9288,6 +9431,13 @@ SHELL_MANUAL = [
     ("export X=y", "set a variable", "export GREETING=hello"),
     ("echo $X", "read a variable", "echo $GREETING"),
     ("env", "show all variables", "env"),
+    ("chmod 755 f", "permissions as one number", "chmod 755 hello.py"),
+    ("ps", "list running processes", "ps"),
+    ("kill PID", "stop a process by number", "kill 201"),
+    ("a && b", "run b only if a worked", "mkdir deploy && cd deploy"),
+    ("a ; b", "run both, no matter what", "pwd ; ls"),
+    ("ssh user@host", "log into another computer", "ssh you@your-server"),
+    ("curl URL", "fetch a web address", "curl example.com"),
 ]
 
 DEV_LESSONS = [
