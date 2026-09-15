@@ -2387,6 +2387,21 @@ LAB_EXTRAS = [
     ("nested loop grid", "for row in range(3):\n    for col in range(3):\n        print(row, col)"),
 ]
 
+# one-line vim reminders, rotated into every lesson's closing — a gentle nudge,
+# never a requirement. The user keeps seeing them, so muscle memory builds.
+_VIM_TIPS = [
+    "vim: . repeats your last edit — fix it once, then dot-dot-dot",
+    "vim: ciw rewrites the whole word under the cursor — instant rename",
+    "vim: dd deletes a line, u undoes it, Ctrl+r redoes",
+    "vim: o opens a line below, O above — no arrowing to the end first",
+    "vim: / then a word searches; n jumps to the next match",
+    "vim: yy copies a line, p pastes it — the fast copy",
+    "vim: q + a letter records a macro, @ runs it again",
+    "vim: cw changes a word, r swaps a single character",
+    "vim: $ jumps to end of line, 0 to start, ^ to first non-blank",
+    "vim: gd jumps to a name's definition, K shows its docs",
+]
+
 # string literals that are STRUCTURE, not data — never value-swap these (doing so
 # breaks the code: open(..., "w") -> open(..., "bean") is an invalid file mode)
 _NO_SWAP = {"r", "w", "a", "x", "rb", "wb", "ab", "xb", "rt", "wt", "at", "xt",
@@ -6003,6 +6018,10 @@ VIM_LESSONS = [
     (4, "D — delete to end", "same as d$, shorter", ["D"], ""),
     (4, "cw — change word", "delete word and drop into insert", ["c", "w"], ""),
     (4, "cc — change line", "blank the line and insert", ["c", "c"], ""),
+    (4, "r — replace char", "swap ONE char (fix a typo)", ["r"], "then type the replacement char"),
+    (4, "ciw — change word", "rewrite the whole word under the cursor", ["c", "i", "w"], "works mid-word — no need to be at the start"),
+    (4, 'ci" — change string', "rewrite inside the quotes", ["c", "i", '"'], "swap \" for ' ( ) { } [ ]"),
+    (4, ". — repeat", "do the last edit again", ["."], "the single most powerful key — fix it once, then repeat"),
 
     (5, "yy — yank line", "copy the whole line", ["y", "y"], ""),
     (5, "yw — yank word", "copy to the next word", ["y", "w"], ""),
@@ -6024,6 +6043,12 @@ VIM_LESSONS = [
     (7, "Ctrl+a — increment", "+1 to the number under the cursor", ["Ctrl+a"], ""),
     (7, "= — indent", "auto-indent the selection", ["="], ""),
     (7, "gg=G — format file", "auto-format the whole file", ["g", "g", "=", "G"], ""),
+    (7, "q — record macro", "start recording (q + a letter)", ["q"], "then do the edits once, press q to stop"),
+    (7, "@ — replay macro", "run the recorded macro", ["@"], "then the letter you recorded to"),
+    (7, "@@ — repeat macro", "run the last macro again", ["@", "@"], "replay it over and over"),
+    (7, "]d — next error", "jump to the next diagnostic/error", ["]", "d"], "in LazyVim this is g ] / g [ or ]d"),
+    (7, "gd — go to definition", "jump to where the name is defined", ["g", "d"], "read code by following the definition"),
+    (7, "K — hover docs", "show docs for the name under the cursor", ["K"], "pair with gd to read unfamiliar code"),
 
     (8, "Space f f — find files", "fuzzy-find any file", ["Space", "f", "f"], ""),
     (8, "Space e — file tree", "toggle the file explorer", ["Space", "e"], ""),
@@ -12830,7 +12855,7 @@ def _build_warmup_tasks(starter: str) -> list[dict]:
              "verify": lambda b, last=last: sum(1 for l in b if l == last) >= 2},
             # 3 — HEAVY: open a fresh line and type a comment.
             {"title": "add a comment",
-             "instruction": "press o, type # done, then press Esc",
+             "instruction": "press o (opens a line below), type # then any words (e.g. # done), press Esc",
              "verify": lambda b: any(l.strip().startswith("#") for l in b)},
         ]
     line = lines[0]
@@ -12840,7 +12865,7 @@ def _build_warmup_tasks(starter: str) -> list[dict]:
          "instruction": "copy this line down — press yy then p",
          "verify": lambda b, line=line: sum(1 for l in b if l == line) >= 2},
         {"title": "add a comment",
-         "instruction": "press o, type # done, then press Esc",
+         "instruction": "press o (opens a line below), type # then any words (e.g. # done), press Esc",
          "verify": lambda b: any(l.strip().startswith("#") for l in b)},
     ]
 
@@ -13571,6 +13596,7 @@ class TutorApp(App):
         self._structure_taught = bool(self.p.get("structure_taught", False))
         self._topics_taught = set(self.p.get("topics_taught", []))
         self._recap_rot = 0                       # rotates the "remember" recap line
+        self._vim_tip_rot = 0                     # rotates the vim reminder in lessons
         # voice + sfx faders (the docked bottom volume bar) — restored here
         set_voice_volume(float(self.p.get("voice_volume", self.p.get("volume", 1.0))))
         set_voice_mute(bool(self.p.get("voice_muted", self.p.get("muted", False))))
@@ -14147,7 +14173,6 @@ class TutorApp(App):
 
     def _render_menu(self):
         self.query_one("#menu-banner", Static).update(self._banner_text())
-        self._start_menu_anim()
         self._render_progress()
         self._sync_back_button()
         # a NEW screen (level change) climbs the list back to the very top
@@ -15189,22 +15214,13 @@ class TutorApp(App):
         self.query_one("#menu-preview-inner", Static).update(t)
 
     def _banner_text(self):
-        art = CAT_FRAMES[self._menu_frame % len(CAT_FRAMES)]
-        w = max(len(ln) for ln in art)
-        pad = max(0, (self.size.width - w) // 2)
+        # plain text header — no ASCII art (the animated cat was removed)
         t = Text()
-        for ln in art:
-            if pad:
-                t.append(" " * pad)
-            t.append(ln, style=CAT_STYLE)
-            t.append("\n")
+        t.append("PYTHON TUTOR", style="bold #f9a8d4")
         name = self.p.get("name", "")
         if name:
-            greet = f"welcome back, {name}!"
-            gpad = max(0, (self.size.width - len(greet)) // 2)
-            t.append(" " * gpad)
-            t.append(greet, style="bold #ff9d00")
-            t.append("\n")
+            t.append("  ·  ", style="dim")
+            t.append(f"welcome back, {name}", style="bold #ff9d00")
         return t
 
     def _start_menu_anim(self):
@@ -22822,6 +22838,10 @@ class TutorApp(App):
                           "why": whys[i % len(whys)] if whys else ""})
         if not already_taught:
             steps.append({"t": "text", "title": "Bottom line", "body": lesson["outro"]})
+        # a rotating vim reminder — a nudge, never a requirement
+        steps.append({"t": "text", "title": "Vim reminder",
+                      "body": _VIM_TIPS[self._vim_tip_rot % len(_VIM_TIPS)]})
+        self._vim_tip_rot += 1
         # end with the ghost-write explainer — the drill fires right after
         steps.append({"t": "text", "title": "Now we're going to write it",
                       "body": GHOST_INTRO_TEXT})
