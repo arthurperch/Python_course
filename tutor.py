@@ -10196,6 +10196,110 @@ DEV_LESSONS = [
      "say": "Run the bash script to deploy everything.",
      "why": "bash deploy.sh runs the whole sequence — resource group, then deployment. This is the payoff: a dozen steps collapsed into one command.",
      "on_win": "Deployed ✓ — the whole environment from one command."},
+
+    # ==== CONCEPT EXPLAINERS · what these things are FOR ===================
+    {"module": "Concept Explainers", "kind": "info", "title": "idempotent, the golden rule",
+     "say": "Terraform and Ansible share one golden rule: idempotent. It means run the command once or a hundred times, you get the same result — never 'already exists' errors, never drift.",
+     "why": "Idempotent = safe to re-run. Terraform's apply and Ansible's playbooks are designed so re-running only changes what's OUT of sync. That's why they're the senior default over hand-typed bash: no double-created servers, no half-applied changes."},
+
+    {"module": "Concept Explainers", "kind": "info", "title": "what is terraform state",
+     "say": "Terraform keeps a state file — a record of what it already built. On the next apply it diffs your code against state and changes only the difference.",
+     "why": "State is the memory. Without it Terraform couldn't know what to update vs create vs destroy. That's why seniors lock it in a remote backend: the team shares one truth, and a lock prevents two people applying at once and corrupting it."},
+
+    {"module": "Concept Explainers", "kind": "info", "title": "plan before you apply",
+     "say": "terraform plan is a dry-run — it shows exactly what will change WITHOUT changing anything. terraform apply is the real run that makes those changes.",
+     "why": "Plan-then-apply is the safety checkpoint. You read the plan, confirm it only adds the one bucket you expect, then apply. It catches 'oh no I accidentally destroyed the database' BEFORE it happens."},
+
+    {"module": "Concept Explainers", "kind": "info", "title": "playbook, task, module",
+     "say": "Ansible has three layers. A module is one small action — install a package, copy a file. A task is a module plus its arguments. A playbook is a list of tasks run in order against a group of hosts.",
+     "why": "Think of it as: module = a tool, task = one step using that tool, playbook = the whole procedure. This layering is why Ansible reads like a recipe, not a script — you describe the END state (package present) and Ansible figures out the steps."},
+
+    {"module": "Concept Explainers", "kind": "info", "title": "image vs container",
+     "say": "A Docker image is the frozen blueprint — your code plus its environment. A container is a running copy of that image, live and isolated.",
+     "why": "One image, many containers — like one class, many objects. The image never changes; you bake a new version and replace it. That immutability is why Docker is reproducible: every container from the same image is identical."},
+
+    {"module": "Concept Explainers", "kind": "info", "title": "pod vs deployment vs service",
+     "say": "A pod is one or more containers. A deployment manages a set of identical pods and keeps the count right. A service gives those pods a stable address so others can reach them.",
+     "why": "Pods are disposable — they die and get replaced. A deployment is the supervisor that keeps the right number alive. A service is the front door: a fixed name that routes to whichever pods exist right now. Three layers, one job each."},
+
+    # ==== COMMAND DRILLS · repeated recall practice ========================
+    {"module": "Command Drills", "kind": "challenge", "title": "commit your fix",
+     "say": "You fixed a bug. Commit it. Use 'drill' somewhere in the commit message so we know it's this practice run.",
+     "why": "The commit loop is muscle memory: edit, stage, commit. You should be able to do it without thinking now.",
+     "recall": "stage first, then commit — and a commit always needs a message in quotes.",
+     "hint": "git add the file, then git commit -m \"drill: ...\"",
+     "tools": ["git add app.py", "git commit -m \"drill: fix\"", "git commit -m \"drill: done\""],
+     "verify_lab": lambda lab: any("drill" in c.get("msg", "") for c in lab.git.commits),
+     "replay": ["git add app.py", "git commit -m \"drill: fix\""]},
+
+    {"module": "Command Drills", "kind": "challenge", "title": "bake the image",
+     "say": "Build a Docker image named drillapp from the Dockerfile in the current folder.",
+     "why": "docker build -t <name> . is the single most common Docker command — bake the image, tag it, run it.",
+     "recall": "build with -t for the name, and . points at the Dockerfile here.",
+     "hint": "docker build -t drillapp .",
+     "tools": ["docker build -t drillapp ."],
+     "verify_lab": lambda lab: "drillapp" in lab.docker.images,
+     "replay": ["docker build -t drillapp ."]},
+
+    {"module": "Command Drills", "kind": "challenge", "title": "run it detached",
+     "say": "Run the drillapp image as a detached container named drillweb, exposing port 8080.",
+     "why": "-d runs it in the background, --name gives it a stable name, -p maps a port. The three flags you'll type forever.",
+     "recall": "detached, named, port-mapped: -d --name and -p.",
+     "hint": "docker run -d --name drillweb -p 8080:80 drillapp",
+     "tools": ["docker run -d --name drillweb -p 8080:80 drillapp"],
+     "verify_lab": lambda lab: "drillweb" in lab.docker.containers,
+     "replay": ["docker run -d --name drillweb -p 8080:80 drillapp"]},
+
+    {"module": "Command Drills", "kind": "challenge", "title": "provision a bucket",
+     "say": "Create an S3 bucket named drill-bucket.",
+     "why": "aws s3 mb s3://<name> — the make-bucket command. You'll type it for every new bucket.",
+     "recall": "make bucket is mb, and the name goes after s3://",
+     "hint": "aws s3 mb s3://drill-bucket",
+     "tools": ["aws s3 mb s3://drill-bucket"],
+     "verify_lab": lambda lab: "drill-bucket" in lab.aws.buckets,
+     "replay": ["aws s3 mb s3://drill-bucket"]},
+
+    {"module": "Command Drills", "kind": "write", "title": "re-type the deployment",
+     "file": "deploy.yaml",
+     "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      containers:\n        - name: app\n          image: model:v1\n          resources:\n            limits:\n              nvidia.com/gpu: 1\n",
+     "lines": [
+         ("apiVersion: apps/v1", "the Kubernetes API version this manifest targets"),
+         ("kind: Deployment", "what we're declaring — a deployment"),
+         ("name: web", "the deployment's name"),
+         ("replicas: 3", "keep three copies running"),
+         ("image: model:v1", "which image each pod runs"),
+         ("nvidia.com/gpu: 1", "request one GPU per pod"),
+     ],
+     "say": "Re-type the Kubernetes deployment from memory — it's the manifest you'll write a thousand times.",
+     "why": "Ghost-writing the same manifest again cements the structure: apiVersion, kind, metadata, spec, replicas, image. You'll stop needing the reference.",
+     "on_win": "Deployment re-typed from memory."},
+
+    {"module": "Command Drills", "kind": "write", "title": "re-type the playbook",
+     "file": "web.yml",
+     "content": "---\n- name: configure web servers\n  hosts: web\n  become: yes\n  tasks:\n    - name: install nginx\n      apt:\n        name: nginx\n        state: present\n    - name: start nginx\n      service:\n        name: nginx\n        state: started\n",
+     "lines": [
+         ("- name: configure web servers", "the play name"),
+         ("hosts: web", "run against the web group"),
+         ("become: yes", "escalate to root"),
+         ("- name: install nginx", "task one: install the package"),
+         ("name: nginx", "the module argument — what to install"),
+     ],
+     "say": "Re-type the Ansible playbook — a play, hosts, and tasks.",
+     "why": "The playbook shape is the thing to internalize: a play with hosts and become, then tasks with name and module arguments. Re-typing it locks the pattern.",
+     "on_win": "Playbook re-typed from memory."},
+
+    {"module": "Command Drills", "kind": "run", "title": "run the playbook",
+     "verify": lambda c: c.startswith("ansible-playbook") and "web.yml" in c,
+     "cmd_hint": "ansible-playbook web.yml",
+     "say": "Run the playbook you just wrote.",
+     "why": "ansible-playbook <file> — the one command that executes a playbook. Say it out loud once: 'ansible playbook web.yml'.",
+     "on_win": "Playbook ran against the web group."},
+
+    {"module": "Command Drills", "kind": "run", "title": "list the pods",
+     "expect": ["kubectl get pods"], "cmd_hint": "kubectl get pods",
+     "say": "Check that your pods are actually running.",
+     "why": "kubectl get pods is the first thing you type after any deploy — is everything up? It should be reflex by now.",
+     "on_win": "Pods listed — all three running."},
 ]
 
 # Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
