@@ -20401,21 +20401,21 @@ class TutorApp(App):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\n")
-            t.append(self._shell_prompt() + " ", style="bold #86efac")
+            t.append(self._shell_prompt() + " ", style="bold #c8c8c8")
             t.append(self._shell_cmd or " ", style="#f0f0f5")
             t.append("▍", style="bold #22c55e")
             return _box_lines(_lines_of(t))
         for kind, text in self._shell_history[-16:]:
             if kind == "cmd":
                 p, c = text
-                t.append(p, style="bold #86efac")
+                t.append(p, style="bold #c8c8c8")
                 t.append_text(_colorize_command(c))
             elif kind == "out":
                 t.append(text, style="#e6e6e6")
             elif kind == "err":
                 t.append(text, style="bold #f87171")
             t.append("\n")
-        t.append(self._shell_prompt() + " ", style="bold #86efac")
+        t.append(self._shell_prompt() + " ", style="bold #c8c8c8")
         t.append_text(_colorize_command(self._shell_cmd))
         t.append("▍", style="bold #22c55e")
         return _box_lines(_lines_of(t))
@@ -20644,7 +20644,7 @@ class TutorApp(App):
         for sub, explain in lines:
             if sub in cur_line and sub not in self._dev_explained:
                 self._dev_explained.add(sub)
-                speak(_pers(explain))
+                speak_write(_pers(explain), rate=2 / 3)   # 1.5x faster, queued (finishes)
 
     def _dev_current_line_hint(self):
         lesson = self._dev_lesson()
@@ -20742,7 +20742,7 @@ class TutorApp(App):
             explained.add(key)
             self._dev_msg = expl
             self._dev_msg_kind = "say"
-            speak(_pers(expl))
+            speak_write(_pers(expl), rate=2 / 3)   # 1.5x faster, queued (finishes)
             return True
 
         # the command name first — explain it the moment it's recognizable
@@ -21197,20 +21197,20 @@ class TutorApp(App):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\n")
-            t.append(self._dev_prompt() + " ", style="bold #86efac")
+            t.append(self._dev_prompt() + " ", style="bold #c8c8c8")
             t.append("█", style="bold #22c55e")
             return _box_lines(_lines_of(t), max_width=term_w)
         for kind, text in self._dev_history[-18:]:
             if kind == "cmd":
                 p, c = text
-                t.append(p, style="bold #86efac")
+                t.append(p, style="bold #c8c8c8")
                 t.append_text(_colorize_command(c))
             elif kind == "out":
                 t.append(text, style="#e6e6e6")
             elif kind == "err":
                 t.append(text, style="bold #f87171")
             t.append("\n")
-        t.append(self._dev_prompt() + " ", style="bold #86efac")
+        t.append(self._dev_prompt() + " ", style="bold #c8c8c8")
         t.append_text(_colorize_command(self._dev_cmd))
         t.append("█", style="bold #22c55e")
         return _box_lines(_lines_of(t), max_width=term_w)
