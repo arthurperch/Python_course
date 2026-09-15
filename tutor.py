@@ -21259,6 +21259,7 @@ class TutorApp(App):
                     self._dev_msg = f"{fname} created — now open it"
                     self._dev_msg_kind = "win"
                     play_console_result(True)
+                    self._dev_ghost_start()   # animate the NEXT command
                 else:
                     self._dev_msg = f"create it first:  touch {fname}"
                     self._dev_msg_kind = "hint"
@@ -21288,6 +21289,7 @@ class TutorApp(App):
         ch = event.character
         if ch:
             self._dev_cmd += ch
+            play_key()
             self._dev_render()
 
     # -- vim stage: a real editor — insert / normal / command modes ---------- #
@@ -21705,6 +21707,7 @@ class TutorApp(App):
         ch = event.character
         if ch:
             self._dev_cmd += ch
+            play_key()
             self._dev_explain_command_piece()
             self._dev_render()
 
@@ -21829,6 +21832,14 @@ class TutorApp(App):
             lesson = self._dev_lesson()
             if lesson["kind"] == "run":
                 text = lesson["cmd_hint"]
+            elif lesson["kind"] == "write":
+                # show the touch / nvim command being typed, so the learner
+                # always sees exactly what to write in the bash prompt
+                stage = getattr(self, "_dev_write_stage", "touch")
+                if stage == "touch":
+                    text = f"touch {lesson['file']}"
+                elif stage == "nvim":
+                    text = f"nvim {lesson['file']}"
         self._dev_ghost = text
         self._dev_ghost_typed = 0
         self._dev_ghost_on = False
@@ -21851,6 +21862,8 @@ class TutorApp(App):
             return
         if self._dev_ghost_typed < len(self._dev_ghost):
             self._dev_ghost_typed += 1
+            if self._dev_ghost_typed % 2 == 0:
+                play_key()   # typewriter click as the command types itself out
             self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
         else:
             self._dev_ghost_stop_timers()
@@ -21960,16 +21973,27 @@ class TutorApp(App):
                 t.append("read along, then press Enter", style="dim")
             return t
         if self._dev_phase == "write":
-            t.append("✎ ", style="bold #7dd3fc")
-            t.append(lesson["file"], style="bold #7dd3fc")
-            t.append("   ")
             stage = getattr(self, "_dev_write_stage", "touch")
-            if stage == "touch":
-                t.append("create it in bash, then open it in nvim", style="#d5d5d5")
-            elif stage == "nvim":
-                t.append("open it in nvim to start writing", style="#d5d5d5")
+            if stage == "vim":
+                t.append("✎ ", style="bold #7dd3fc")
+                t.append(lesson["file"], style="bold #7dd3fc")
+                t.append("   i insert · Esc normal · :wq to save", style="#d5d5d5")
+                return t
+            # touch / nvim: animate the command being typed so the learner sees
+            # EXACTLY what to write (same typewriter as the run phase)
+            typed = self._dev_ghost[:self._dev_ghost_typed]
+            rest = self._dev_ghost[self._dev_ghost_typed:]
+            t.append("WRITE  ", style="bold #7dd3fc")
+            t.append("→ ", style="bold #22c55e")
+            if self._dev_ghost_typed < len(self._dev_ghost):
+                t.append(typed, style="bold #fbbf24")
+                t.append(rest, style="#5a5a5a")
             else:
-                t.append("i insert · Esc normal · :wq to save", style="#d5d5d5")
+                color = (_GHOST_FLASH[getattr(self, "_dev_ghost_color", 0) % len(_GHOST_FLASH)]
+                         if self._dev_ghost_on else "#fbbf24")
+                t.append(typed, style="bold " + color)
+            t.append("    ")
+            t.append("type it, then Enter", style="bold #f0f0f5")
             return t
         typed = self._dev_ghost[:self._dev_ghost_typed]
         rest = self._dev_ghost[self._dev_ghost_typed:]
@@ -22306,11 +22330,15 @@ class TutorApp(App):
         if self._dev_phase == "write":
             stage = getattr(self, "_dev_write_stage", "touch")
             if stage == "touch":
-                t.append(f"touch {lesson['file']} to create it · Enter runs · Esc exits", style="dim")
+                t.append("▶  ", style="bold #22c55e")
+                t.append(f"touch {lesson['file']}", style="bold #22c55e")
+                t.append("   create it — then Enter", style="bold #f0f0f5")
             elif stage == "nvim":
-                t.append(f"nvim {lesson['file']} to open it · Enter runs · Esc exits", style="dim")
+                t.append("▶  ", style="bold #22c55e")
+                t.append(f"nvim {lesson['file']}", style="bold #22c55e")
+                t.append("   open it — then Enter", style="bold #f0f0f5")
             else:
-                t.append("i insert · Esc normal · hjkl move · :wq save & exit", style="dim")
+                t.append("i insert · Esc normal · hjkl move · :wq save & exit", style="bold #d5d5d5")
             return t
         t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
