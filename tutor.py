@@ -21189,7 +21189,7 @@ class TutorApp(App):
             return
         self._dev_write_blink = not self._dev_write_blink
         try:
-            self.query_one("#dev-out", Static).update(self._dev_render_output())
+            self.query_one("#dev-output", Static).update(self._dev_render_output())
         except Exception:
             pass
 
@@ -21273,6 +21273,7 @@ class TutorApp(App):
                     self._dev_msg = ""
                     self._dev_msg_kind = ""
                     play_key()
+                    self._dev_write_blink_start()   # flash the target file
                 else:
                     self._dev_msg = f"open it with:  nvim {fname}"
                     self._dev_msg_kind = "hint"
@@ -21864,7 +21865,10 @@ class TutorApp(App):
             self._dev_ghost_typed += 1
             if self._dev_ghost_typed % 2 == 0:
                 play_key()   # typewriter click as the command types itself out
-            self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+            try:
+                self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+            except Exception:
+                pass
         else:
             self._dev_ghost_stop_timers()
             self._dev_ghost_on = True
@@ -21875,7 +21879,13 @@ class TutorApp(App):
             return
         self._dev_ghost_on = not self._dev_ghost_on
         self._dev_ghost_color = (getattr(self, "_dev_ghost_color", 0) + 1) % len(_GHOST_FLASH)
-        self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+        try:
+            self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+            # the footer's "type:" answer flashes in sync with the ghost
+            if getattr(self, "_dev_phase", "") == "write":
+                self.query_one("#dev-foot", Static).update(self._dev_render_foot())
+        except Exception:
+            pass
 
     def _dev_ghost_blink_again(self):
         self._dev_ghost_stop_timers()
@@ -21920,20 +21930,19 @@ class TutorApp(App):
             t.append("Esc — back to the menu", style="dim")
             return t
         lesson = self._dev_lesson()
-        t.append("CLOUD & DEVOPS", style="bold #7dd3fc")
-        t.append(f"  {self._dev_idx + 1}/{len(DEV_LESSONS)}", style="dim")
+        t.append("CLOUD & DEVOPS", style="bold #f0f0f5")
+        t.append(f"  {self._dev_idx + 1}/{len(DEV_LESSONS)}", style="#f0f0f5")
         t.append("   ")
-        t.append(lesson["module"].upper(), style="bold cyan")
+        t.append(lesson["module"].upper(), style="#f0f0f5")
         t.append("\n")
-        t.append(lesson["title"], style="bold yellow")
+        t.append(lesson["title"], style="bold #f0f0f5")
         t.append("\n")
         if lesson["kind"] == "info":
             t.append(lesson["why"], style="#f0f0f5")
         else:
             t.append(lesson.get("say", ""), style="bold #f0f0f5")
             t.append("\n")
-            t.append("WHY: ", style="bold #fbbf24")
-            t.append(lesson["why"], style="#d8dce3")
+            t.append(lesson["why"], style="#f0f0f5")
         return t
 
     def _dev_render_ghost(self):
@@ -21983,8 +21992,7 @@ class TutorApp(App):
             # EXACTLY what to write (same typewriter as the run phase)
             typed = self._dev_ghost[:self._dev_ghost_typed]
             rest = self._dev_ghost[self._dev_ghost_typed:]
-            t.append("WRITE  ", style="bold #7dd3fc")
-            t.append("→ ", style="bold #22c55e")
+            t.append("type this:  ", style="#f0f0f5")
             if self._dev_ghost_typed < len(self._dev_ghost):
                 t.append(typed, style="bold #fbbf24")
                 t.append(rest, style="#5a5a5a")
@@ -21993,20 +22001,19 @@ class TutorApp(App):
                          if self._dev_ghost_on else "#fbbf24")
                 t.append(typed, style="bold " + color)
             t.append("    ")
-            t.append("type it, then Enter", style="bold #f0f0f5")
+            t.append("then Enter", style="#f0f0f5")
             return t
         typed = self._dev_ghost[:self._dev_ghost_typed]
         rest = self._dev_ghost[self._dev_ghost_typed:]
+        t.append("type this:  ", style="#f0f0f5")
         if self._dev_ghost_typed < len(self._dev_ghost):
             # typing out — the written part is bold + vibrant amber, rest dim ghost
-            t.append("→ ", style="bold #22c55e")
             t.append(typed, style="bold #fbbf24")
             t.append(rest, style="#5a5a5a")
         else:
             # fully typed — bold flashing through the vibrant color wheel
             color = (_GHOST_FLASH[getattr(self, "_dev_ghost_color", 0) % len(_GHOST_FLASH)]
                      if self._dev_ghost_on else "#fbbf24")
-            t.append("→ ", style="bold " + color)
             t.append(typed, style="bold " + color)
         return t
 
@@ -22050,16 +22057,15 @@ class TutorApp(App):
         return _box_lines(_lines_of(t), max_width=term_w, border=False)
 
     def _dev_render_vim(self):
-        """Render a realistic nvim editor: line numbers, tilde on empty lines,
-        a block cursor in NORMAL mode / bar cursor in INSERT, the ':' command
-        line, a real statusline, and a clearly-readable target reference."""
+        """Render a realistic nvim editor. The ONLY colored thing is the target
+        file (what to write) — amber and flashing. Everything else is white."""
         buf = self._dev_vim_buf
         if buf is None:
             return _box_lines([], max_width=self._dev_term_width(), border=False)
         fname = self._dev_lesson()["file"]
         t = Text()
-        # tab line
-        t.append(f" nvim {fname} ", style="bold #0d1117 on #7dd3fc")
+        # tab line (plain white)
+        t.append(f" nvim {fname} ", style="bold #f0f0f5")
         t.append("\n\n")
         # buffer: line numbers + cursor + '~' on empty lines (like real vim)
         n = max(len(buf.lines), 3)
@@ -22084,28 +22090,26 @@ class TutorApp(App):
         # command line (the ':' prompt)
         if buf.mode == "cmd":
             t.append("\n:" + buf.cmd, style="bold #f0f0f5")
-            t.append("█", style="bold #22c55e")
-        # the target file — clearly readable reference
+            t.append("█", style="bold #f0f0f5")
+        # the target file — the ONLY colored thing, amber + flashing
+        on = getattr(self, "_dev_write_blink", False)
         t.append("\n\n")
-        t.append("WRITE THIS FILE:", style="bold #fbbf24")
+        t.append("write this file:", style="bold #f0f0f5")
         t.append("\n")
         for line in buf.target.split("\n"):
-            t.append("  " + line, style="#9aa0ae")
+            t.append("  " + line, style="bold #fbbf24" if on else "#8a7430")
             t.append("\n")
         t.append("\n")
-        # statusline — the real mode indicator, vim style (bottom bar)
+        # statusline — white mode indicator (the cursor already shows mode)
         if buf.mode == "insert":
-            t.append(" -- INSERT -- ", style="bold #0d1117 on #22c55e")
-            t.append(f" {fname}", style="bold #f0f0f5")
-            t.append("   Esc = normal mode", style="dim")
+            mode, hint = "INSERT", "Esc = normal mode"
         elif buf.mode == "normal":
-            t.append(" -- NORMAL -- ", style="bold #0d1117 on #7dd3fc")
-            t.append(f" {fname}", style="bold #f0f0f5")
-            t.append("   i insert · :wq save", style="dim")
+            mode, hint = "NORMAL", "i insert · :wq save"
         else:
-            t.append(" -- CMD -- ", style="bold #0d1117 on #f472b6")
-            t.append(f" {fname}", style="bold #f0f0f5")
-            t.append("   wq = save & quit", style="dim")
+            mode, hint = "CMD", "wq = save & quit"
+        t.append(f" -- {mode} -- ", style="bold #f0f0f5")
+        t.append(f" {fname}", style="bold #f0f0f5")
+        t.append(f"   {hint}", style="#c9cdd6")
         return _box_lines(_lines_of(t), max_width=self._dev_term_width(), border=False)
 
     def _dev_state_snapshot(self):
@@ -22329,16 +22333,19 @@ class TutorApp(App):
             return t
         if self._dev_phase == "write":
             stage = getattr(self, "_dev_write_stage", "touch")
+            on = getattr(self, "_dev_ghost_on", False)
+            color = _GHOST_FLASH[getattr(self, "_dev_ghost_color", 0) % len(_GHOST_FLASH)] if on else "#fbbf24"
+            ans = "bold " + color
             if stage == "touch":
-                t.append("▶  ", style="bold #22c55e")
-                t.append(f"touch {lesson['file']}", style="bold #22c55e")
-                t.append("   create it — then Enter", style="bold #f0f0f5")
+                t.append("type:  ", style="#f0f0f5")
+                t.append(f"touch {lesson['file']}", style=ans)
+                t.append("   then Enter", style="#f0f0f5")
             elif stage == "nvim":
-                t.append("▶  ", style="bold #22c55e")
-                t.append(f"nvim {lesson['file']}", style="bold #22c55e")
-                t.append("   open it — then Enter", style="bold #f0f0f5")
+                t.append("type:  ", style="#f0f0f5")
+                t.append(f"nvim {lesson['file']}", style=ans)
+                t.append("   then Enter", style="#f0f0f5")
             else:
-                t.append("i insert · Esc normal · hjkl move · :wq save & exit", style="bold #d5d5d5")
+                t.append("i insert · Esc normal · hjkl move · :wq save & exit", style="#f0f0f5")
             return t
         t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
