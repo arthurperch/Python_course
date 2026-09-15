@@ -13049,16 +13049,15 @@ class TutorApp(App):
     #volume-icon { width: 9; padding: 1 1; }
     #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
-    #challenge-box { width: 30%; border: tall $accent; display: none; }
+    #challenge-box { width: 100%; height: auto; max-height: 16; border: tall $accent; display: none; }
     #challenge-box.visible { display: block; }
     #challenge { height: auto; min-height: 4; max-height: 12; padding: 1 2; overflow: auto; }
     #goal { height: auto; max-height: 9; padding: 0 1; background: #0d1117; border-bottom: solid $success; overflow: auto; }
     #demo-label { height: 1; padding: 0 2; background: $boost; }
     #demo-editor { height: 7; padding: 1 2; background: #0d1117; border: solid $primary; }
     #demo-console { height: 5; padding: 1 2; background: #000000; border: solid $success; }
-    #editor-box { width: 1fr; border: tall $primary; }
-    #split-drag { width: 1; background: $surface-darken-2; }
-    #split-drag:hover { background: $accent; }
+    #editor-box { width: 100%; height: 1fr; border: tall $primary; }
+    #split-drag { display: none; }
     #task-check { dock: bottom; width: 100%; min-height: 3; }
     #task-step { dock: bottom; width: 100%; min-height: 3; }
     #task-run { dock: bottom; width: 100%; min-height: 2; }
@@ -13173,13 +13172,17 @@ class TutorApp(App):
     #dev-foot { width: 100%; height: auto; margin-top: 1; }
     #dev-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #dev-help.visible { display: block; }
-    #cheat { width: 34%; border: tall $warning; padding: 1 2; display: none; }
+    #cheat { width: 100%; height: auto; max-height: 24; border: tall $warning; padding: 1 2; display: none; }
     #cheat.visible { display: block; }
-    #side-examples { width: 42%; border: tall $warning; padding: 0; }
+    #side-examples { width: 100%; height: auto; max-height: 14; border: tall $warning; padding: 0; }
     #side-examples.hidden { display: none; }
     #side-examples-title { height: 1; padding: 0 2; background: $boost; color: $text; }
-    #side-scroll { height: 1fr; }
+    #side-scroll { height: auto; max-height: 10; }
     #side-inner { height: auto; padding: 1 2; }
+    #examples-box { width: 100%; height: auto; max-height: 18; border: tall #f9a8d4; padding: 0; }
+    #examples-title { height: 1; padding: 0 2; background: $boost; color: $text; }
+    #examples-scroll { height: auto; max-height: 14; }
+    #examples-inner { height: auto; padding: 1 2; }
     #visual { layer: overlay; width: 100%; height: 100%; background: #000000; display: none; }
     #visual.visible { display: block; }
     #cat { layer: overlay; width: 100%; height: 100%; background: #000000; display: none; }
@@ -13583,17 +13586,17 @@ class TutorApp(App):
             yield Checkbox("Key sounds  (typing + blips)", id="set-keys", value=True)
             yield Checkbox("Hints  (underline mistakes)", id="set-hints", value=True)
             yield Static("Esc or click ◉ to close", id="profile-popout-close")
-        # challenge view (hidden until a challenge is selected)
-        with Horizontal(id="body", classes="hidden"):
-            with VerticalScroll(id="challenge-box"):
-                yield Static("[bold]CHALLENGE[/]", id="challenge-label")
-                yield Static("", id="mastery-note")
-                yield Static("", id="task")
-                yield Markdown("", id="challenge")
-                yield Static("", id="goal")
-                yield Static("", id="demo-label")
-                yield Static("", id="demo-editor")
-                yield Static("", id="demo-console")
+        # challenge view (hidden until a challenge is selected) — VERTICAL:
+        # TASK on top, editor full-width in the middle, demo/examples at the bottom
+        with Vertical(id="body", classes="hidden"):
+            with Vertical(id="side-examples"):
+                yield TabLabel("TASK", id="side-examples-title")
+                with VerticalScroll(id="side-scroll"):
+                    yield Static("", id="side-inner")
+                yield Button("✓ COMPLETE", id="task-check", variant="primary")
+                yield Button("▶ RUN", id="task-run", variant="default")
+                yield Button("▶ STEP", id="task-step", variant="default")
+                yield Button("▶ CONTINUE", id="task-continue", variant="success", classes="hidden")
             with VerticalScroll(id="editor-box"):
                 yield Static("", id="editor-label")
                 yield Static("", id="example-ref")
@@ -13604,17 +13607,21 @@ class TutorApp(App):
                 yield Static("", id="output-bar")
                 yield Static("", id="wildmenu")
                 yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
-            yield Static("", id="split-drag")
-            with Vertical(id="side-examples"):
-                yield TabLabel("TASK", id="side-examples-title")
-                with VerticalScroll(id="side-scroll"):
-                    yield Static("", id="side-inner")
+            with Vertical(id="examples-box"):
+                yield TabLabel("EXAMPLES", id="examples-title")
+                with VerticalScroll(id="examples-scroll"):
+                    yield Static("", id="examples-inner")
                     with Vertical(id="ex-lines"):
                         pass
-                yield Button("✓ COMPLETE", id="task-check", variant="primary")
-                yield Button("▶ RUN", id="task-run", variant="default")
-                yield Button("▶ STEP", id="task-step", variant="default")
-                yield Button("▶ CONTINUE", id="task-continue", variant="success", classes="hidden")
+            with VerticalScroll(id="challenge-box"):
+                yield Static("[bold]CHALLENGE[/]", id="challenge-label")
+                yield Static("", id="mastery-note")
+                yield Static("", id="task")
+                yield Markdown("", id="challenge")
+                yield Static("", id="goal")
+                yield Static("", id="demo-label")
+                yield Static("", id="demo-editor")
+                yield Static("", id="demo-console")
             yield Markdown("", id="cheat")
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
@@ -23364,6 +23371,7 @@ class TutorApp(App):
             t.append("\n\n")
             t.append("no hints · no example · build it yourself", style="dim")
             self.query_one("#side-inner", Static).update(t)
+            self.query_one("#examples-inner", Static).update(Text(""))
             container = self.query_one("#ex-lines", Vertical)
             for old in list(container.children):
                 if getattr(old, "id", "").startswith("exline-"):
@@ -23394,12 +23402,16 @@ class TutorApp(App):
             t.append("  • ", style="dim")
             t.append(h, style="#a5b4fc")
             t.append("\n")
-        t.append("\n")
-        t.append("WORKED EXAMPLE — same ideas, different problem",
-                 style="bold #f9a8d4")
-        t.append("\n")
-        t.append("click any line to hear what it does", style="dim")
         self.query_one("#side-inner", Static).update(t)
+
+        # the worked example lives FAR DOWN in its own bottom panel, so a user
+        # only reaches it by scrolling when genuinely stuck
+        ex = Text()
+        ex.append("WORKED EXAMPLE — same ideas, different problem",
+                  style="bold #f9a8d4")
+        ex.append("\n")
+        ex.append("click any line to hear what it does", style="dim")
+        self.query_one("#examples-inner", Static).update(ex)
 
         # clickable example lines (unique ids per render — same-cycle
         # remounts must never collide)
