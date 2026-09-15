@@ -14785,6 +14785,8 @@ class TutorApp(App):
                                        # and wait for Enter before advancing
         self._dev_enter_blink = False # flashing "press Enter" indicator on/off
         self._dev_enter_blink_timer = None
+        self._dev_write_blink = False # flashing Enter/Tab prompt in the write editor
+        self._dev_write_blink_timer = None
         self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
@@ -18338,7 +18340,17 @@ class TutorApp(App):
             self._ghost_nudge_show()
             return
         if self._ghost_structural(self._ghost_pos):
-            # at a newline or indent — press Enter/Tab, not a letter
+            # at a newline or indent — Enter drops a line, Tab indents. A space
+            # here is a harmless slip ("space after the end of the line"), so
+            # accept it: consume the newline/indent instead of nudging.
+            if ch in " \t":
+                if self._ghost_at_newline():
+                    self._ghost_pos += 1
+                    play_key()
+                    self._ghost_render()
+                elif self._ghost_at_indent():
+                    self._ghost_consume_indent()
+                return
             self._ghost_nudge_show()
             return
         p = self._ghost_pos
@@ -20589,12 +20601,14 @@ class TutorApp(App):
         lesson = self._dev_lesson()
         self._dev_chal_done = set()   # reset challenge toolbox progress
         self._dev_explained_tokens = set()   # re-explain command pieces each lesson
+        self._dev_write_blink_stop()
         if lesson["kind"] == "write":
             self._dev_phase = "write"
             self._dev_target = lesson["content"]
             self._dev_pos = 0
             self._dev_explained = set()
             self._dev_errors = {}
+            self._dev_write_prompt_update()
         else:
             self._dev_phase = "run"
             self._dev_target = ""
@@ -20694,6 +20708,66 @@ class TutorApp(App):
         while self._dev_pos < len(self._dev_target) and self._dev_structural(self._dev_pos):
             self._dev_pos += 1
 
+    def _dev_at_newline(self):
+        return (self._dev_pos < len(self._dev_target)
+                and self._dev_target[self._dev_pos] == "\n")
+
+    def _dev_at_indent(self):
+        return (self._dev_pos < len(self._dev_target)
+                and self._dev_target[self._dev_pos] == " "
+                and self._dev_structural(self._dev_pos))
+
+    def _dev_consume_newline(self):
+        if self._dev_at_newline():
+            self._dev_pos += 1
+            play_key()
+            if self._dev_pos >= len(self._dev_target) and not self._dev_errors:
+                self._dev_write_done()
+                return
+            self._dev_render()
+
+    def _dev_consume_indent(self):
+        if self._dev_at_indent():
+            n = 4
+            while (self._dev_pos < len(self._dev_target)
+                   and self._dev_target[self._dev_pos] == " "
+                   and n > 0):
+                self._dev_pos += 1
+                n -= 1
+            play_key()
+            self._dev_render()
+
+    def _dev_write_blink_start(self):
+        self._dev_write_blink = True
+        if self._dev_write_blink_timer is None:
+            self._dev_write_blink_timer = self.set_interval(0.45, self._dev_write_blink_tick)
+
+    def _dev_write_blink_tick(self):
+        if not self._dev_on:
+            return
+        self._dev_write_blink = not self._dev_write_blink
+        try:
+            self.query_one("#dev-out", Static).update(self._dev_render_output())
+        except Exception:
+            pass
+
+    def _dev_write_blink_stop(self):
+        self._dev_write_blink = False
+        if self._dev_write_blink_timer is not None:
+            self._dev_write_blink_timer.stop()
+            self._dev_write_blink_timer = None
+
+    def _dev_write_prompt_update(self):
+        """Start/stop the flashing Enter/Tab prompt depending on whether the
+        cursor is parked on a newline or indent."""
+        want = (self._dev_phase == "write"
+                and not self._dev_won
+                and (self._dev_at_newline() or self._dev_at_indent()))
+        if want and self._dev_write_blink_timer is None:
+            self._dev_write_blink_start()
+        elif not want:
+            self._dev_write_blink_stop()
+
     def _dev_explain_line(self):
         lesson = self._dev_lesson()
         lines = lesson.get("lines", [])
@@ -20722,7 +20796,9 @@ class TutorApp(App):
         key = event.key
         target = self._dev_target
         if key == "enter":
-            if self._dev_pos >= len(target):
+            if self._dev_at_newline():
+                self._dev_consume_newline()
+            elif self._dev_pos >= len(target):
                 if self._dev_errors:
                     self._dev_msg = "almost — fix the red letters, then Enter"
                     self._dev_msg_kind = "hint"
@@ -20731,10 +20807,21 @@ class TutorApp(App):
                 else:
                     self._dev_write_done()
             else:
-                self._dev_msg = "keep going — finish the file, then Enter"
+                self._dev_msg = "keep going — finish the line, then Enter"
                 self._dev_msg_kind = "hint"
                 play_ghost_error()
                 self._dev_render()
+            self._dev_write_prompt_update()
+            return
+        if key == "tab":
+            if self._dev_at_indent():
+                self._dev_consume_indent()
+            else:
+                self._dev_msg = "Tab indents — press it at the start of a line"
+                self._dev_msg_kind = "hint"
+                play_ghost_error()
+                self._dev_render()
+            self._dev_write_prompt_update()
             return
         if key == "backspace":
             if self._dev_pos > 0:
@@ -20744,6 +20831,7 @@ class TutorApp(App):
             # step back onto a char, clear any red error there so it's retyped
             self._dev_errors.pop(self._dev_pos, None)
             self._dev_render()
+            self._dev_write_prompt_update()
             return
         ch = event.character
         if not ch:
@@ -20754,10 +20842,25 @@ class TutorApp(App):
             self._dev_msg_kind = "hint"
             self._dev_render()
             return
+        if self._dev_structural(self._dev_pos):
+            # parked on a newline/indent — Enter drops a line, Tab indents. A
+            # space here is a harmless slip ("space after the end of the line"),
+            # so accept it: consume the newline/indent instead of flagging red.
+            if ch in " \t":
+                if self._dev_at_newline():
+                    self._dev_consume_newline()
+                elif self._dev_at_indent():
+                    self._dev_consume_indent()
+            else:
+                self._dev_msg = "press Enter for a new line, Tab to indent"
+                self._dev_msg_kind = "hint"
+                play_ghost_error()
+                self._dev_render()
+            self._dev_write_prompt_update()
+            return
         if ch == target[self._dev_pos]:
             self._dev_pos += 1
             self._dev_explain_line()
-            self._dev_skip_ws()
             if self._dev_pos >= len(target) and not self._dev_errors:
                 self._dev_write_done()
                 return
@@ -20767,9 +20870,9 @@ class TutorApp(App):
             # (the old behaviour froze you here with a "not quite" dead-end)
             self._dev_errors[self._dev_pos] = ch
             self._dev_pos += 1
-            self._dev_skip_ws()   # don't leave the cursor parked on a newline/indent
             play_ghost_error()
             self._dev_render()
+        self._dev_write_prompt_update()
 
     def _dev_mark_won(self, on_win):
         """A command/file just succeeded. Within a module this flows smoothly to
@@ -20778,6 +20881,7 @@ class TutorApp(App):
         is done, so the learner decides when to start the next session."""
         self._dev_msg = on_win
         self._dev_msg_kind = "win"
+        self._dev_write_blink_stop()
         play_console_result(True)
         # win speech at 2.25x — finish fast so the learner can read the output,
         # then the next lesson's explanations resume at 1.75x
@@ -21111,6 +21215,7 @@ class TutorApp(App):
         self._dev_ghost_stop_timers()
         self._dev_flash_stop()
         self._dev_enter_blink_stop()
+        self._dev_write_blink_stop()
         at = getattr(self, "_dev_auto_timer", None)
         if at is not None:
             at.stop(); self._dev_auto_timer = None
@@ -21340,6 +21445,7 @@ class TutorApp(App):
         target = self._dev_target
         pos = min(self._dev_pos, len(target))
         errors = getattr(self, "_dev_errors", {})
+        on = getattr(self, "_dev_write_blink", False)
         t = Text()
         t.append("✎ ", style="bold #7dd3fc")
         t.append(self._dev_lesson()["file"], style="bold #7dd3fc")
@@ -21348,11 +21454,18 @@ class TutorApp(App):
         for line in target.split("\n"):
             start = offset
             end = start + len(line)
-            if pos < start:
-                # cursor hasn't reached this line yet — whole line is a dim ghost
+            if pos == end and end < len(target):
+                # cursor parked on this line's newline — flash a "press Enter"
+                for j in range(start, end):
+                    if j in errors:
+                        t.append(errors[j], style="bold underline #ff5555")
+                    else:
+                        t.append(target[j], style="#f0f0f5")
+                t.append(" ⏎", style="reverse bold" if on else "bold #22c55e")
+                t.append(" Enter", style="dim")
+            elif pos < start:
                 t.append(line, style="#5a5a5a")
             else:
-                # committed chars, with any wrong ones flagged red + underlined
                 upto = min(pos, end)
                 for j in range(start, upto):
                     if j in errors:
@@ -21360,9 +21473,13 @@ class TutorApp(App):
                     else:
                         t.append(target[j], style="#f0f0f5")
                 if pos < end:
-                    # the cursor sits on this line — show the next char to type
-                    t.append(target[pos], style="reverse bold")
-                    t.append(target[pos + 1:end], style="#5a5a5a")
+                    if self._dev_structural(pos):
+                        # leading indent — flash a "press Tab"
+                        t.append("⇥", style="reverse bold" if on else "bold #22c55e")
+                        t.append(" Tab", style="dim")
+                    else:
+                        t.append(target[pos], style="reverse bold")
+                        t.append(target[pos + 1:end], style="#5a5a5a")
             t.append("\n")
             offset = end + 1
         return _box_lines(_lines_of(t), max_width=self._dev_term_width(), border=False)
@@ -21584,7 +21701,7 @@ class TutorApp(App):
             t.append(" · Esc exits · [?] manual", style="dim")
             return t
         if self._dev_phase == "write":
-            t.append("type the file (follow the ghost) · Enter when done · Esc exits", style="dim")
+            t.append("type the file · Enter new line · Tab indent · space slips are ok · Esc exits", style="dim")
             return t
         t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
