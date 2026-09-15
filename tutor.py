@@ -5418,8 +5418,8 @@ class LabGroupHeader(Static):
     """A collapsible group header in the Lab list. Click to expand/collapse the
     group's examples (▾ open / ▸ closed)."""
 
-    def __init__(self, group_id: int, name: str, count: int):
-        super().__init__(id=f"labgrp-{group_id}")
+    def __init__(self, group_id: int, name: str, count: int, widget_id: int | None = None):
+        super().__init__(id=f"labgrp-{group_id if widget_id is None else widget_id}")
         self.group_id = group_id
         self.group_name = name
         self.count = count
@@ -14096,6 +14096,18 @@ class BackButton(Static):
         self.app.action_back()
 
 
+class GateOverlay(Static):
+    """The full-screen 'dive in' gate. Clicking ANYWHERE = Enter (dive in), so
+    the mouse can't get stuck behind it — the run/submit buttons underneath are
+    reachable the moment it's dismissed."""
+
+    can_focus = True
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._enter_editor()
+
+
 class TutorApp(App):
     CSS = """
     Screen { background: #000000; }
@@ -14439,6 +14451,10 @@ class TutorApp(App):
         self._lab_menu_toggles = []    # LabToggle widgets in the menu Lab
         self._lab_menu_headers = []    # LabGroupHeader widgets (collapsible groups)
         self._lab_toggles = []         # LabToggle widgets (checkbox example blocks)
+        self._lab_toggle_seq = 0       # monotonic ID counter — Widget.remove() is
+                                       # async in Textual 8.x, so re-mounting the same
+                                       # `labtg-N` id before the prune lands crashes with
+                                       # DuplicateIds; fresh ids dodge that entirely
         self._split_focus = "left"     # which pane is active: "left" (test) | "right" (lab)
         self._out_drag_start_y = 0
         self._out_drag_start_h = 10
@@ -14781,7 +14797,7 @@ class TutorApp(App):
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
         yield Static("", id="lesson")
-        yield Static("", id="gate")
+        yield GateOverlay("", id="gate")
         yield Static("", id="map")
         yield Static("", id="jump")
         with GhostWriter(id="ghost"):
@@ -16138,10 +16154,6 @@ class TutorApp(App):
         if event.button.id == "ghost-exit-btn":
             self._ghost_exit_ask()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "name-input":
-            self._save_name()
-
     # ---- settings checkboxes (menu) ------------------------------------- #
 
     def _sync_settings_checkboxes(self):
@@ -16985,11 +16997,13 @@ class TutorApp(App):
             except Exception:
                 pass
         self._lab_toggles = []
+        base = self._lab_toggle_seq
         for i, (cap, code) in enumerate(self._lab_examples(c)):
             out = self._lab_output(code, c.get("stdin", ""))
-            tg = LabToggle(i, cap, out, code)
+            tg = LabToggle(base + i, cap, out, code)
             items.mount(tg)
             self._lab_toggles.append(tg)
+        self._lab_toggle_seq = base + len(self._lab_toggles)
         self.query_one("#lab-output", Static).update("")
         self._render_lab_tabs()
         self._apply_split_focus()
@@ -17069,19 +17083,21 @@ class TutorApp(App):
                 pass
         self._lab_menu_toggles = []
         self._lab_menu_headers = []
+        base = self._lab_toggle_seq
         examples = self._all_lab_examples()
         for gi, (gname, exlist) in enumerate(examples):
-            hdr = LabGroupHeader(gi, gname, len(exlist))
+            hdr = LabGroupHeader(gi, gname, len(exlist), widget_id=base + gi)
             items.mount(hdr)
             self._lab_menu_headers.append(hdr)
             for i, (cap, code) in enumerate(exlist):
                 out = self._lab_output(code, "")
-                tg = LabToggle(len(self._lab_menu_toggles), cap, out, code,
+                tg = LabToggle(base + len(self._lab_menu_toggles), cap, out, code,
                                editor_id="#lab-menu-editor", id_prefix="mlabtg")
                 tg.group_id = gi
                 tg.set_class(i % 2 == 1, "zebra")   # alternating background shade
                 items.mount(tg)
                 self._lab_menu_toggles.append(tg)
+        self._lab_toggle_seq = base + len(self._lab_menu_toggles) + len(examples)
         # preload the first example so the left editor isn't empty
         if self._lab_menu_toggles:
             self._lab_menu_toggles[0].checked = True
@@ -17261,12 +17277,14 @@ class TutorApp(App):
             except Exception:
                 pass
         self._ghost_lab_toggles = []
+        base = self._lab_toggle_seq
         for i, (cap, code) in enumerate(self._lab_examples(c)):
             out = self._lab_output(code, c.get("stdin", ""))
-            tg = LabToggle(i, cap, out, code, editor_id="#ghost-lab-editor",
+            tg = LabToggle(base + i, cap, out, code, editor_id="#ghost-lab-editor",
                            id_prefix="glabtg")
             items.mount(tg)
             self._ghost_lab_toggles.append(tg)
+        self._lab_toggle_seq = base + len(self._ghost_lab_toggles)
         try:
             self.query_one("#ghost-lab-output", Static).update("")
         except Exception:
@@ -24819,7 +24837,7 @@ class TutorApp(App):
         play_key()
         self._flash_cmd()
         # pop the wildmenu right away (all commands), like nvim `:`
-        self._wm_index = 0
+        self._wm_index = -1
         self._update_wildmenu()
         self.query_one("#guide", Static).update(
             "[yellow]→ press Tab to cycle the commands, then Enter.  :run = just run   :submit = check[/]")
@@ -24839,8 +24857,9 @@ class TutorApp(App):
         if event.value:
             play_key()
             self._flash_cmd()
-        # re-filter the wildmenu on every keystroke (first match highlighted)
-        self._wm_index = 0
+        # re-filter the wildmenu on every keystroke (no pre-selected match, so
+        # the first Tab lands on the FIRST command instead of skipping it)
+        self._wm_index = -1
         self._update_wildmenu()
 
     def _flash_cmd(self):
@@ -24899,6 +24918,9 @@ class TutorApp(App):
             pass
 
     def on_input_submitted(self, event: Input.Submitted):
+        if event.input.id == "name-input":
+            self._save_name()
+            return
         if event.input.id != "cmd":
             return
         raw = event.value.strip()
