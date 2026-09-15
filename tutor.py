@@ -3813,19 +3813,27 @@ _GHOST_FLASH = ["#fbbf24", "#f97316", "#fb7185", "#c084fc", "#22d3ee"]
 # flags, orange strings, blue numbers, light arguments.
 def _colorize_command(cmd: str) -> Text:
     t = Text()
-    for i, w in enumerate(cmd.split()):
-        if i:
-            t.append(" ")
-        if i == 0:
-            t.append(w, style="bold #7ee787")        # command name — green
-        elif w.startswith("-"):
-            t.append(w, style="#ffd866")             # flag / option — yellow
-        elif '"' in w or "'" in w:
-            t.append(w, style="#ffa657")             # (part of a) string — orange
-        elif w.isdigit():
-            t.append(w, style="#79c0ff")             # number — blue
+    # Split on whitespace but KEEP the spaces (re.split with a capture group).
+    # Using .split() here dropped every space, so a trailing space made the
+    # cursor look frozen — typing a space must visibly move the cursor.
+    token_idx = 0
+    for part in re.split(r"(\s+)", cmd):
+        if not part:
+            continue
+        if part.isspace():
+            t.append(part)                         # keep the space (cursor position)
+            continue
+        if token_idx == 0:
+            t.append(part, style="bold #7ee787")   # command name — green
+        elif part.startswith("-"):
+            t.append(part, style="#ffd866")        # flag / option — yellow
+        elif '"' in part or "'" in part:
+            t.append(part, style="#ffa657")        # (part of a) string — orange
+        elif part.isdigit():
+            t.append(part, style="#79c0ff")        # number — blue
         else:
-            t.append(w, style="#e6edf3")             # argument — light
+            t.append(part, style="#e6edf3")        # argument — light
+        token_idx += 1
     return t
 
 
@@ -21060,7 +21068,7 @@ class TutorApp(App):
                 t.append("\n")
             t.append("\n")
             t.append(self._dev_prompt() + " ", style="bold #86efac")
-            t.append("▍", style="bold #22c55e")
+            t.append("█", style="bold #22c55e")
             return _box_lines(_lines_of(t), max_width=term_w)
         for kind, text in self._dev_history[-18:]:
             if kind == "cmd":
@@ -21074,7 +21082,7 @@ class TutorApp(App):
             t.append("\n")
         t.append(self._dev_prompt() + " ", style="bold #86efac")
         t.append_text(_colorize_command(self._dev_cmd))
-        t.append("▍", style="bold #22c55e")
+        t.append("█", style="bold #22c55e")
         return _box_lines(_lines_of(t), max_width=term_w)
 
     def _dev_render_editor(self):
