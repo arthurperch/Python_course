@@ -3407,6 +3407,29 @@ def _line_need(line: str) -> list[str]:
     return toks
 
 
+def _reflow_output(text: str, width: int = 60, min_lines: int = 6) -> str:
+    """Reflow a long vertical list of short values (numbers printed one per
+    line) into a horizontal grid, so output fills the row and wraps DOWN instead
+    of spilling off the bottom of a short console. Prose and long lines pass
+    through untouched."""
+    lines = text.split("\n")
+    if len(lines) < min_lines:
+        return text
+    if max((len(l) for l in lines), default=0) > 16:
+        return text
+    width = max(24, width)
+    cols = max(1, width // 8)          # ~8 cells per value
+    out_lines, row = [], []
+    for ln in lines:
+        row.append(ln)
+        if len(row) >= cols:
+            out_lines.append("  ".join(v.ljust(6) for v in row))
+            row = []
+    if row:
+        out_lines.append("  ".join(v.ljust(6) for v in row))
+    return "\n".join(out_lines)
+
+
 def _line_cue(line: str) -> str:
     """A short phrase describing what a code line does, for the writing voice."""
     line = line.strip()
@@ -3745,26 +3768,25 @@ except Exception:
 
 if _TIImage is not None:
     class HintImage(_TIImage, Renderable=_TIRenderable):
-        """The 'show code' hint button — the REAL circled meme image (terminal
-        graphics protocol), clickable, rounded border."""
-
-        def on_click(self, event):
-            event.stop()
-            app = self.app
-            if getattr(app, "_ghost_on", False) and getattr(app, "_ghost_fade", False):
-                app._ghost_start_reveal()
+        """Kept only for the compose signature; no longer used as an image."""
+        pass
 else:
     class HintImage(Static):
-        """Fallback hint button: pixel art when the image widget is absent."""
+        pass
 
-        def __init__(self, image=None, **kw):
-            super().__init__(_hint_image_text() or "◉", **kw)
 
-        def on_click(self, event):
-            event.stop()
-            app = self.app
-            if getattr(app, "_ghost_on", False) and getattr(app, "_ghost_fade", False):
-                app._ghost_start_reveal()
+class SyntaxHint(Static):
+    """A text 'Syntax Hint' button — click for the RECIPE (how many prints /
+    strings / numbers the code needs), never the full answer."""
+
+    def __init__(self, **kw):
+        super().__init__("Syntax Hint", **kw)
+
+    def on_click(self, event):
+        event.stop()
+        app = self.app
+        if getattr(app, "_ghost_on", False):
+            app._ghost_recipe_hint()
 
 
 def play_ghost_error() -> None:
@@ -13098,7 +13120,8 @@ class TutorApp(App):
     #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
     #ghost-foot-row { height: 5; padding: 0 1; }
     #ghost-foot { width: 1fr; height: auto; min-height: 1; padding: 1 1 0 1; }
-    #hint-img { width: 10; height: 5; border: round #cba6f7; }
+    #syntax-hint { width: 15; height: 3; border: round #cba6f7; color: #cba6f7; text-align: center; padding: 0 1; background: $boost; }
+    #syntax-hint:hover { background: $surface; color: $text; }
     #vim { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #vim.visible { display: block; }
     #vim-head { width: 100%; text-align: center; }
@@ -13344,6 +13367,7 @@ class TutorApp(App):
         self._ghost_fill_hint_said = False   # TTS recommendation spoken once
         self._ghost_goal_out = ""            # expected output, shown during fade/blind
         self._ghost_used_hint = False       # true once the user peeked at the answer
+        self._ghost_recipe_text = ""        # the 'Syntax Hint' recipe line (clears on type)
         self._ghost_mastery_streak = 0      # clean blind completions in a row
         self._ghost_shake_cool = False      # cooldown gate on the error shake
         self._ghost_a_code = None           # side A code (stashed for the split view)
@@ -13614,7 +13638,7 @@ class TutorApp(App):
                 yield Static("", id="ghost-why")
             yield Static("", id="ghost-console")
             with Horizontal(id="ghost-foot-row"):
-                yield HintImage(_hint_image_path(), id="hint-img")
+                yield SyntaxHint(id="syntax-hint")
                 yield Static("", id="ghost-foot")
         yield Static("", id="ghost-exit-popup")
         with VimTrainer(id="vim"):
@@ -16040,6 +16064,7 @@ class TutorApp(App):
         self._ghost_silhouette_fails = 0
         self._ghost_silhouette_help = False
         self._ghost_used_hint = False                 # fresh per step
+        self._ghost_recipe_text = ""                  # fresh recipe hint per step
         self._ghost_reveal = 0
         if self._ghost_reveal_timer:
             self._ghost_reveal_timer.stop()
@@ -16353,6 +16378,7 @@ class TutorApp(App):
     def _ghost_type(self, ch):
         if self._ghost_phase != "type" or self._ghost_done:
             return
+        self._ghost_recipe_text = ""   # the recipe hint fades once you keep typing
         if self._ghost_pos >= len(self._ghost_target):
             # fully typed but red letters remain — nothing left to type, go fix
             self._ghost_nudge_show()
@@ -16913,8 +16939,11 @@ class TutorApp(App):
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
             foot = "Esc quit · " + foot
-        # the "show code" hint: the text label sits next to the real image button
-        if self._ghost_fade:
+        # the "Syntax Hint" recipe: shows WHAT the code needs (counts), never
+        # the answer. It clears as soon as the user keeps typing.
+        if self._ghost_recipe_text:
+            foot = Text(self._ghost_recipe_text, style="bold #a78bfa")
+        elif self._ghost_fade:
             flick = self._ghost_blink_on
             if self._ghost_reveal > 0:
                 f = Text()
@@ -16925,7 +16954,7 @@ class TutorApp(App):
                 foot = Text("hint used", style="dim")
             else:
                 b = Text()
-                b.append("click the image → show code for 3s",
+                b.append("click Syntax Hint → what this code needs",
                          style="bold #cba6f7" if flick else "#6d5c9e")
                 foot = b
         # render each region into its OWN widget, so the code box can shake on
@@ -16936,9 +16965,9 @@ class TutorApp(App):
         self.query_one("#ghost-console", Static).update(
             console if console.cell_len else Text(""))
         self.query_one("#ghost-foot", Static).update(foot)
-        # the hint image button only shows during fade recall
+        # the Syntax Hint button shows in every recall mode (fade/silhouette/blind)
         self.query_one("#ghost-foot-row", Horizontal).display = (
-            "block" if self._ghost_fade else "none")
+            "block" if self._ghost_mode in ("fade", "silhouette", "blind") else "none")
 
     def _ghost_mode_status(self):
         """(mode, color) for the vim chrome — INSERT while typing, NORMAL the
@@ -17170,6 +17199,41 @@ class TutorApp(App):
         b = int(0xd4 - (0xd4 - 0x2e) * t)
         return f"#{r:02x}{g:02x}{b:02x}"
 
+    def _ghost_recipe(self) -> list[str]:
+        """Count what the target code needs — prints, strings, numbers, and the
+        keywords — the 'recipe' the user can aim for without the full answer."""
+        code = self._ghost_target
+        parts = []
+        n_print = len(re.findall(r"\bprint\s*\(", code))
+        if n_print:
+            parts.append(f"{n_print} print")
+        n_str = len(re.findall(r'"[^"]*"|\'[^\']*\'', code))
+        if n_str:
+            parts.append(f"{n_str} string")
+        n_num = len(re.findall(r"\b\d+\b", code))
+        if n_num:
+            parts.append(f"{n_num} number")
+        kws = [kw for kw in ("def", "if", "elif", "else", "for", "while",
+                             "return", "class", "import", "lambda", "yield",
+                             "with", "in", "range", "input", "len")
+               if re.search(rf"\b{kw}\b", code)]
+        if kws:
+            parts.append(" + ".join(kws))
+        return parts
+
+    def _ghost_recipe_hint(self):
+        """Show the recipe (a set of counts) + speak it — syntax help that
+        says WHAT is needed, never the answer itself."""
+        parts = self._ghost_recipe()
+        if not parts:
+            self._ghost_recipe_text = "Just one plain line of code."
+        else:
+            self._ghost_recipe_text = "You need: " + " · ".join(parts)
+        play_hint()
+        if self.voice_on:
+            speak("Here's your recipe. " + self._ghost_recipe_text)
+        self._ghost_render()
+
     def _ghost_start_reveal(self):
         """'show code' hint — reveal the answer in purple for 3 seconds with a
         countdown and a sound, then hide it. ONE hint per hidden action; after
@@ -17348,10 +17412,20 @@ class TutorApp(App):
                 return Text("type a value first — then Enter to run", style="bold yellow")
             return Text("type any value into the blank · Enter to run", style="dim")
         if self._ghost_phase == "type":
-            # recall modes show the EXPECTED output as the goal to plan against
-            if self._ghost_goal_out and self._ghost_mode in ("fade", "blind"):
+            # recall modes show the REQUIRED OUTPUT as the goal to plan against,
+            # plus the RULES (the syntax this challenge needs) and a per-line
+            # hint — so the user knows WHAT to aim for without being handed it.
+            if self._ghost_mode in ("fade", "silhouette", "blind"):
                 g = Text("GOAL OUTPUT:  ", style="bold #7dd3fc")
-                g.append(self._ghost_goal_out, style="bold #facc15")
+                g.append(self._ghost_goal_out or "(prints nothing)", style="bold #facc15")
+                # the RULES — the syntax tokens this challenge requires
+                try:
+                    cneed = self._current().get("need", []) or []
+                except Exception:
+                    cneed = []
+                if cneed:
+                    g.append("\nRULES:  ", style="bold #a78bfa")
+                    g.append("  ".join(f"`{t}`" for t in cneed), style="#e6e6f0")
                 # per-line hint: what syntax the current line needs
                 need = _line_need(self._ghost_current_line())
                 if need:
@@ -17382,7 +17456,8 @@ class TutorApp(App):
                 out.append_text(rl)
             return out
         out = Text()
-        for i, line in enumerate(self._ghost_out_text.split("\n")):
+        reflowed = _reflow_output(self._ghost_out_text, width=self.size.width)
+        for i, line in enumerate(reflowed.split("\n")):
             if i:
                 out.append("\n")
             out.append(line, style="bold green")
