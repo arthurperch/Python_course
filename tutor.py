@@ -9794,8 +9794,9 @@ DEV_LESSONS = [
      "lines": [
          ("@dataclass(frozen=True)", "frozen = read-only after creation — nobody can quietly mutate config"),
          ("class Config:", "the settings class"),
-         ("host: str / port: int", "typed fields"),
-         ("cfg = Config(...)", "build it once, and it's locked"),
+         ("host: str", "typed field — a string"),
+         ("port: int", "typed field — an integer"),
+         ("cfg = Config(", "build it once, and it's locked"),
      ],
      "say": "Type out a frozen dataclass for settings.",
      "why": "frozen=True makes a dataclass immutable. Config that can't be silently changed mid-run is one less class of bug to chase in production.",
@@ -9811,9 +9812,9 @@ DEV_LESSONS = [
      "content": "FROM python:3.11 AS builder\nWORKDIR /build\nCOPY . .\nRUN pip install --no-cache-dir -r requirements.txt\n\nFROM python:3.11-slim\nWORKDIR /app\nCOPY --from=builder /build /app\nCMD [\"python3\", \"/app/app.py\"]\n",
      "lines": [
          ("FROM python:3.11 AS builder", "stage 1: the full builder image with everything needed to compile"),
-         ("RUN pip install ...", "install deps in the builder, not the final image"),
+         ("RUN pip install", "install deps in the builder, not the final image"),
          ("FROM python:3.11-slim", "stage 2: a tiny runtime image"),
-         ("COPY --from=builder ...", "copy only the finished app out of the builder"),
+         ("COPY --from=builder", "copy only the finished app out of the builder"),
          ("CMD", "run the app"),
      ],
      "say": "Type out a multi-stage Dockerfile — a builder stage, then a slim runtime stage.",
@@ -9849,8 +9850,8 @@ DEV_LESSONS = [
      "content": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:GetObject\"],\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}\n",
      "lines": [
          ("\"Effect\": \"Allow\"", "the policy grants access"),
-         ("\"Action\": [\"s3:GetObject\"]", "ONE action — only reading one object, nothing else"),
-         ("\"Resource\": ...my-bucket/*", "scoped to a single bucket, not everything"),
+         ("s3:GetObject", "ONE action — only reading one object, nothing else"),
+         ("arn:aws:s3:::my-bucket/*", "scoped to a single bucket, not everything"),
      ],
      "say": "Type out a least-privilege policy that grants exactly one permission.",
      "why": "Least privilege: grant only the exact action on the exact resource, nothing more. A leaked token then can only read one bucket — not delete everything.",
@@ -9859,6 +9860,168 @@ DEV_LESSONS = [
     {"module": "Visibility & Security", "kind": "info", "title": "secrets stay secret",
      "say": "Never put passwords or keys in code or git. They go in a secret store, injected at runtime as environment variables.",
      "why": "A secret in git is a secret leaked forever. Secret managers + env vars keep credentials out of the repo and rotating cleanly."},
+
+    # ==== GPU CLUSTER LAB · real datacenter hardware ======================
+    {"module": "GPU Cluster Lab", "kind": "info", "title": "gpus in the datacenter",
+     "say": "Welcome to the deep end. In a real datacenter, machine learning runs on specialized cards: the NVIDIA H100 is today's flagship (one card, 80GB of memory, costs more than a car), the A100 was its predecessor, the L40S and L4 handle inference, and the humble T4 runs small jobs. You'll provision a cluster of them and run real training.",
+     "why": "Every serious ML workload lives on these cards. Knowing the names — H100, A100, L40S, L4, T4 — and what each is for is table stakes for a senior engineer. H100 = massive training runs, L4 = cheap inference, T4 = dev and small jobs."},
+
+    {"module": "GPU Cluster Lab", "kind": "run", "title": "see the gpus",
+     "expect": ["nvidia-smi"], "cmd_hint": "nvidia-smi",
+     "say": "Check what GPUs this machine has, with the nvidia-smi command.",
+     "why": "nvidia-smi is the GPU equivalent of 'top'. It lists every card, its memory, and its temperature. It's the first thing you run when you suspect a GPU problem.",
+     "on_win": "Four NVIDIA H100 cards, each 80GB. That's a serious machine."},
+
+    {"module": "GPU Cluster Lab", "kind": "write", "title": "provision the cluster",
+     "file": "main.tf",
+     "content": "resource \"aws_instance\" \"gpu_node\" {\n  count         = 4\n  instance_type = \"p5.48xlarge\"\n  ami           = \"ami-0h100cuda\"\n  tags = {\n    Name = \"gpu-node-${count.index}\"\n    Role = \"training\"\n  }\n}\n\noutput \"gpu_cluster_ips\" {\n  value = aws_instance.gpu_node[*].public_ip\n}\n",
+     "lines": [
+         ("resource \"aws_instance\" \"gpu_node\"", "the instance resource — Terraform's building block for a server"),
+         ("count", "build FOUR of them — a cluster, not one machine"),
+         ("instance_type = \"p5.48xlarge\"", "p5 = the AWS instance family with 8x H100 GPUs"),
+         ("gpu-node-${count.index}", "each node gets a numbered name using interpolation"),
+         ("output \"gpu_cluster_ips\"", "print the cluster's IPs when you apply"),
+     ],
+     "say": "Type out the Terraform that spins up a four-node GPU cluster of H100s.",
+     "why": "You never click a GPU cluster into existence in the console — you DECLARE it in Terraform. count=4 makes four identical nodes; p5.48xlarge is a real AWS instance with eight H100 cards.",
+     "on_win": "Four H100 nodes declared as code. Infrastructure you can review, version, and re-create."},
+
+    {"module": "GPU Cluster Lab", "kind": "run", "title": "apply the plan",
+     "verify": lambda c: c.startswith("terraform apply"),
+     "cmd_hint": "terraform apply -auto-approve",
+     "say": "Apply the Terraform to actually create the cluster.",
+     "why": "terraform apply reads main.tf and makes reality match it. Four p5.48xlarge instances — hundreds of thousands of dollars of hardware — spun up from one file.",
+     "on_win": "Cluster is up. Four H100 nodes, ready for training."},
+
+    {"module": "GPU Cluster Lab", "kind": "run", "title": "list the fleet",
+     "expect": ["terraform output"], "cmd_hint": "terraform output",
+     "say": "Show the cluster's IP addresses.",
+     "why": "terraform output prints the values you declared — here, the public IPs of every GPU node. This is your inventory.",
+     "on_win": "There's your fleet: four IPs, one per H100 node."},
+
+    # ==== TRAINING AUTOMATION · run a real job ============================
+    {"module": "Training Automation", "kind": "info", "title": "train at scale",
+     "say": "A single GPU can take weeks to train a big model. A cluster of H100s does it in hours by splitting the work. Your job: write clean training code, then hand it to the cluster to run.",
+     "why": "The code doesn't change much — the SCHEDULING does. You write a script, then a job file tells the cluster how many GPUs to give it. That split — code vs. resources — is how serious training is done."},
+
+    {"module": "Training Automation", "kind": "write", "title": "clean training script",
+     "file": "train.py",
+     "content": "import torch\nfrom torch import nn\n\ndevice = \"cuda\" if torch.cuda.is_available() else \"cpu\"\nprint(f\"training on {device}\")\n\nmodel = nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, 1))\nmodel.to(device)\n\nx = torch.randn(64, 8, device=device)\ny = model(x)\nprint(\"forward pass ok\", y.shape)\n",
+     "lines": [
+         ("import torch", "PyTorch — the framework that talks to the GPUs"),
+         ("torch.cuda.is_available()", "use the GPU if it's there, gracefully fall back to CPU"),
+         ("model = nn.Sequential", "a tiny two-layer network, moved onto the GPU"),
+         ("torch.randn(64, 8", "random input, already on the right device"),
+         ("y = model(x)", "one forward pass — proof the setup works"),
+     ],
+     "say": "Type out a clean training script that detects and uses the GPU.",
+     "why": "Senior code is defensive: it checks cuda.is_available() before assuming a GPU, and keeps data and model on the SAME device. This exact pattern is in every real training repo.",
+     "on_win": "Clean training code. GPU-aware, with a graceful CPU fallback."},
+
+    {"module": "Training Automation", "kind": "write", "title": "submit the job",
+     "file": "job.slurm",
+     "content": "#!/bin/bash\n#SBATCH --job-name=train\n#SBATCH --nodes=1\n#SBATCH --gpus=8\n#SBATCH --time=01:00:00\n\nsrun python3 train.py\n",
+     "lines": [
+         ("#SBATCH --gpus=8", "ask the scheduler for all 8 H100s on one node"),
+         ("#SBATCH --time=01:00:00", "a hard one-hour cap — never let a job run forever"),
+         ("srun python3 train.py", "launch the script across the allocated GPUs"),
+     ],
+     "say": "Type out the Slurm job file that requests 8 GPUs for your training.",
+     "why": "Slurm is the cluster's job queue. The #SBATCH lines are REQUESTS — how many nodes, how many GPUs, how long. The scheduler grants them and runs your script. Time limits protect the cluster from runaway jobs.",
+     "on_win": "Job file written. It asks for 8 H100s and caps itself at one hour."},
+
+    {"module": "Training Automation", "kind": "run", "title": "launch the run",
+     "expect": ["sbatch job.slurm"], "cmd_hint": "sbatch job.slurm",
+     "say": "Submit the job to the scheduler.",
+     "why": "sbatch hands your job to Slurm, which queues it until 8 GPUs free up, then runs it. You don't babysit it — you submit and walk away.",
+     "on_win": "Job 4281 submitted. The cluster is now training."},
+
+    {"module": "Training Automation", "kind": "run", "title": "watch the gpus",
+     "expect": ["squeue"], "cmd_hint": "squeue",
+     "say": "Check the queue to see your job running.",
+     "why": "squeue lists every job in the queue with its state. Your job should show R for running — that's the moment the GPUs lit up.",
+     "on_win": "Job 4281 is RUNNING, pinned to all 8 H100s."},
+
+    # ==== MODEL SERVING · deploy for inference ============================
+    {"module": "Model Serving", "kind": "info", "title": "serve the model",
+     "say": "Training is half the job. Now the model has to answer requests in production — fast, on a GPU, behind a load balancer. That's serving.",
+     "why": "A trained model earns its keep at inference time, answering thousands of requests a second. Serving is about latency (how fast one answer is) and throughput (how many at once)."},
+
+    {"module": "Model Serving", "kind": "write", "title": "serving dockerfile",
+     "file": "Dockerfile",
+     "content": "FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\nCOPY model.py .\nCMD [\"python3\", \"model.py\"]\n",
+     "lines": [
+         ("FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04", "a base image with CUDA + GPU drivers built in"),
+         ("COPY requirements.txt .", "copy deps first — Docker caches this layer"),
+         ("RUN pip install", "install dependencies"),
+         ("COPY model.py .", "then your model code"),
+     ],
+     "say": "Type out the Dockerfile for serving the model on a GPU.",
+     "why": "Serving needs a GPU base image (nvidia/cuda), not a plain Python one. Copying requirements first means Docker caches the pip layer, so rebuilds are fast.",
+     "on_win": "Serving image defined. It'll boot straight onto a GPU."},
+
+    {"module": "Model Serving", "kind": "write", "title": "kubernetes deployment",
+     "file": "deploy.yaml",
+     "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: model-serve\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: model-serve\n  template:\n    metadata:\n      labels:\n        app: model-serve\n    spec:\n      containers:\n        - name: serve\n          image: model:v1\n          resources:\n            limits:\n              nvidia.com/gpu: 1\n",
+     "lines": [
+         ("replicas: 3", "three copies — load balanced and redundant"),
+         ("image: model:v1", "the serving image you just built"),
+         ("nvidia.com/gpu: 1", "each pod requests exactly one GPU — no more, no less"),
+     ],
+     "say": "Type out the Kubernetes deployment for three GPU-backed replicas.",
+     "why": "Kubernetes keeps three replicas running and load-balances traffic. The nvidia.com/gpu: 1 limit pins each pod to one GPU, so the scheduler places them only on nodes that have a free card.",
+     "on_win": "Deployment declared. Three replicas, one GPU each."},
+
+    {"module": "Model Serving", "kind": "run", "title": "deploy it",
+     "verify": lambda c: c.startswith("kubectl apply") and "-f" in c,
+     "cmd_hint": "kubectl apply -f deploy.yaml",
+     "say": "Apply the deployment to the cluster.",
+     "why": "kubectl apply makes the cluster match deploy.yaml. It'll pull the image, request GPUs, and schedule three pods.",
+     "on_win": "Deployed. The cluster is pulling the image and allocating GPUs."},
+
+    {"module": "Model Serving", "kind": "run", "title": "test the endpoint",
+     "expect": ["kubectl get pods"], "cmd_hint": "kubectl get pods",
+     "say": "Check that the serving pods are up.",
+     "why": "kubectl get pods shows your three replicas. When they're all 1/1 Running, your model is serving.",
+     "on_win": "Three model-serve pods, 1/1 Running. Live inference, load balanced."},
+
+    # ==== FLEET AUTOMATION · senior one-command ops ======================
+    {"module": "Fleet Automation", "kind": "info", "title": "automate the fleet",
+     "say": "A senior engineer never does the same setup by hand twice. One command should bring a whole fleet up, and one command should tear it down. That's automation.",
+     "why": "Reproducibility is the senior superpower. If setup lives in code, anyone can re-create the exact environment — and tearing down a broken one is instant. Manual steps are bugs waiting to happen."},
+
+    {"module": "Fleet Automation", "kind": "write", "title": "configure the nodes",
+     "file": "fleet.yml",
+     "content": "- name: configure the gpu fleet\n  hosts: gpu_nodes\n  become: yes\n  tasks:\n    - name: install the nvidia driver\n      apt:\n        name: nvidia-driver-535\n    - name: pull the training image\n      docker_image:\n        name: trainer:latest\n        source: pull\n",
+     "lines": [
+         ("hosts: gpu_nodes", "run against every GPU node in the inventory"),
+         ("become: yes", "escalate to root — installing drivers needs it"),
+         ("nvidia-driver-535", "install the GPU driver on every node"),
+         ("source: pull", "pre-pull the training image so jobs start instantly"),
+     ],
+     "say": "Type out the Ansible playbook that configures every node in the fleet.",
+     "why": "Ansible runs the same tasks against every host in gpu_nodes — idempotently. Run it once or a hundred times; the fleet ends up identical. That's configuration management.",
+     "on_win": "Fleet playbook written. Every node gets the driver and the image."},
+
+    {"module": "Fleet Automation", "kind": "write", "title": "one command, up and down",
+     "file": "Makefile",
+     "content": ".PHONY: up down\n\nup:\n\tterraform apply -auto-approve\n\n\tdown:\n\tterraform destroy -auto-approve\n",
+     "lines": [
+         ("up:", "the target that spins everything up"),
+         ("terraform apply -auto-approve", "create the cluster from main.tf"),
+         ("down:", "the target that tears it all down"),
+         ("terraform destroy -auto-approve", "destroy the cluster — you only pay for what's running"),
+     ],
+     "say": "Type out a Makefile so the whole environment is one command up, one command down.",
+     "why": "A Makefile wraps the long commands behind short targets. make up and make down turn a ten-step process into muscle memory — and make down is how you don't get a surprise cloud bill.",
+     "on_win": "Makefile written. make up / make down is the whole environment."},
+
+    {"module": "Fleet Automation", "kind": "run", "title": "run the playbook",
+     "verify": lambda c: c.startswith("ansible-playbook") and "fleet.yml" in c,
+     "cmd_hint": "ansible-playbook fleet.yml",
+     "say": "Run the playbook to configure the fleet.",
+     "why": "ansible-playbook applies fleet.yml across all nodes — installing drivers and pulling images in one shot. Watch it fan out to every host.",
+     "on_win": "Fleet configured. Every node identical, in one command."},
 ]
 
 # Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
