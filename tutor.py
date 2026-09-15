@@ -14769,6 +14769,7 @@ class TutorApp(App):
     #net-exit:hover { background: #3a1515; color: #ff6b6b; }
     #dev-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #dev-confirm.visible { display: block; }
+    #dev-load { layer: overlay; width: 62%; height: auto; border: round #fbbf24; background: #0d1117; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #shell-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #shell-confirm.visible { display: block; }
     #vim-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
@@ -15105,6 +15106,11 @@ class TutorApp(App):
         self._dev_write_stage = "touch"  # touch -> nvim -> vim (write lessons)
         self._dev_vim_buf = None         # DevVimBuffer when the editor is open
         self._dev_vim_pending = None     # first key of dd / gg
+        self._dev_load_on = False        # glowing 'deploying…' progress bar
+        self._dev_load_progress = 0
+        self._dev_load_label = ""
+        self._dev_load_timer = None
+        self._dev_load_after = None      # win text to stamp when the bar fills
         self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
@@ -15399,6 +15405,7 @@ class TutorApp(App):
             yield Static("", id="dev-foot")
         yield Static("", id="dev-help")
         yield Static("", id="dev-confirm")
+        yield Static("", id="dev-load")
         with NetTrainer(id="net"):
             with Horizontal(id="net-topbar"):
                 yield Static("", id="net-head")
@@ -21570,9 +21577,13 @@ class TutorApp(App):
             self._dev_history.append(("err", line))
         self._dev_cmd = ""
         if self._dev_correct(lesson, cmd):
-            # show the output and WAIT for Enter — never skip past what the
-            # learner is supposed to see
-            self._dev_mark_won(lesson.get("on_win", "Correct!"))
+            win = lesson.get("on_win", "Correct!")
+            if self._dev_should_load(cmd, created, changed):
+                # show a glowing progress bar + sound while it "deploys",
+                # then stamp the win
+                self._dev_load_start(win, cmd)
+            else:
+                self._dev_mark_won(win)
             return
         if lesson.get("kind") == "challenge":
             # multi-step challenge: mark off toolbox steps — but ONLY when the
@@ -21620,6 +21631,100 @@ class TutorApp(App):
         play_ghost_error()
         self._dev_render()
         self._dev_ghost_blink_again()
+
+    # -- glowing "deploying…" progress bar ---------------------------------- #
+    def _dev_should_load(self, cmd, created, changed):
+        """A deploy/build command, or a python script that actually changed the
+        cloud — these get the progress bar + sound instead of an instant win."""
+        if cmd.startswith(("docker build", "docker run", "docker pull",
+                           "terraform apply", "terraform init", "terraform plan",
+                           "terraform destroy", "aws s3 cp", "aws s3 mb", "aws s3 rb",
+                           "aws ec2 run-instances", "aws ec2 terminate-instances",
+                           "aws ec2 stop-instances", "aws ec2 start-instances",
+                           "aws lambda create-function", "ansible-playbook",
+                           "kubectl apply", "kubectl create", "kubectl scale",
+                           "ci status", "git push")):
+            return True
+        return cmd.startswith("python3") and bool(created or changed)
+
+    def _dev_load_start(self, win_text, cmd=""):
+        self._dev_load_on = True
+        self._dev_load_progress = 0
+        self._dev_load_label = self._dev_load_label_for(cmd)
+        self._dev_load_after = win_text
+        self.query_one("#dev-load", Static).update(self._dev_render_load())
+        self.query_one("#dev-load", Static).add_class("visible")
+        # rising "deploying" sweep
+        try:
+            path = _sweep(tuple(280 + i * 45 for i in range(9)), "tutor_load.wav",
+                          dur=0.7, vol=26000)
+            subprocess.Popen(["paplay", f"--volume={_pa_vol(49152)}", str(path)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        if self._dev_load_timer is None:
+            self._dev_load_timer = self.set_interval(0.07, self._dev_load_tick)
+
+    def _dev_load_label_for(self, cmd):
+        if cmd.startswith("docker"):
+            return "building the image…"
+        if cmd.startswith("terraform"):
+            return "applying the infrastructure…"
+        if cmd.startswith("aws s3"):
+            return "syncing with S3…"
+        if cmd.startswith("aws ec2"):
+            return "provisioning servers…"
+        if cmd.startswith("aws lambda"):
+            return "deploying the function…"
+        if cmd.startswith("ansible"):
+            return "configuring the nodes…"
+        if cmd.startswith("kubectl"):
+            return "applying to the cluster…"
+        if cmd.startswith("ci"):
+            return "running the pipeline…"
+        if cmd.startswith("python3"):
+            return "running the deploy script…"
+        return "deploying…"
+
+    def _dev_load_tick(self):
+        if not self._dev_on:
+            return
+        self._dev_load_progress += 1
+        if self._dev_load_progress % 3 == 0:
+            play_key()   # tick as it fills
+        try:
+            self.query_one("#dev-load", Static).update(self._dev_render_load())
+        except Exception:
+            pass
+        if self._dev_load_progress >= 22:
+            self._dev_load_finish()
+
+    def _dev_load_finish(self):
+        if self._dev_load_timer is not None:
+            self._dev_load_timer.stop(); self._dev_load_timer = None
+        self._dev_load_on = False
+        self.query_one("#dev-load", Static).remove_class("visible")
+        self._dev_mark_won(self._dev_load_after or "Correct!")
+
+    def _dev_load_stop(self):
+        if self._dev_load_timer is not None:
+            self._dev_load_timer.stop(); self._dev_load_timer = None
+        self._dev_load_on = False
+        self.query_one("#dev-load", Static).remove_class("visible")
+
+    def _dev_render_load(self):
+        t = Text()
+        t.append(self._dev_load_label, style="bold #f0f0f5")
+        t.append("\n\n")
+        n = 22
+        filled = min(self._dev_load_progress, n)
+        glow = "bold #fbbf24" if self._dev_load_progress % 2 == 0 else "bold #fde68a"
+        t.append("[", style="#f0f0f5")
+        t.append("█" * filled, style=glow)
+        t.append("░" * (n - filled), style="#3a3f4b")
+        t.append("]", style="#f0f0f5")
+        t.append(f"  {int(filled / n * 100):3d}%", style="bold #f0f0f5")
+        return t
 
     def _dev_wrong_hint(self, lesson, cmd=""):
         tier = self._dev_attempts
@@ -21775,6 +21880,7 @@ class TutorApp(App):
         self._dev_flash_stop()
         self._dev_enter_blink_stop()
         self._dev_write_blink_stop()
+        self._dev_load_stop()
         at = getattr(self, "_dev_auto_timer", None)
         if at is not None:
             at.stop(); self._dev_auto_timer = None
