@@ -15663,6 +15663,7 @@ class TutorApp(App):
         self._dev_write_stage = "touch"  # touch -> nvim -> vim (write lessons)
         self._dev_vim_buf = None         # DevVimBuffer when the editor is open
         self._dev_vim_pending = None     # first key of dd / gg
+        self._dev_vim_free_file = None   # set when free-jumping into any file (not a write lesson)
         self._dev_load_on = False        # glowing 'deploying…' progress bar
         self._dev_load_progress = 0
         self._dev_load_label = ""
@@ -21937,10 +21938,20 @@ class TutorApp(App):
         buf = self._dev_vim_buf
         if buf is None:
             return
-        lesson = self._dev_lesson()
-        fname = lesson["file"]
+        free = getattr(self, "_dev_vim_free_file", None)
+        if free:
+            fname = free
+        else:
+            lesson = self._dev_lesson()
+            fname = lesson["file"]
         p = self._dev_lab.fs._resolve(fname)
         if cmd == "wq":
+            if free:
+                # free editing — save whatever the learner wrote, then close
+                self._dev_lab.fs.files[p] = buf.get_text()
+                self._dev_lab.fs.latest = p
+                self._dev_close_free_vim(f"✓ saved {fname} — back to the terminal")
+                return
             if buf.matches():
                 self._dev_lab.fs.files[p] = lesson["content"]
                 self._dev_lab.fs.latest = p
@@ -21951,6 +21962,9 @@ class TutorApp(App):
                 play_ghost_error()
                 self._dev_render()
         elif cmd == "q!":
+            if free:
+                self._dev_close_free_vim(f"left {fname} without saving")
+                return
             self._dev_write_stage = "nvim"
             self._dev_cmd = ""
             self._dev_vim_buf = None
@@ -21966,6 +21980,9 @@ class TutorApp(App):
             play_console_result(True)
             self._dev_render()
         elif cmd == "q":
+            if free:
+                self._dev_close_free_vim(f"closed {fname} (unsaved — :wq would have saved)")
+                return
             if buf.matches():
                 self._dev_lab.fs.files[p] = lesson["content"]
                 self._dev_lab.fs.latest = p
@@ -21979,6 +21996,18 @@ class TutorApp(App):
             self._dev_msg = buf.msg or "?"
             self._dev_msg_kind = "hint"
             self._dev_render()
+
+    def _dev_close_free_vim(self, msg):
+        """Leave a free-jump editor and hand back to the terminal/lesson."""
+        self._dev_vim_buf = None
+        self._dev_vim_free_file = None
+        self._dev_write_stage = "touch"
+        self._dev_vim_pending = None
+        self._dev_write_blink_stop()
+        self._dev_cmd = ""
+        self._dev_msg = msg
+        self._dev_msg_kind = "win"
+        self._dev_render()
 
     def _dev_vim_diff(self, buf):
         """Point at the FIRST line that differs from the target file."""
@@ -22115,6 +22144,28 @@ class TutorApp(App):
         cmd = self._dev_cmd.strip()
         if not cmd:
             return
+        # free nvim jump — `nvim <file>` opens ANY existing file to read/edit it
+        m = re.match(r"^(?:nvim|vim|vi)\s+(\S+)\s*$", cmd)
+        if m:
+            fname = m.group(1)
+            p = self._dev_lab.fs._resolve(fname)
+            if p in self._dev_lab.fs.files:
+                self._dev_history.append(("cmd", (self._dev_prompt(), cmd)))
+                content = self._dev_lab.fs.files[p]
+                buf = DevVimBuffer(content)
+                # load the file's current contents so the learner actually SEES it
+                buf.lines = content.rstrip("\n").split("\n") if content else [""]
+                buf.row = 0
+                buf.col = 0
+                self._dev_vim_buf = buf
+                self._dev_vim_free_file = fname
+                self._dev_write_stage = "vim"
+                self._dev_vim_pending = None
+                self._dev_cmd = ""
+                self._dev_msg = f"opened {fname} — edit freely · :wq saves · :q leaves"
+                self._dev_msg_kind = "hint"
+                self._dev_render()
+                return
         lesson = self._dev_lesson()
         self._dev_history.append(("cmd", (self._dev_prompt(), cmd)))
         before = self._dev_state_snapshot()
@@ -22325,7 +22376,8 @@ class TutorApp(App):
                 self._dev_dismiss()
             return
         # in the nvim editor, keys belong to vim — Esc is NORMAL mode, not exit
-        if self._dev_phase == "write" and getattr(self, "_dev_write_stage", "touch") == "vim":
+        # (also true when free-jumping into any file with `nvim <file>`)
+        if getattr(self, "_dev_write_stage", "touch") == "vim" and self._dev_vim_buf is not None:
             self._dev_write_key(event)
             return
         if key == "escape":
@@ -22681,9 +22733,11 @@ class TutorApp(App):
         return t
 
     def _dev_render_output(self):
+        # the editor is open whenever there's a live buffer in the vim stage —
+        # covers both write lessons AND free-jumping into any file with nvim
+        if getattr(self, "_dev_write_stage", "touch") == "vim" and self._dev_vim_buf is not None:
+            return self._dev_render_vim()
         if self._dev_phase == "write":
-            if getattr(self, "_dev_write_stage", "touch") == "vim":
-                return self._dev_render_vim()
             # touch / nvim stages are a bash prompt (type the create/open command)
             return self._dev_render_term()
         return self._dev_render_term()
@@ -22777,7 +22831,8 @@ class TutorApp(App):
         buf = self._dev_vim_buf
         if buf is None:
             return _box_lines([], max_width=self._dev_term_width(), border=False)
-        fname = self._dev_lesson()["file"]
+        free = getattr(self, "_dev_vim_free_file", None)
+        fname = free if free else self._dev_lesson()["file"]
         t = Text()
         # tab line (plain white)
         t.append(" nvim ", style="bold #f0f0f5")
@@ -22787,7 +22842,7 @@ class TutorApp(App):
 
         on = getattr(self, "_dev_write_blink", False)
         target_lines = buf.target.split("\n")
-        hl = self._dev_first_mismatch(buf, target_lines)
+        hl = None if free else self._dev_first_mismatch(buf, target_lines)
 
         # buffer: line numbers + block cursor + '~' on empty lines (like real vim)
         n = max(len(buf.lines), 3)
@@ -22811,45 +22866,50 @@ class TutorApp(App):
             t.append("wq", style="bold #fbbf24")
             t.append(" = save AND quit", style="#f0f0f5")
         # the target file — a live fill bar correlated to the line you're on
-        t.append("\n\n")
-        t.append("write this file:", style="bold #f0f0f5")
-        t.append("\n")
-        for i, tline in enumerate(target_lines):
-            if i < buf.row:
-                # finished line — green ✓
-                t.append("  ✓ ", style="bold #22c55e")
-                self._dev_append_code(t, tline, "bold #22c55e")
-            elif i == buf.row:
-                # the line you're on — fills left-to-right as you type each char
-                t.append("  ▸ ", style="bold #fbbf24")
-                typed = buf.lines[i] if i < len(buf.lines) else ""
-                for j, ch in enumerate(tline):
-                    if j < len(typed):
-                        if typed[j] == ch:
-                            st = "bold #fbbf24"
-                            t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
-                        else:
-                            # MISTAKE — show the TARGET char (never your wrong
-                            # keystroke), flashing red bold <-> non-bold. A space
-                            # shows as a red block, an underscore stays underscore.
-                            if ch == " ":
-                                t.append("▁", style="bold #ff5555" if on else "#ff5555")
-                            elif ch == "_":
-                                t.append("_", style=("bold #ff5555 on #3f4756" if on else "#ff5555 on #3f4756"))
-                            else:
-                                t.append(ch, style="bold #ff5555" if on else "#ff5555")
-                    else:
-                        st = "#3a3f4b"
-                        t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
-                if len(typed) > len(tline):
-                    # extra keystrokes past the end — red blocks, delete them
-                    for _ in range(len(typed) - len(tline)):
-                        t.append("▁", style="bold #ff5555" if on else "#ff5555")
-            else:
-                # not reached yet — dim ghost
-                t.append("    ", style="")
-                self._dev_append_code(t, tline, "#5a5a5a")
+        # (free-jump editors have no target, so skip it)
+        if not free:
+            t.append("\n\n")
+            t.append("write this file:", style="bold #f0f0f5")
             t.append("\n")
+            for i, tline in enumerate(target_lines):
+                if i < buf.row:
+                    # finished line — green ✓
+                    t.append("  ✓ ", style="bold #22c55e")
+                    self._dev_append_code(t, tline, "bold #22c55e")
+                elif i == buf.row:
+                    # the line you're on — fills left-to-right as you type each char
+                    t.append("  ▸ ", style="bold #fbbf24")
+                    typed = buf.lines[i] if i < len(buf.lines) else ""
+                    for j, ch in enumerate(tline):
+                        if j < len(typed):
+                            if typed[j] == ch:
+                                st = "bold #fbbf24"
+                                t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
+                            else:
+                                # MISTAKE — show the TARGET char (never your wrong
+                                # keystroke), flashing red bold <-> non-bold. A space
+                                # shows as a red block, an underscore stays underscore.
+                                if ch == " ":
+                                    t.append("▁", style="bold #ff5555" if on else "#ff5555")
+                                elif ch == "_":
+                                    t.append("_", style=("bold #ff5555 on #3f4756" if on else "#ff5555 on #3f4756"))
+                                else:
+                                    t.append(ch, style="bold #ff5555" if on else "#ff5555")
+                        else:
+                            st = "#3a3f4b"
+                            t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
+                    if len(typed) > len(tline):
+                        # extra keystrokes past the end — red blocks, delete them
+                        for _ in range(len(typed) - len(tline)):
+                            t.append("▁", style="bold #ff5555" if on else "#ff5555")
+                else:
+                    # not reached yet — dim ghost
+                    t.append("    ", style="")
+                    self._dev_append_code(t, tline, "#5a5a5a")
+                t.append("\n")
+        else:
+            t.append("\n\n")
+            t.append("free edit — this is your file · :wq saves your version", style="#c9cdd6")
         t.append("\n")
         # statusline — white mode indicator (the cursor already shows mode)
         if buf.mode == "insert":
