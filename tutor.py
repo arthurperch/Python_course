@@ -6498,11 +6498,86 @@ VIM_CHALLENGES = [
 
 SHELL_STAGES = ["Meet the Terminal", "Folders & Paths", "Make & Inspect Files",
                 "Write & Read", "Pipes & Search", "Copy, Move, Delete",
-                "Run & Build", "Shells & Tools"]
+                "Run & Build", "Shells & Tools", "Stream Editing",
+                "Columns & Fields", "Find & Bundle", "Env & Regex"]
 
 # A tiny, deterministic fake filesystem so the learner can practice REAL bash
 # (pwd / ls / mkdir / cd / touch / cat / echo / grep / pipes / chmod / …)
 # WITHOUT touching the real disk. Every command is safe to run forever.
+def _shell_split(s: str) -> list[str]:
+    """Split a command line on whitespace, respecting single/double quotes and
+    backslash escapes, and stripping the quotes — like a real shell does."""
+    parts = []
+    cur = []
+    in_single = in_double = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+            else:
+                cur.append(c)
+        elif in_double:
+            if c == '"':
+                in_double = False
+            elif c == "\\" and i + 1 < len(s):
+                cur.append(s[i + 1]); i += 1
+            else:
+                cur.append(c)
+        else:
+            if c == "'":
+                in_single = True
+            elif c == '"':
+                in_double = True
+            elif c == "\\" and i + 1 < len(s):
+                cur.append(s[i + 1]); i += 1
+            elif c.isspace():
+                if cur:
+                    parts.append("".join(cur)); cur = []
+            else:
+                cur.append(c)
+        i += 1
+    if cur:
+        parts.append("".join(cur))
+    return parts
+
+
+def _shell_split_on(s: str, delim: str) -> list[str]:
+    """Split `s` on `delim` only where it appears OUTSIDE single/double quotes,
+    so `grep -E 'print|echo'` keeps its literal `|` while a real pipe still
+    splits. Quotes are left in the segments (the tokenizer strips them later)."""
+    out = []
+    cur = []
+    in_single = in_double = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if in_single:
+            cur.append(c)
+            if c == "'":
+                in_single = False
+        elif in_double:
+            cur.append(c)
+            if c == '"':
+                in_double = False
+        elif c == "'":
+            in_single = True
+            cur.append(c)
+        elif c == '"':
+            in_double = True
+            cur.append(c)
+        elif s.startswith(delim, i):
+            out.append("".join(cur))
+            cur = []
+            i += len(delim) - 1
+        else:
+            cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return out
+
+
 class ShellFS:
     """A sandboxed home directory the learner fills up over the course.
 
@@ -6519,6 +6594,9 @@ class ShellFS:
         self.executable = set()
         self.latest = None
         self.history: list[str] = []
+        self.env = {"HOME": "/home/you", "USER": "you", "SHELL": "/bin/bash",
+                    "PATH": "/usr/local/bin:/usr/bin:/bin"}
+        self.archives = {}   # archive name -> {entry: content} for tar
 
     # -- path helpers ------------------------------------------------------ #
     def _resolve(self, path: str) -> str:
@@ -6596,7 +6674,7 @@ class ShellFS:
         self.history.append(cmdline)
         if "|" in cmdline:
             data = stdin_lines
-            for stage in [s.strip() for s in cmdline.split("|")]:
+            for stage in [s.strip() for s in _shell_split_on(cmdline, "|")]:
                 out, err = self._run_one(stage, data)
                 if err:
                     return out, err
@@ -6611,11 +6689,15 @@ class ShellFS:
             return [], []
         target = None
         append = False
-        if " >> " in cmdline:
-            cmdline, target = cmdline.rsplit(" >> ", 1)
-            append = True
-        elif " > " in cmdline:
-            cmdline, target = cmdline.rsplit(" > ", 1)
+        if ">>" in cmdline:
+            segs = _shell_split_on(cmdline, ">>")
+            if len(segs) > 1:
+                cmdline, target = segs[0], segs[-1].strip()
+                append = True
+        elif ">" in cmdline:
+            segs = _shell_split_on(cmdline, ">")
+            if len(segs) > 1:
+                cmdline, target = segs[0], segs[-1].strip()
         out, err = self._dispatch(cmdline, stdin_lines)
         if target is not None and not err:
             tp = self._resolve(target.strip())
@@ -6631,7 +6713,7 @@ class ShellFS:
         return out, err
 
     def _dispatch(self, cmdline, stdin_lines=None):
-        parts = cmdline.split()
+        parts = _shell_split(cmdline)
         if not parts:
             return [], []
         cmd = parts[0]
@@ -6640,6 +6722,8 @@ class ShellFS:
             text = cmdline[4:].strip()
             if len(text) >= 2 and text[0] in ('"', "'") and text[-1] == text[0]:
                 text = text[1:-1]
+            # expand $VAR and ${VAR} against the environment
+            text = re.sub(r"\$\{?(\w+)\}?", lambda m: self.env.get(m.group(1), ""), text)
             return [text], []
         if cmd == "pwd":
             return [self.cwd], []
@@ -6665,6 +6749,18 @@ class ShellFS:
             return self._wc(args, stdin_lines)
         if cmd == "grep":
             return self._grep(args, stdin_lines)
+        if cmd == "sed":
+            return self._sed(args, stdin_lines)
+        if cmd == "awk":
+            return self._awk(args, stdin_lines)
+        if cmd == "find":
+            return self._find(args)
+        if cmd == "tar":
+            return self._tar(args)
+        if cmd == "export":
+            return self._export(args)
+        if cmd in ("env", "printenv"):
+            return [f"{k}={v}" for k, v in sorted(self.env.items())], []
         if cmd == "python3":
             return self._python(args)
         if cmd == "mv":
@@ -6676,8 +6772,8 @@ class ShellFS:
         if cmd == "chmod":
             return self._chmod(args)
         if cmd in ("man", "help", "--help"):
-            return ["commands:  pwd  ls  mkdir  cd  touch  cat  echo  head  tail  wc  grep  "
-                    "python3  mv  cp  rm  chmod  whoami  clear  history"], []
+            return ["commands:  pwd  ls  mkdir  cd  touch  cat  echo  head  tail  wc  grep  sed  "
+                    "awk  find  tar  export  env  python3  mv  cp  rm  chmod  whoami  clear  history"], []
         if cmd.startswith("./") or cmd.startswith("/"):
             return self._run_executable(cmd)
         return [], [f"{cmd}: command not found"]
@@ -6829,12 +6925,177 @@ class ShellFS:
         lines = self._read_lines(files, stdin_lines)
         if lines is None:
             return [], ["grep: No such file or directory"]
-        rx = re.compile(re.escape(pattern), re.IGNORECASE if "-i" in flags else 0)
+        rx = re.compile(pattern if "-E" in flags else re.escape(pattern),
+                        re.IGNORECASE if "-i" in flags else 0)
         show_num = "-n" in flags
         out = []
         for idx, line in enumerate(lines, 1):
             if rx.search(line):
                 out.append(f"{idx}:{line}" if show_num else line)
+        return out, []
+
+    def _sed(self, args, stdin_lines):
+        """Stream editor: s/old/new/[g] substitutions and -n 'N[,M]p' line prints."""
+        script = None
+        files = []
+        print_only = False
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-n":
+                print_only = True; i += 1
+            elif a.startswith("-"):
+                i += 1
+            elif script is None:
+                script = a; i += 1
+            else:
+                files.append(a); i += 1
+        if script is None:
+            return [], ["sed: missing script"]
+        lines = self._read_lines(files, stdin_lines)
+        if lines is None:
+            return [], ["sed: No such file or directory"]
+        # s/old/new/g  (g = replace every match on the line, not just the first)
+        m = re.match(r"s/([^/]*)/([^/]*)/(g?)", script)
+        if m:
+            old, new, g = m.group(1), m.group(2), m.group(3)
+            out = []
+            for ln in lines:
+                out.append(ln.replace(old, new) if g else ln.replace(old, new, 1))
+            return out, []
+        # -n 'Np' or -n 'N,Mp'  (print only these line numbers)
+        m = re.match(r"(\d+)(?:,(\d+))?p", script)
+        if m and print_only:
+            lo = int(m.group(1))
+            hi = int(m.group(2)) if m.group(2) else lo
+            return [ln for idx, ln in enumerate(lines, 1) if lo <= idx <= hi], []
+        return [], [f"sed: can't understand '{script}'"]
+
+    def _awk(self, args, stdin_lines):
+        """Column printer: awk '{print $N}' or '{print $NF}' (last field), with
+        an optional -F delimiter."""
+        delim = None
+        files = []
+        prog = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a.startswith("-F") and len(a) > 2:
+                delim = a[2:]; i += 1
+            elif a == "-F" and i + 1 < len(args):
+                delim = args[i + 1]; i += 2
+            elif a.startswith("{") and a.endswith("}"):
+                prog = a; i += 1
+            elif a.startswith("-"):
+                i += 1
+            else:
+                files.append(a); i += 1
+        if prog is None:
+            return [], ["awk: missing program"]
+        lines = self._read_lines(files, stdin_lines)
+        if lines is None:
+            return [], ["awk: No such file or directory"]
+        m = re.search(r"\{\s*print\s+\$(\w+)\s*\}", prog)
+        if not m:
+            return [], [f"awk: can't understand '{prog}'"]
+        field = m.group(1)
+        out = []
+        for ln in lines:
+            parts = ln.split(delim) if delim else ln.split()
+            if field == "NF":
+                out.append(parts[-1] if parts else "")
+            else:
+                idx = int(field) - 1
+                out.append(parts[idx] if idx < len(parts) else "")
+        return out, []
+
+    def _find(self, args):
+        """find [path] [-name '*.py'] [-type f|d] — search the tree recursively."""
+        root = "."
+        names = []
+        ftype = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-name" and i + 1 < len(args):
+                names.append(args[i + 1]); i += 2
+            elif a == "-type" and i + 1 < len(args):
+                ftype = args[i + 1]; i += 2
+            elif a.startswith("-"):
+                i += 1
+            else:
+                root = a; i += 1
+        base = self._resolve(root).rstrip("/")
+        out = []
+        for d in sorted(self.dirs):
+            if d != base and d.startswith(base + "/"):
+                rel = d[len(base) + 1:]
+                if ftype in (None, "d") and self._find_match(rel, names):
+                    out.append(rel + "/")
+        for f in sorted(self.files):
+            if f.startswith(base + "/") or f == base:
+                rel = f[len(base) + 1:] if f.startswith(base + "/") else f.split("/")[-1]
+                if ftype in (None, "f") and self._find_match(rel, names):
+                    out.append(rel)
+        return out, []
+
+    def _find_match(self, name, patterns):
+        if not patterns:
+            return True
+        return any(re.fullmatch(p.replace("*", ".*"), name) for p in patterns)
+
+    def _tar(self, args):
+        """tar -czf out.tgz a b  (create)  -tzf (list)  -xzf (extract)."""
+        if not args or not args[0].startswith("-"):
+            return [], ["tar: missing operation"]
+        flags = args[0]
+        rest = args[1:]
+        fname = None
+        if "f" in flags:
+            if not rest:
+                return [], ["tar: missing archive name"]
+            fname = rest[0]; rest = rest[1:]
+        else:
+            return [], ["tar: need the f flag with an archive name"]
+        if "c" in flags:
+            entries = {}
+            for a in rest:
+                p = self._resolve(a)
+                if p in self.files:
+                    entries[a] = self.files[p]
+                elif p in self.dirs:
+                    entries[a.rstrip("/") + "/"] = "<dir>"
+                else:
+                    return [], [f"tar: {a}: Cannot stat: No such file or directory"]
+            self.archives[fname] = entries
+            self.latest = fname
+            return [], []   # tar -c is quiet on success, like the real thing
+        if "t" in flags:
+            entries = self.archives.get(fname)
+            if entries is None:
+                return [], [f"tar: {fname}: Cannot open: No such file or directory"]
+            return list(entries.keys()), []
+        if "x" in flags:
+            entries = self.archives.get(fname)
+            if entries is None:
+                return [], [f"tar: {fname}: Cannot open: No such file or directory"]
+            for name, content in entries.items():
+                p = self._resolve(name.rstrip("/"))
+                if content == "<dir>":
+                    self.dirs.add(p)
+                else:
+                    self.files[p] = content
+            return list(entries.keys()), []
+        return [], [f"tar: unsupported flags '{flags}'"]
+
+    def _export(self, args):
+        out = []
+        for a in args:
+            if "=" in a:
+                k, v = a.split("=", 1)
+                self.env[k] = v
+            else:
+                out.append(f"export: {a}: not a valid identifier")
         return out, []
 
     def _python(self, args):
@@ -8612,6 +8873,9 @@ _SHELL_MEANING = {
     "head": "first lines", "wc": "word count", "cp": "copy", "grep": "search",
     "mv": "move / rename", "rm": "remove", "python3": "run Python",
     "chmod": "change permissions", "./hello.py": "run your program",
+    "sed": "edit text in a stream", "awk": "pull out a column",
+    "find": "search the file tree", "tar": "bundle files together",
+    "export": "set a variable", "env": "show all variables",
 }
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
@@ -8855,6 +9119,132 @@ SHELL_LESSONS = [
      "why": "The pipe is your superpower now — chain two commands to get the answer.",
      "verify": lambda c: "|" in c and "wc" in c,
      "on_win": "The pipe is your superpower now. Track complete!"},
+
+    # ---- stage 8: Stream Editing (sed) ----------------------------------- #
+    {"title": "meet sed: edit without opening", "stage": 8, "kind": "info",
+     "goal": "Meet sed — the stream editor. Read along, then press Enter.",
+     "why": "sed is the stream editor. It reads a file line by line, changes what you tell it to, and prints the result — all WITHOUT opening the file in an editor. The most common move is substitution: swap one word for another. You write s for substitute, then the old word, then the new word, all between slashes.",
+     "on_win": "sed edits on the fly — no editor needed. That's why it's a professional favorite."},
+
+    {"title": "swap one word", "stage": 8,
+     "expect": ["sed 's/print/echo/' hello.py", 'sed "s/print/echo/" hello.py'],
+     "cmd_hint": "sed 's/print/echo/' hello.py",
+     "goal": "Use the stream editor to change 'print' to 'echo' in hello.py.",
+     "say": "Use the stream editor. Type s for substitute, then the old word, then the new word, between slashes, on hello dot p y.",
+     "why": "The s means substitute. Inside the slashes: the word to find, then the word to put in its place. It swaps the FIRST match on each line and prints the whole changed file.",
+     "on_win": "Every 'print' became 'echo' — and the file on disk is untouched. sed just printed a changed copy."},
+
+    {"title": "swap every one", "stage": 8,
+     "expect": ["sed 's/print/echo/g' hello.py", 'sed "s/print/echo/g" hello.py'],
+     "cmd_hint": "sed 's/print/echo/g' hello.py",
+     "goal": "Change EVERY 'print' to 'echo' — add the global flag.",
+     "say": "Same swap, but add a g at the very end to change every match on each line, not just the first.",
+     "why": "The trailing g means global — replace every match on the line, not just the first. Without it, only one swap happens per line.",
+     "on_win": "The g flag swaps them all. That's the difference between first-only and everything."},
+
+    {"title": "show just one line", "stage": 8,
+     "expect": ["sed -n '2p' hello.py", 'sed -n "2p" hello.py'],
+     "cmd_hint": "sed -n '2p' hello.py",
+     "goal": "Use the stream editor to print only line 2 of hello.py.",
+     "say": "Use the stream editor with the quiet flag n, then the number 2 and the letter p, on hello dot p y.",
+     "why": "The -n flag means 'don't print everything'. The '2p' says 'print line 2'. Together they print exactly one line instead of the whole file.",
+     "on_win": "Just line two. The n flag and the p command are how sed cherry-picks lines."},
+
+    # ---- stage 9: Columns & Fields (awk) --------------------------------- #
+    {"title": "meet awk: pull out columns", "stage": 9, "kind": "info",
+     "goal": "Meet awk — the column puller. Read along, then press Enter.",
+     "why": "awk reads text split into columns and lets you print just the column you want. Columns are separated by spaces, and each one gets a number: one for the first, two for the second, and so on. You write a tiny program in curly braces that says 'print column N'.",
+     "on_win": "awk is the fastest way to grab one column out of a pile of text."},
+
+    {"title": "grab the size column", "stage": 9,
+     "expect": ["ls -l | awk '{print $5}'", "ls -l | awk \"{print $5}\""],
+     "cmd_hint": "ls -l | awk '{print $5}'",
+     "goal": "List your files long, then pull out just column 5 — the sizes.",
+     "say": "List your files long, then pipe that into the column puller to print column five.",
+     "why": "ls dash l prints a big table of files, and column 5 is the size. The pipe hands that whole table to awk, and awk prints only the fifth column — so you get just the sizes.",
+     "on_win": "Just the sizes, one per line. You turned a big table into a single useful column."},
+
+    {"title": "grab the names", "stage": 9,
+     "expect": ["ls -l | awk '{print $NF}'", "ls -l | awk \"{print $NF}\""],
+     "cmd_hint": "ls -l | awk '{print $NF}'",
+     "goal": "Pull out the LAST column — the file names.",
+     "say": "Same idea, but print the special last-column marker — dollar sign N F — to get the file names.",
+     "why": "NF means 'number of fields', so $NF is the very last column. Filenames are always last in a long listing, so $NF grabs every name no matter how long the line is.",
+     "on_win": "Every filename, grabbed from the end. NF is the always-works way to get the last column."},
+
+    # ---- stage 10: Find & Regex (find + grep -E) ------------------------- #
+    {"title": "find your python files", "stage": 10,
+     "expect": ['find . -name "*.py"', "find . -name '*.py'"],
+     "cmd_hint": 'find . -name "*.py"',
+     "goal": "Search the whole tree for every .py file.",
+     "say": "Use the find command, then a dot for 'start here', then the name flag, then a star dot p y pattern.",
+     "why": "find walks the whole folder tree from wherever you tell it. The name flag filters to filenames matching a pattern — the star means 'anything', so star dot p y matches every python file, even in subfolders.",
+     "on_win": "It found every python file in the tree, even in subfolders. find is your file detector."},
+
+    {"title": "find every folder", "stage": 10,
+     "expect": ["find . -type d"],
+     "cmd_hint": "find . -type d",
+     "goal": "List every folder in the tree.",
+     "say": "Use find with a dot, then the type flag, then the letter d for directory.",
+     "why": "The type flag filters by what kind of thing it is — d for directories, f for files. So this prints every folder but skips the files.",
+     "on_win": "Every folder, no files. The type flag is how find tells folders and files apart."},
+
+    {"title": "search with regex", "stage": 10,
+     "expect": ["grep -E 'print|echo' hello.py", 'grep -E "print|echo" hello.py'],
+     "cmd_hint": "grep -E 'print|echo' hello.py",
+     "goal": "Search hello.py for 'print' OR 'echo' in one go.",
+     "say": "Search hello dot p y with the extended flag E, for a pattern that matches either print or echo, joined by a vertical bar.",
+     "why": "The vertical bar means 'or' in a regex. With the E flag, grep treats the pattern as regex, so this finds lines containing print OR echo in a single search. Without E, the bar is just a literal character.",
+     "on_win": "One search, two words. The E flag turns the bar into an or — that's the power of regex."},
+
+    # ---- stage 11: Bundle & Env (tar + export/env) ----------------------- #
+    {"title": "bundle your files", "stage": 11,
+     "expect": ["tar -czf backup.tgz hello.py"],
+     "cmd_hint": "tar -czf backup.tgz hello.py",
+     "goal": "Bundle hello.py into an archive called backup.tgz.",
+     "say": "Use the tar command with the create flag c, the zip flag z, and the file flag f, to bundle hello dot p y into an archive.",
+     "why": "tar packs files into one archive. The c means create, z means compress, and f means 'the next word is the archive name'. One archive holds as many files as you list.",
+     "on_win": "You made a bundle. tar packed hello.py into one neat archive you could hand to someone."},
+
+    {"title": "see what's inside", "stage": 11,
+     "expect": ["tar -tzf backup.tgz"],
+     "cmd_hint": "tar -tzf backup.tgz",
+     "goal": "List what's inside your archive.",
+     "say": "Use tar with the list flag t, zip flag z, and file flag f, to peek inside your archive.",
+     "why": "The t means 'list' — it shows every file inside the archive without unpacking it. Always peek before you extract.",
+     "on_win": "There's hello.py inside. The t flag lists an archive's contents without touching it."},
+
+    {"title": "unpack it again", "stage": 11,
+     "expect": ["tar -xzf backup.tgz"],
+     "cmd_hint": "tar -xzf backup.tgz",
+     "goal": "Extract the archive back into real files.",
+     "say": "Use tar with the extract flag x, zip flag z, and file flag f, to unpack your archive.",
+     "why": "The x means extract — it pulls the files back out of the archive. Create, list, extract: c, t, x are the three tar moves you'll use forever.",
+     "on_win": "Files restored from the bundle. c to create, t to list, x to extract — that's the whole tar toolkit."},
+
+    {"title": "set a variable", "stage": 11,
+     "expect": ["export GREETING=hello"],
+     "cmd_hint": "export GREETING=hello",
+     "goal": "Store the word 'hello' in a variable called GREETING.",
+     "say": "Use the export command to store the word hello in a variable called greeting, joined by an equals sign.",
+     "why": "export stores a value in a named variable. Later, you can pull it back out with a dollar sign. Variables hold config, names, and secrets that scripts reuse.",
+     "on_win": "Stored. GREETING now holds the word hello — you can use it anywhere."},
+
+    {"title": "use your variable", "stage": 11,
+     "expect": ["echo $GREETING", 'echo "$GREETING"'],
+     "cmd_hint": "echo $GREETING",
+     "goal": "Print your variable back out.",
+     "say": "Echo your variable by putting a dollar sign in front of its name.",
+     "why": "The dollar sign means 'the value of'. So echo dollar GREETING prints the value you stored, not the word GREETING. That's how you read a variable back.",
+     "on_win": "It printed hello — the value, not the name. Dollar sign reads a variable, export writes one."},
+
+    {"title": "see all variables", "stage": 11,
+     "expect": ["env", "printenv"],
+     "cmd_hint": "env",
+     "goal": "Show every variable that's currently set.",
+     "say": "Use the env command to show every variable that's set.",
+     "why": "env prints the whole environment — all the variables your shell knows about. You'll see HOME, USER, PATH, and the one you just exported.",
+     "on_win": "There's your GREETING, plus the system variables that came with the shell."},
 ]
 
 # the clickable bash manual — (command, what it does, a visual example)
@@ -8886,6 +9276,18 @@ SHELL_MANUAL = [
     ("./f", "run the file directly", "./hello.py"),
     ("clear", "wipe the screen", "clear"),
     ("history", "your recent commands", "history"),
+    ("sed 's/a/b/' f", "swap words without opening the file", "sed 's/print/echo/' hello.py"),
+    ("sed -n 'Np' f", "print just line N", "sed -n '2p' hello.py"),
+    ("awk '{print $N}'", "pull out column N", "ls -l | awk '{print $5}'"),
+    ('find . -name "x"', "search the tree for files", 'find . -name "*.py"'),
+    ("find . -type d", "list every folder", "find . -type d"),
+    ("grep -E 'a|b' f", "search with regex (or)", "grep -E 'print|echo' hello.py"),
+    ("tar -czf a.tgz f", "bundle files into an archive", "tar -czf backup.tgz hello.py"),
+    ("tar -tzf a.tgz", "list an archive's contents", "tar -tzf backup.tgz"),
+    ("tar -xzf a.tgz", "extract an archive", "tar -xzf backup.tgz"),
+    ("export X=y", "set a variable", "export GREETING=hello"),
+    ("echo $X", "read a variable", "echo $GREETING"),
+    ("env", "show all variables", "env"),
 ]
 
 DEV_LESSONS = [
