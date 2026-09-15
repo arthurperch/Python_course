@@ -10022,6 +10022,180 @@ DEV_LESSONS = [
      "say": "Run the playbook to configure the fleet.",
      "why": "ansible-playbook applies fleet.yml across all nodes — installing drivers and pulling images in one shot. Watch it fan out to every host.",
      "on_win": "Fleet configured. Every node identical, in one command."},
+
+    # ==== AZURE · the other cloud ==========================================
+    {"module": "Azure Foundations", "kind": "info", "title": "the other cloud",
+     "say": "AWS isn't the only cloud. Azure is Microsoft's — and most big companies run BOTH. The good news: every concept you just learned maps one-to-one. S3 becomes Blob Storage, EC2 becomes VMs, Lambda becomes Functions, IAM becomes Entra ID. Same ideas, new names.",
+     "why": "Cloud-agnostic is the senior skill. If you understand the CONCEPT — storage, compute, serverless, identity — then Azure is just a vocabulary swap. Learn the mapping and you're bilingual."},
+
+    {"module": "Azure Foundations", "kind": "run", "title": "the az cli",
+     "expect": ["az login"], "cmd_hint": "az login",
+     "say": "Log into Azure with its command line, az.",
+     "why": "az is Azure's CLI — the same idea as aws, but one tool for everything. Every Azure resource is created, read, and destroyed through it.",
+     "on_win": "Logged in. You can now drive all of Azure from the terminal."},
+
+    {"module": "Azure Foundations", "kind": "run", "title": "make a resource group",
+     "verify": lambda c: c.startswith("az group create") and "--name" in c,
+     "cmd_hint": "az group create --name prod --location eastus",
+     "say": "Create a resource group — Azure's folder that holds related resources.",
+     "why": "A resource group is the container everything else lives in. Delete the group and every resource inside goes with it — the clean way to tear down an environment.",
+     "on_win": "Resource group 'prod' created in eastus."},
+
+    {"module": "Azure Foundations", "kind": "write", "title": "bicep, not clicks",
+     "file": "main.bicep",
+     "content": "param location string = 'eastus'\n\nresource storage 'Microsoft.Storage/storageAccounts@2023-01-01' = {\n  name: 'mystorage${uniqueString(resourceGroup().id)}'\n  location: location\n  sku: {\n    name: 'Standard_LRS'\n  }\n  kind: 'StorageV2'\n}\n",
+     "lines": [
+         ("param location string = 'eastus'", "a parameter with a default — same as a Terraform variable"),
+         ("resource storage", "declare a storage account as code"),
+         ("'Microsoft.Storage/storageAccounts@2023-01-01'", "the resource TYPE and API version"),
+         ("name: 'mystorage${uniqueString(resourceGroup().id)}'", "a globally-unique name using string interpolation"),
+         ("Standard_LRS", "LRS = locally redundant — the cheap, standard tier"),
+     ],
+     "say": "Type out a Bicep file — Azure's native infrastructure-as-code language.",
+     "why": "Bicep is to Azure what Terraform is to everywhere: you DECLARE resources in a file instead of clicking. It compiles to ARM templates under the hood, but Bicep is readable.",
+     "on_win": "Bicep written. Infrastructure as code, Azure-style."},
+
+    {"module": "Azure Foundations", "kind": "run", "title": "deploy the bicep",
+     "verify": lambda c: c.startswith("az deployment group create"),
+     "cmd_hint": "az deployment group create --resource-group prod --template-file main.bicep",
+     "say": "Deploy the Bicep file into your resource group.",
+     "why": "az deployment group create reads main.bicep and makes Azure match it — the exact analog of terraform apply.",
+     "on_win": "Deployed. The storage account now exists in prod."},
+
+    # ==== AZURE STORAGE · blob ============================================
+    {"module": "Azure Blob Storage", "kind": "info", "title": "blob = s3",
+     "say": "Azure's object storage is Blob Storage — the exact twin of S3. You make a storage account, put containers inside it, and upload blobs (files). Same model, Microsoft names.",
+     "why": "Blob → S3, container → bucket, blob → object. Every object-storage idea you learned carries straight over. This is the bilingual part: once you see the mapping, Azure stops being a new world."},
+
+    {"module": "Azure Blob Storage", "kind": "run", "title": "make the account",
+     "verify": lambda c: c.startswith("az storage account create") and "--sku" in c,
+     "cmd_hint": "az storage account create --name mystorage123 --resource-group prod --location eastus --sku Standard_LRS",
+     "say": "Create a storage account to hold your blobs.",
+     "why": "The storage account is the top-level object-storage resource, like an AWS account's S3 namespace. --sku Standard_LRS picks locally-redundant storage.",
+     "on_win": "Storage account created."},
+
+    {"module": "Azure Blob Storage", "kind": "run", "title": "make a container",
+     "verify": lambda c: c.startswith("az storage container create") and "--name" in c,
+     "cmd_hint": "az storage container create --name data --account-name mystorage123",
+     "say": "Create a container inside the account — Azure's bucket.",
+     "why": "A container is exactly an S3 bucket: a folder for objects, with its own access rules. Data goes in containers.",
+     "on_win": "Container 'data' ready."},
+
+    {"module": "Azure Blob Storage", "kind": "run", "title": "upload a blob",
+     "verify": lambda c: c.startswith("az storage blob upload") and "--file" in c,
+     "cmd_hint": "az storage blob upload --account-name mystorage123 --container-name data --name app.py --file app.py",
+     "say": "Upload a file into the container as a blob.",
+     "why": "az storage blob upload copies a local file up to the container — the Azure twin of aws s3 cp.",
+     "on_win": "app.py uploaded as a blob."},
+
+    # ==== AZURE VMS · compute =============================================
+    {"module": "Azure VMs", "kind": "run", "title": "make a vm",
+     "verify": lambda c: c.startswith("az vm create") and "--image" in c,
+     "cmd_hint": "az vm create --resource-group prod --name web --image Ubuntu2204 --size Standard_D2s_v3 --admin-username azureuser --generate-ssh-keys",
+     "say": "Create a virtual machine — Azure's EC2.",
+     "why": "az vm create stands up a VM: an image (Ubuntu2204), a size (Standard_D2s_v3), and SSH access. One command, a whole server.",
+     "on_win": "VM 'web' is up and running."},
+
+    {"module": "Azure VMs", "kind": "run", "title": "list the vms",
+     "expect": ["az vm list --output table"], "cmd_hint": "az vm list --output table",
+     "say": "List your VMs in a readable table.",
+     "why": "az vm list --output table shows every VM in a clean table — the inventory view, like aws ec2 describe-instances.",
+     "on_win": "There's web, in the table."},
+
+    {"module": "Azure VMs", "kind": "run", "title": "stop it to save money",
+     "verify": lambda c: c.startswith("az vm stop") and "--name" in c,
+     "cmd_hint": "az vm stop --resource-group prod --name web",
+     "say": "Stop the VM when you're not using it.",
+     "why": "A running VM bills by the hour whether it's working or not. Stopping it keeps the disk but stops the clock — the same cost discipline as AWS.",
+     "on_win": "VM stopped. The bill stopped with it."},
+
+    # ==== AZURE FUNCTIONS · serverless ====================================
+    {"module": "Azure Functions", "kind": "info", "title": "functions = lambda",
+     "say": "Azure Functions is serverless, exactly like AWS Lambda. You write one function, upload it, and Azure runs it on demand — you never think about a server.",
+     "why": "Serverless means you pay per execution, not per hour. Functions → Lambda, the same idea: code that runs when triggered, scales to zero when idle."},
+
+    {"module": "Azure Functions", "kind": "run", "title": "make the function app",
+     "verify": lambda c: c.startswith("az functionapp create") and "--runtime" in c,
+     "cmd_hint": "az functionapp create --resource-group prod --name myfunc --consumption-plan-location eastus --runtime python --functions-version 4",
+     "say": "Create a function app — the container for your serverless function.",
+     "why": "The function app hosts your functions. --consumption-plan-location means pay-per-execution, and --runtime python says the code is Python.",
+     "on_win": "Function app ready."},
+
+    {"module": "Azure Functions", "kind": "write", "title": "write the function",
+     "file": "__init__.py",
+     "content": "import azure.functions as func\n\ndef main(req: func.HttpRequest) -> func.HttpResponse:\n    name = req.params.get(\"name\", \"world\")\n    return func.HttpResponse(f\"hello {name}\")\n",
+     "lines": [
+         ("import azure.functions as func", "Azure's serverless framework"),
+         ("def main(req: func.HttpRequest)", "the entry point — Azure calls it for every request"),
+         ("req.params.get(\"name\", \"world\")", "read a query param with a fallback"),
+         ("return func.HttpResponse", "send the answer back"),
+     ],
+     "say": "Type out the serverless function — an HTTP endpoint in a few lines.",
+     "why": "This is the entire function: read a request, return a response. Azure handles the server, the scaling, the retries. You write only the logic.",
+     "on_win": "Function written. A live HTTP endpoint, no server to manage."},
+
+    # ==== AZURE IDENTITY · Entra ID + least privilege =====================
+    {"module": "Azure Identity", "kind": "info", "title": "identity in azure",
+     "say": "Azure's identity system is Entra ID (formerly Azure AD) — the twin of AWS IAM. Programs authenticate with a service principal, which has roles that grant permissions.",
+     "why": "Same least-privilege rule as AWS: a service principal is a program's identity, and you scope its role to exactly what it needs — never full admin."},
+
+    {"module": "Azure Identity", "kind": "run", "title": "make a service principal",
+     "verify": lambda c: c.startswith("az ad sp create-for-rbac") and "--role" in c,
+     "cmd_hint": "az ad sp create-for-rbac --name deployer --role Contributor --scopes /subscriptions/SUBSCRIPTION_ID",
+     "say": "Create a service principal with a scoped role.",
+     "why": "az ad sp create-for-rbac makes a program identity and grants it a role scoped to one subscription. This is the credential your CI/CD pipeline will use.",
+     "on_win": "Service principal 'deployer' created, scoped to one subscription."},
+
+    {"module": "Azure Identity", "kind": "write", "title": "narrow the role",
+     "file": "role.json",
+     "content": "{\n  \"Name\": \"Blob Reader\",\n  \"Description\": \"read blobs, nothing else\",\n  \"Actions\": [\n    \"Microsoft.Storage/storageAccounts/blobServices/containers/read\"\n  ],\n  \"AssignableScopes\": [\"/subscriptions/SUBSCRIPTION_ID\"]\n}\n",
+     "lines": [
+         ("\"Name\": \"Blob Reader\"", "a custom role with a narrow, honest name"),
+         ("\"Actions\"", "the list of what it can do"),
+         ("Microsoft.Storage/storageAccounts", "ONE permission: read containers. Not delete, not write."),
+         ("AssignableScopes", "only valid in one subscription"),
+     ],
+     "say": "Type out a custom role that can read blobs and nothing else.",
+     "why": "Least privilege, again — this is the theme. A custom role with a single read action is the senior move over handing out Contributor. Minimal permission, minimal blast radius.",
+     "on_win": "Custom role written. Read blobs, nothing else."},
+
+    # ==== SENIOR SCRIPTING · bash + python automation =====================
+    {"module": "Senior Scripting", "kind": "info", "title": "automate with scripts",
+     "say": "A senior engineer wraps the repetitive CLI commands in a script, so a whole deploy is one command. Bash for quick glue, Python for anything with logic.",
+     "why": "Scripts are the bridge between 'knowing the commands' and 'shipping'. You type the sequence ONCE into a script, and from then on it's one command — reproducible, reviewable, shareable."},
+
+    {"module": "Senior Scripting", "kind": "write", "title": "bash deploy script",
+     "file": "deploy.sh",
+     "content": "#!/bin/bash\nset -euo pipefail\n\necho \"deploying to prod...\"\naz group create --name prod --location eastus\naz deployment group create --resource-group prod --template-file main.bicep\necho \"deployed ✓\"\n",
+     "lines": [
+         ("#!/bin/bash", "the shebang — this is a bash script"),
+         ("set -euo pipefail", "fail fast on any error or unset variable — senior default"),
+         ("echo \"deploying to prod...\"", "a progress line so the log reads clearly"),
+         ("az group create", "step 1: make the resource group"),
+         ("az deployment group create", "step 2: deploy the infra"),
+     ],
+     "say": "Type out a bash script that deploys the whole environment.",
+     "why": "set -euo pipefail is the senior bash reflex: the script dies on the first error instead of limping on. Wrapping the az commands means anyone can deploy — no memorized sequence.",
+     "on_win": "Deploy script written. One command, whole environment."},
+
+    {"module": "Senior Scripting", "kind": "write", "title": "python deploy script",
+     "file": "deploy.py",
+     "content": "import subprocess\n\ndef run(cmd):\n    print(f\"$ {cmd}\")\n    subprocess.run(cmd, shell=True, check=True)\n\nrun(\"az group create --name prod --location eastus\")\nrun(\"az deployment group create --resource-group prod --template-file main.bicep\")\nprint(\"deployed ✓\")\n",
+     "lines": [
+         ("import subprocess", "run shell commands from Python"),
+         ("def run(cmd):", "a small helper that echoes and runs a command"),
+         ("check=True", "check=True raises on failure — no silent errors"),
+         ("run(\"az group create", "each deploy step, called through the helper"),
+     ],
+     "say": "Type out the same deploy, but in Python.",
+     "why": "Python is the better tool when the script grows logic — conditions, retries, parsing output. subprocess.run with check=True keeps the fail-fast discipline you'd want in bash.",
+     "on_win": "Python deploy script. Same job, more room to grow."},
+
+    {"module": "Senior Scripting", "kind": "run", "title": "run the deploy",
+     "expect": ["bash deploy.sh"], "cmd_hint": "bash deploy.sh",
+     "say": "Run the bash script to deploy everything.",
+     "why": "bash deploy.sh runs the whole sequence — resource group, then deployment. This is the payoff: a dozen steps collapsed into one command.",
+     "on_win": "Deployed ✓ — the whole environment from one command."},
 ]
 
 # Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
@@ -19682,7 +19856,10 @@ class TutorApp(App):
             speak(text)                      # espeak fallback (piper handled above)
             dur = self._estimate_dur(text)
             lead = 0.0
-        setattr(self, timer_attr, self.set_timer(lead + dur + 0.2, advance_fn))
+        # never gate the flow on the full narration: advance after a SHORT fixed
+        # pause so the learner is never waiting on the voice — the audio keeps
+        # playing in the background while the next thing is already on screen
+        setattr(self, timer_attr, self.set_timer(0.6, advance_fn))
 
     def _shell_submit(self):
         typed = self._shell_cmd
