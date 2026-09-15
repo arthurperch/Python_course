@@ -1198,6 +1198,14 @@ GROUPS = [
              "prompt": "Use `zip` to print each name with its matching number.",
              "starter": "names = [\"a\", \"b\"]\nnums = [1, 2]\n", "expect": ["a", "1", "b", "2"], "need": ["zip"], "stdin": "",
              "example": "Zip and walk the pairs:\n```python\nfor x, y in zip([\"x\", \"y\"], [9, 8]):\n    print(x, y)\n```\n> zip() pairs two lists position-by-position — names[0] with nums[0], and so on."},
+            {"title": "no shared default", "topic": "safety",
+             "prompt": "Write `add(item, items=None)` that creates a fresh list when `items` is None, then print `add(1)` and `add(2)` separately.",
+             "starter": "", "expect": ["1", "2"], "need": ["None"], "stdin": "",
+             "example": "The same safe pattern, different name:\n```python\ndef push(item, stack=None):\n    if stack is None:\n        stack = []\n    stack.append(item)\n    return stack\n\nprint(push(9))\nprint(push(8))\n```\n> a default of None + a fresh list inside means each call starts clean — no shared [] leaking between calls."},
+            {"title": "typed function", "topic": "typing",
+             "prompt": "Write `double(x: int) -> int` that returns `x * 2`, then print `double(6)`.",
+             "starter": "", "expect": ["12"], "need": ["-> int"], "stdin": "",
+             "example": "A typed function, different math:\n```python\ndef square(x: int) -> int:\n    return x * x\n\nprint(square(5))\n```\n> `x: int` says the argument is an int; `-> int` says it returns an int. Type hints document intent and let checkers catch mistakes early."},
         ],
     },
 ]
@@ -2367,6 +2375,34 @@ LESSONS = {
             {"caption": "make a dict", "code": "print(dict(zip([\"a\", \"b\"], [1, 2])))"},
         ],
         "outro": "The moment you catch yourself writing for i in range(len(...)) to line up two lists — zip does it without the index bookkeeping.",
+    },
+    "safety": {
+        "title": "Safe Defaults — Never a Mutable Argument",
+        "intro": "The single most common Python trap: a list or dict as a default argument. It's created once and shared across every call, so one call's leftovers leak into the next.",
+        "points": [
+            ("The trap", "def add(x, items=[]) — that [] is built ONCE at definition time, and every call reuses the same list. Calls bleed into each other."),
+            ("The fix", "Default to None, then make a fresh list inside: if items is None: items = []. Now every call starts clean."),
+            ("Same for dicts", "items={} is equally shared. The rule is universal: never put a mutable object in a default argument."),
+        ],
+        "examples": [
+            {"caption": "the buggy way", "code": "def add(x, items=[]):\n    items.append(x)\n    return items\n\nprint(add(1))\nprint(add(2))  # prints [1, 2] — the list leaked!"},
+            {"caption": "the safe way", "code": "def add(x, items=None):\n    if items is None:\n        items = []\n    items.append(x)\n    return items\n\nprint(add(1))\nprint(add(2))  # prints [2] — clean every time"},
+        ],
+        "outro": "None + a fresh container inside is the safe default. It's the one habit that quietly saves every Python programmer from a nasty, hard-to-find bug.",
+    },
+    "typing": {
+        "title": "Type Hints — Document What Goes In and Out",
+        "intro": "Type hints annotate your function signatures so both humans and tools know what types are expected — and a checker like mypy can prove your code matches before it ever runs.",
+        "points": [
+            ("Argument types", "def double(x: int): the `x: int` says x must be an int."),
+            ("Return type", "The `-> int` after the colon declares what the function returns."),
+            ("Catch bugs early", "mypy reads the hints and flags type mismatches at check time — errors you'd otherwise meet at runtime, in production."),
+        ],
+        "examples": [
+            {"caption": "a typed function", "code": "def double(x: int) -> int:\n    return x * 2\n\nprint(double(6))"},
+            {"caption": "typed collections", "code": "def total(nums: list[int]) -> int:\n    return sum(nums)\n\nprint(total([1, 2, 3]))"},
+        ],
+        "outro": "Type hints are documentation that runs. They cost you a few keystrokes and pay back in caught bugs and readable code.",
     },
 }
 
@@ -9708,6 +9744,121 @@ DEV_LESSONS = [
      "say": "Run the deployment playbook.",
      "why": "Run it — your server is now configured and your app is deployed.",
      "on_win": "Shipped! Every layer, working together."},
+
+    # ==== PILLAR 1 · Code Optimization & Safety ============================
+    {"module": "Code Optimization & Safety", "kind": "info", "title": "write safe code",
+     "say": "Before you deploy anything, your code has to be safe and lean. A senior programmer writes code that doesn't waste memory, has no sneaky bugs, and is checked before it runs.",
+     "why": "Optimization and safety come BEFORE infrastructure. A slow, buggy program is slow and buggy no matter how perfectly it's deployed. These are the habits that separate senior from junior."},
+
+    {"module": "Code Optimization & Safety", "kind": "write", "title": "a generator, not a list",
+     "file": "reader.py",
+     "content": "def read_lines(path):\n    with open(path) as f:\n        for line in f:\n            yield line.strip()\n",
+     "lines": [
+         ("def read_lines(path):", "a function that returns ONE line at a time, not all at once"),
+         ("with open(path) as f:", "open the file safely — auto-closes when done"),
+         ("for line in f:", "walk the file line by line — never loads it all into memory"),
+         ("yield line.strip()", "yield hands out one line and pauses, instead of building a big list"),
+     ],
+     "say": "Type out a generator that reads a file one line at a time.",
+     "why": "A generator yields one item at a time, so a million-line file uses almost no memory. Loading it all into a list first would eat RAM — yield is the safe way.",
+     "on_win": "That's a generator. It streams — it never holds the whole file in memory at once."},
+
+    {"module": "Code Optimization & Safety", "kind": "write", "title": "no mutable defaults",
+     "file": "safe.py",
+     "content": "def add_item(item, items=None):\n    if items is None:\n        items = []\n    items.append(item)\n    return items\n",
+     "lines": [
+         ("def add_item(item, items=None):", "None as the default, NOT [] — a list default is shared and remembered"),
+         ("if items is None:", "only when nothing was passed in..."),
+         ("items = []", "...make a FRESH list, so every call gets its own"),
+         ("items.append(item)", "now append safely"),
+     ],
+     "say": "Type out the safe way to write a default argument.",
+     "why": "A default like items=[] is created ONCE and shared across every call — so leftovers leak between calls. None + a fresh list inside is the safe pattern.",
+     "on_win": "Safe default written. This one bug has bitten every Python programmer once."},
+
+    {"module": "Code Optimization & Safety", "kind": "write", "title": "type hints",
+     "file": "typed.py",
+     "content": "def total(nums: list[int]) -> int:\n    return sum(nums)\n\nresult: int = total([1, 2, 3])\nprint(result)\n",
+     "lines": [
+         ("def total(nums: list[int]) -> int:", "nums is a list of ints, and the function returns an int"),
+         ("return sum(nums)", "sum and return"),
+         ("result: int = total([1, 2, 3])", "the variable result is also declared an int"),
+     ],
+     "say": "Type out a function with type hints.",
+     "why": "Type hints document what goes in and out. Run a checker like mypy over it and it catches type mistakes BEFORE the code runs — errors you'd otherwise only meet at runtime.",
+     "on_win": "Typed. Now a checker can prove your code matches your intent."},
+
+    {"module": "Code Optimization & Safety", "kind": "write", "title": "frozen data",
+     "file": "config.py",
+     "content": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Config:\n    host: str\n    port: int\n\ncfg = Config(\"db.internal\", 5432)\nprint(cfg.host, cfg.port)\n",
+     "lines": [
+         ("@dataclass(frozen=True)", "frozen = read-only after creation — nobody can quietly mutate config"),
+         ("class Config:", "the settings class"),
+         ("host: str / port: int", "typed fields"),
+         ("cfg = Config(...)", "build it once, and it's locked"),
+     ],
+     "say": "Type out a frozen dataclass for settings.",
+     "why": "frozen=True makes a dataclass immutable. Config that can't be silently changed mid-run is one less class of bug to chase in production.",
+     "on_win": "Frozen config. Immutable by default is a senior reflex."},
+
+    # ==== PILLAR 3 · Multi-Stage Docker ===================================
+    {"module": "Docker Multi-Stage", "kind": "info", "title": "slim images",
+     "say": "A naive Docker image ships your code AND the whole build toolchain. Multi-stage builds split build from runtime, so the final image is tiny and the attack surface is small.",
+     "why": "Smaller images deploy faster, pull faster, and carry fewer packages for an attacker to exploit. Multi-stage is how seniors keep images lean."},
+
+    {"module": "Docker Multi-Stage", "kind": "write", "title": "two-stage build",
+     "file": "Dockerfile",
+     "content": "FROM python:3.11 AS builder\nWORKDIR /build\nCOPY . .\nRUN pip install --no-cache-dir -r requirements.txt\n\nFROM python:3.11-slim\nWORKDIR /app\nCOPY --from=builder /build /app\nCMD [\"python3\", \"/app/app.py\"]\n",
+     "lines": [
+         ("FROM python:3.11 AS builder", "stage 1: the full builder image with everything needed to compile"),
+         ("RUN pip install ...", "install deps in the builder, not the final image"),
+         ("FROM python:3.11-slim", "stage 2: a tiny runtime image"),
+         ("COPY --from=builder ...", "copy only the finished app out of the builder"),
+         ("CMD", "run the app"),
+     ],
+     "say": "Type out a multi-stage Dockerfile — a builder stage, then a slim runtime stage.",
+     "why": "The builder holds the toolchain; the final image holds only what runs. COPY --from carries the result across, and the toolchain never ships.",
+     "on_win": "Multi-stage Dockerfile. The final image is a fraction of the builder."},
+
+    {"module": "Docker Multi-Stage", "kind": "run", "title": "build it slim",
+     "verify": lambda c: c.startswith("docker build") and "-t" in c,
+     "cmd_hint": "docker build -t myapp:slim .",
+     "say": "Build the multi-stage image and tag it slim.",
+     "why": "docker build walks both stages, discards the builder, and tags the final lean image.",
+     "on_win": "Built. The runtime image is lean and safe."},
+
+    # ==== PILLAR 4 · Visibility & Security ===============================
+    {"module": "Visibility & Security", "kind": "info", "title": "see before it breaks",
+     "say": "You can't fix what you can't see. In production you watch metrics — error rate, CPU, memory — on dashboards, so problems show up before users complain.",
+     "why": "Observability turns 'it broke and users are angry' into 'the graph is trending up, fix it now'. Prometheus collects metrics; Grafana draws them."},
+
+    {"module": "Visibility & Security", "kind": "write", "title": "scrape the metrics",
+     "file": "prometheus.yml",
+     "content": "global:\n  scrape_interval: 15s\n\nscrape_configs:\n  - job_name: app\n    static_configs:\n      - targets: [\"app:5000\"]\n",
+     "lines": [
+         ("scrape_interval: 15s", "how often Prometheus pulls metrics — every 15 seconds"),
+         ("job_name: app", "a named group of targets to watch"),
+         ("targets: [\"app:5000\"]", "where your app exposes its metrics"),
+     ],
+     "say": "Type out a Prometheus config that scrapes your app every 15 seconds.",
+     "why": "Prometheus periodically PULLS metrics from each target. scrape_interval sets the rhythm; targets list the endpoints.",
+     "on_win": "Prometheus is now watching your app."},
+
+    {"module": "Visibility & Security", "kind": "write", "title": "least privilege",
+     "file": "policy.json",
+     "content": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:GetObject\"],\n      \"Resource\": \"arn:aws:s3:::my-bucket/*\"\n    }\n  ]\n}\n",
+     "lines": [
+         ("\"Effect\": \"Allow\"", "the policy grants access"),
+         ("\"Action\": [\"s3:GetObject\"]", "ONE action — only reading one object, nothing else"),
+         ("\"Resource\": ...my-bucket/*", "scoped to a single bucket, not everything"),
+     ],
+     "say": "Type out a least-privilege policy that grants exactly one permission.",
+     "why": "Least privilege: grant only the exact action on the exact resource, nothing more. A leaked token then can only read one bucket — not delete everything.",
+     "on_win": "Least privilege locked in. Minimal blast radius."},
+
+    {"module": "Visibility & Security", "kind": "info", "title": "secrets stay secret",
+     "say": "Never put passwords or keys in code or git. They go in a secret store, injected at runtime as environment variables.",
+     "why": "A secret in git is a secret leaked forever. Secret managers + env vars keep credentials out of the repo and rotating cleanly."},
 ]
 
 # Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
