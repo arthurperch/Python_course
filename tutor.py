@@ -4955,6 +4955,34 @@ def _line_explain(line: str) -> str:
     return _plain_syntax_hint(line)
 
 
+def _print_gloss(code: str) -> list[str]:
+    """For each print(...) line, a plain-English 'why it shows that' gloss —
+    the on-screen visual explanation of a print's outcome."""
+    glosses = []
+    for ln in code.split("\n"):
+        s = ln.strip()
+        m = re.match(r"print\s*\((.*)\)\s*$", s)
+        if not m:
+            continue
+        arg = m.group(1).strip()
+        if not arg:
+            reason = "prints a blank line"
+        elif "," in arg:
+            reason = "shows each value in order, joined by a single space"
+        elif arg[0] in ("'", '"'):
+            reason = "shows the text as written — the quotes mark text, they don't show"
+        elif re.fullmatch(r"[\d\s+\-*/%().]+", arg):
+            try:
+                result = eval(arg)
+                reason = f"does the math first: {arg} = {result}, then shows {result}"
+            except Exception:
+                reason = "does the math first, then shows the answer"
+        else:
+            reason = "shows whatever is stored in that name"
+        glosses.append((arg, reason))
+    return glosses
+
+
 def _tour_parts_for(code: str) -> list[dict]:
     """Tour parts for `code`: authored token-level tours when available, else a
     line-by-line auto tour so EVERY example gets a visual walkthrough."""
@@ -17124,13 +17152,16 @@ class TutorApp(App):
     def _ghost_fill_blank(self, code):
         """Find the first string value (inside the quotes) or a number to blank
         out for a 'fill the value' drill. Quotes stay — the user types the value
-        between them. Returns (start, end, is_number) or (None, None, False)."""
-        m = re.search(r'(?<=")[^"]*(?=")', code)
-        if m and m.start() != m.end():
-            return m.start(), m.end(), False
-        m = re.search(r"(?<=')[^']*(?=')", code)
-        if m and m.start() != m.end():
-            return m.start(), m.end(), False
+        between them. An EMPTY string (like first = \"\") is the clearest 'fill me'
+        placeholder, so it wins first. Returns (start, end, is_number) or
+        (None, None, False)."""
+        # blank the FIRST quoted string, including an empty one (a fill-me slot)
+        m = re.search(r'"[^"]*"', code)
+        if m:
+            return m.start() + 1, m.end() - 1, False
+        m = re.search(r"'[^']*'", code)
+        if m:
+            return m.start() + 1, m.end() - 1, False
         m = re.search(r'\b\d+\b', code)
         if m:
             return m.start(), m.end(), True
@@ -17401,15 +17432,19 @@ class TutorApp(App):
                 elif self._ghost_silhouette:
                     # SILHOUETTE: show the line's SHAPE, not its words. Indentation
                     # (spaces) and punctuation are faint outlines — you see WHERE
-                    # the symbols go — but every letter/digit is a hidden ▢. After
-                    # 5 letter-by-letter misses the word first-letters appear.
+                    # the symbols go — but every LETTER is a hidden ▢. Numbers stay
+                    # visible (the point is syntax, not math). After 5 misses the
+                    # word first-letters appear.
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
                         if ch == " ":
                             # indentation / spacing stays visible — block structure
                             t.append(" ", style="reverse bold" if cur else "#585b70")
-                        elif ch.isalnum() or ch == "_":
+                        elif ch.isdigit():
+                            # numbers stay visible — the point is syntax, not math
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
+                        elif ch.isalpha() or ch == "_":
                             prev = rest[k - 1] if k > 0 else (
                                 line[typed_n - 1] if typed_n > 0 else "")
                             is_first = not (prev.isalnum() or prev == "_")
@@ -17427,6 +17462,9 @@ class TutorApp(App):
                         if a < self._ghost_blind_from + self._ghost_blind_reveal:
                             t.append(self._ghost_visible(ch),
                                      style="reverse bold" if cur else "#5a5a5a")
+                        elif ch.isdigit():
+                            # numbers stay visible even blind — syntax is the goal
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
                         else:
                             t.append("·", style="reverse bold" if cur else "#3a3a44")
                 else:
@@ -17488,6 +17526,19 @@ class TutorApp(App):
             return Text("type the ghost · wrong letters stick red · Esc quits", style="dim")
         if self._ghost_phase == "run":
             return Text("running…", style="dim")
+        if self._ghost_phase == "ran":
+            # show the output + a visual 'why it printed that' explanation
+            out = Text()
+            reflowed = _reflow_output(self._ghost_out_text, width=self.size.width)
+            for i, line in enumerate(reflowed.split("\n")):
+                if i:
+                    out.append("\n")
+                out.append(line, style="bold green")
+            gloss = self._ghost_ran_gloss()
+            if gloss is not None:
+                out.append("\n\n")
+                out.append_text(gloss)
+            return out
         if self._ghost_phase == "reveal":
             out = Text()
             for i, rl in enumerate(_reveal_output_lines(self._ghost_out_text, self._ghost_out_i)):
@@ -17501,6 +17552,21 @@ class TutorApp(App):
             if i:
                 out.append("\n")
             out.append(line, style="bold green")
+        return out
+
+    def _ghost_ran_gloss(self):
+        """A visual 'why it printed that' explanation for the print(s) — on-screen
+        words (not TTS) explaining the reason for the outcome."""
+        glosses = _print_gloss(self._ghost_target)
+        if not glosses:
+            return None
+        out = Text("WHY IT PRINTED THAT:", style="bold #7dd3fc")
+        for arg, reason in glosses:
+            out.append("\n")
+            out.append("▸ ", style="dim")
+            out.append(f"print({arg})", style="#f9a8d4")
+            out.append(" — ", style="dim")
+            out.append(reason, style="#a5b4fc")
         return out
 
     # ---- VIM / NEOVIM trainer course ------------------------------------- #
