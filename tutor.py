@@ -22579,6 +22579,48 @@ class TutorApp(App):
             if seg:
                 t.append(seg, style=style)
 
+    def _dev_first_mismatch(self, buf, target_lines):
+        """First (line, col) where the typed buffer diverges from the target,
+        or None when everything matches. This is where the learner should go."""
+        for i in range(len(buf.lines)):
+            g = buf.lines[i]
+            w = target_lines[i] if i < len(target_lines) else ""
+            for j in range(len(g)):
+                wc = w[j] if j < len(w) else ""
+                if g[j] != wc:
+                    return (i, j)
+            if len(g) < len(w):
+                return (i, len(g))   # missing char(s) at end of this line
+        if len(buf.lines) < len(target_lines):
+            return (len(buf.lines), 0)   # a whole line still missing
+        return None
+
+    def _dev_render_buf_line(self, t, line, row, buf, hl, on):
+        """Render one buffer line: block cursor at buf.col, the FIRST mistake
+        flashes yellow so the learner knows where to backspace and fix it, and
+        underscores get a visible background so they never read as a space."""
+        col = min(buf.col, len(line)) if row == buf.row else None
+        n = max(len(line), (col + 1) if col is not None else 0)
+        for j in range(n):
+            ch = line[j] if j < len(line) else " "
+            is_cursor = col is not None and j == col
+            is_hl = hl is not None and hl[0] == row and hl[1] == j
+            if is_cursor:
+                st = "black on #22c55e bold" if buf.mode == "insert" else "black on #e6e6e6 bold"
+                t.append(ch, style=st)
+            elif is_hl:
+                if ch == "_":
+                    t.append("_", style=("bold #facc15 on #3f4756" if on else "#facc15 on #3f4756"))
+                elif ch == " ":
+                    t.append("▁", style="bold #facc15" if on else "#facc15")
+                else:
+                    t.append(ch, style="bold #facc15" if on else "#facc15")
+            else:
+                if ch == "_":
+                    t.append("_", style="#f0f0f5 on #3f4756")
+                else:
+                    t.append(ch, style="#f0f0f5")
+
     def _dev_render_vim(self):
         """Render a realistic nvim editor. The ONLY colored thing is the target
         file (what to write) — amber and flashing. Everything else is white."""
@@ -22592,24 +22634,17 @@ class TutorApp(App):
         self._dev_append_code(t, fname, "bold #f0f0f5")
         t.append(" ", style="bold #f0f0f5")
         t.append("\n\n")
-        # buffer: line numbers + cursor + '~' on empty lines (like real vim)
+
+        on = getattr(self, "_dev_write_blink", False)
+        target_lines = buf.target.split("\n")
+        hl = self._dev_first_mismatch(buf, target_lines)
+
+        # buffer: line numbers + block cursor + '~' on empty lines (like real vim)
         n = max(len(buf.lines), 3)
         for i in range(n):
             t.append(f"{i + 1:>2} ", style="dim")
             if i < len(buf.lines):
-                line = buf.lines[i]
-                if i == buf.row:
-                    col = min(buf.col, len(line))
-                    self._dev_append_code(t, line[:col], "#f0f0f5")
-                    cell = line[col:col + 1] or " "
-                    if buf.mode == "insert":
-                        # solid BLOCK cursor while typing (green), not an underline
-                        t.append(cell, style="black on #22c55e bold")
-                    else:
-                        t.append(cell, style="black on #e6e6e6 bold")
-                    self._dev_append_code(t, line[col + 1:], "#f0f0f5")
-                else:
-                    self._dev_append_code(t, line, "#f0f0f5")
+                self._dev_render_buf_line(t, buf.lines[i], i, buf, hl, on)
             else:
                 t.append("~", style="#3a3f4b")
             t.append("\n")
@@ -22626,11 +22661,9 @@ class TutorApp(App):
             t.append("wq", style="bold #fbbf24")
             t.append(" = save AND quit", style="#f0f0f5")
         # the target file — a live fill bar correlated to the line you're on
-        on = getattr(self, "_dev_write_blink", False)
         t.append("\n\n")
         t.append("write this file:", style="bold #f0f0f5")
         t.append("\n")
-        target_lines = buf.target.split("\n")
         for i, tline in enumerate(target_lines):
             if i < buf.row:
                 # finished line — green ✓
@@ -22646,13 +22679,22 @@ class TutorApp(App):
                             st = "bold #fbbf24"
                             t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
                         else:
-                            # wrong char — red, flashing
-                            t.append(typed[j], style="bold underline #ff5555" if on else "bold #7a2020")
+                            # MISTAKE — show the TARGET char (never your wrong
+                            # keystroke), flashing red bold <-> non-bold. A space
+                            # shows as a red block, an underscore stays underscore.
+                            if ch == " ":
+                                t.append("▁", style="bold #ff5555" if on else "#ff5555")
+                            elif ch == "_":
+                                t.append("_", style=("bold #ff5555 on #3f4756" if on else "#ff5555 on #3f4756"))
+                            else:
+                                t.append(ch, style="bold #ff5555" if on else "#ff5555")
                     else:
                         st = "#3a3f4b"
                         t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
                 if len(typed) > len(tline):
-                    t.append(typed[len(tline):], style="bold #ff5555")   # over-typed
+                    # extra keystrokes past the end — red blocks, delete them
+                    for _ in range(len(typed) - len(tline)):
+                        t.append("▁", style="bold #ff5555" if on else "#ff5555")
             else:
                 # not reached yet — dim ghost
                 t.append("    ", style="")
