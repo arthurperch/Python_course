@@ -13267,12 +13267,12 @@ class TutorApp(App):
     #quit.visible { display: block; }
     .hidden { display: none; }
     Confetti { layer: overlay; width: 100%; height: 100%; display: none; }
-    #menu-banner { height: auto; padding: 0 2; }
+    #menu-banner { height: auto; padding: 0 2; margin: 0 2; }
     #menu-progress { height: 1; padding: 0 2; background: $boost; text-style: bold; margin: 0 2; border: round $primary; }
-    #menu-body { height: 1fr; }
-    #menu-list { width: 1fr; padding: 1 3; }
+    #menu-body { height: 1fr; margin: 0 2; border: round $primary; background: #11111b; }
+    #menu-list { width: 1fr; padding: 0 1; }
     #menu-list-inner { width: 1fr; height: auto; }
-    #menu-preview { width: 24%; border-right: solid $primary; background: $boost; padding: 0; }
+    #menu-preview { width: 22%; border-right: solid $primary; background: #0d0d16; padding: 0; }
     #menu-preview-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
     #menu-preview-scroll { height: 1fr; }
     #menu-preview-inner { height: auto; padding: 1 2; }
@@ -13342,6 +13342,7 @@ class TutorApp(App):
         self.ch_idx = 0
         self.menu_sel = 0
         self.menu_level = "series"      # "series" (pick a tier) | "challenges"
+        self._last_menu_level = None    # to auto-scroll the list to top on a new screen
         self.series_sel = -1            # -1 = VIM/NEOVIM course, 0.. = GROUPS
         self.started = False
         self.last: str | None = None
@@ -13887,6 +13888,9 @@ class TutorApp(App):
         self._start_menu_anim()
         self._render_progress()
         self._sync_back_button()
+        # a NEW screen (level change) climbs the list back to the very top
+        new_screen = self.menu_level != self._last_menu_level
+        self._last_menu_level = self.menu_level
         if self.menu_level == "series":
             self._render_series_list()
         elif self.menu_level == "dev_modules":
@@ -13895,6 +13899,12 @@ class TutorApp(App):
             self._render_net_module_list()
         else:
             self._render_challenge_list()
+        if new_screen:
+            try:
+                self.query_one("#menu-list", VerticalScroll).scroll_to(
+                    y=0, animate=False)
+            except Exception:
+                pass
         self._render_menu_preview()
         self._render_menu_help()
 
