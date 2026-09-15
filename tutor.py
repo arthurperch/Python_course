@@ -13110,6 +13110,32 @@ class TutorApp(App):
     #volume-icon { width: 9; padding: 1 1; }
     #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
+    #task { height: auto; min-height: 1; max-height: 4; padding: 0 2; background: $boost; border-bottom: solid $primary; color: $text; }
+    #split { height: 1fr; }
+    #editor-box { width: 1fr; height: 100%; border: tall $primary; background: #11111b; }
+    #split-drag { width: 1; background: $surface-darken-2; }
+    #split-drag:hover { background: $accent; }
+    #test-box { width: 42%; height: 100%; border: tall #f9a8d4; background: #11111b; }
+    #test-box.collapsed { width: 3; }
+    #test-box.collapsed #test-label, #test-box.collapsed #test-editor,
+    #test-box.collapsed #test-scroll, #test-box.collapsed #test-run { display: none; }
+    #test-collapse { height: 1; padding: 0 1; color: #cba6f7; background: $boost; }
+    #test-collapse:hover { background: $surface; }
+    #test-label { height: 1; padding: 0 2; color: $text; background: $boost; }
+    #test-editor { height: 1fr; min-height: 6; padding: 1 2; }
+    #test-scroll { height: 7; border-top: solid #f9a8d4; background: $surface-darken-1; }
+    #test-output { height: auto; padding: 0 1; }
+    #test-bar { height: 1; padding: 0 1; background: $boost; }
+    #command-bar { height: auto; min-height: 2; padding: 0 1; background: $boost; border-top: solid $primary; }
+    #command-bar Button { min-width: 12; margin-right: 1; }
+    #cmd-hint { width: 1fr; height: 1; padding: 0 1; color: $text-muted; }
+    #cmd { width: 1fr; display: none; }
+    #cmd.visible { display: block; }
+    #cmd.flash { border: tall yellow; background: #4d4000; }
+    #volume-bar { dock: bottom; height: 4; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
+    #volume-bar.visible { display: block; }
+    #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
+    #wildmenu.visible { display: block; }
     #challenge-box { width: 100%; height: auto; max-height: 16; border: tall $accent; display: none; }
     #challenge-box.visible { display: block; }
     #challenge { height: auto; min-height: 4; max-height: 12; padding: 1 2; overflow: auto; }
@@ -13117,34 +13143,22 @@ class TutorApp(App):
     #demo-label { height: 1; padding: 0 2; background: $boost; }
     #demo-editor { height: 7; padding: 1 2; background: #0d1117; border: solid $primary; }
     #demo-console { height: 5; padding: 1 2; background: #000000; border: solid $success; }
-    #editor-box { width: 100%; height: 1fr; border: tall $primary; }
-    #split-drag { display: none; }
-    #task-check { dock: bottom; width: 100%; min-height: 3; }
-    #task-step { dock: bottom; width: 100%; min-height: 3; }
-    #task-run { dock: bottom; width: 100%; min-height: 2; }
-    #task-continue { dock: bottom; width: 100%; min-height: 3; }
+    #task-check, #task-step, #task-run, #task-continue { min-height: 1; height: 1; }
     ExLine { width: 100%; height: 1; padding: 0 1; color: $text-muted; }
     ExLine:hover { background: $boost; color: $text; }
     #ex-lines { height: auto; }
     #editor-label { height: 1; padding: 0 2; color: $text; }
     #editor-label.normal { background: #1f4e79; }
     #editor-label.insert { background: #1e6b3f; }
-    #example-ref { height: auto; padding: 1 2; background: #0d1117; border-bottom: solid $warning; }
-    #editor { height: auto; min-height: 8; padding: 1 2; }
+    #editor { height: 1fr; min-height: 8; padding: 1 2; }
     #output-scroll { height: 7; border-top: solid $primary; background: $surface-darken-1; }
     #out-drag { height: 1; background: $surface-darken-2; }
     #out-drag:hover { background: $accent; }
     #output { height: auto; padding: 0 1; }
     #output-bar { height: 1; padding: 0 1; background: $boost; }
     #guide { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
-    #task { height: 3; padding: 1 2; background: $accent; color: $text; }
-    #cmd { dock: bottom; display: none; }
-    #cmd.visible { display: block; }
-    #volume-bar { dock: bottom; height: 4; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
-    #volume-bar.visible { display: block; }
-    #cmd.flash { border: tall yellow; background: #4d4000; }
-    #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
-    #wildmenu.visible { display: block; }
+    #side-examples { display: none; }
+    #examples-box { display: none; }
     #lesson { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; overflow: auto; }
     #lesson.visible { display: block; }
     #step { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #0a0a0a; display: none; overflow: auto; }
@@ -13319,6 +13333,8 @@ class TutorApp(App):
         Binding("r", "step_rewind", "Rewind", show=False),
         Binding("plus,equals", "step_faster", "Faster", show=False),
         Binding("minus", "step_slower", "Slower", show=False),
+        Binding("ctrl+t", "toggle_test", "Test", show=False),
+        Binding("ctrl+r", "run_test", "RunTest", show=False),
     ]
 
     def __init__(self):
@@ -13368,6 +13384,8 @@ class TutorApp(App):
         self._split_dragging = False   # dragging the editor/task divider
         self._out_dragging = False     # dragging the editor↔output divider
         self._out_drag_start_y = 0
+        self._test_collapsed = True    # the right test/scratch pane starts collapsed
+        self._test_drag_start_w = 0    # width when a split drag began
         self._out_drag_start_h = 10
         self._demo_gen = 0
         self._demo_phase = "idle"
@@ -13647,42 +13665,54 @@ class TutorApp(App):
             yield Checkbox("Key sounds  (typing + blips)", id="set-keys", value=True)
             yield Checkbox("Hints  (underline mistakes)", id="set-hints", value=True)
             yield Static("Esc or click ◉ to close", id="profile-popout-close")
-        # challenge view (hidden until a challenge is selected) — VERTICAL:
-        # TASK on top, editor full-width in the middle, demo/examples at the bottom
+        # challenge view (hidden until a challenge is selected) — Neovim split:
+        # task on top, LEFT = your work, RIGHT = test scratch (collapsible),
+        # slim command bar at the bottom
         with Vertical(id="body", classes="hidden"):
+            yield Static("", id="task")
+            with Horizontal(id="split"):
+                with Vertical(id="editor-box"):
+                    yield Static("", id="editor-label")
+                    yield VimEditor(id="editor")
+                    yield Static("", id="out-drag")
+                    with VerticalScroll(id="output-scroll"):
+                        yield Static("", id="output")
+                    yield Static("", id="output-bar")
+                yield Static("", id="split-drag")
+                with Vertical(id="test-box", classes="collapsed"):
+                    yield Static("", id="test-collapse")
+                    yield Static("", id="test-label")
+                    yield VimEditor(id="test-editor")
+                    with VerticalScroll(id="test-scroll"):
+                        yield Static("", id="test-output")
+                    yield Button("▶ RUN", id="test-run", variant="default")
+            with Horizontal(id="command-bar"):
+                yield Button("▶ RUN", id="task-run", variant="default")
+                yield Button("✓ COMPLETE", id="task-check", variant="primary")
+                yield Button("▶ STEP", id="task-step", variant="default")
+                yield Button("▶ NEXT", id="task-continue", variant="success", classes="hidden")
+                yield Static("", id="cmd-hint")
+                yield Static("", id="wildmenu")
+                yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
+            # demoted/hidden panels (their render methods still target these)
+            with VerticalScroll(id="challenge-box"):
+                yield Static("[bold]CHALLENGE[/]", id="challenge-label")
+                yield Static("", id="mastery-note")
+                yield Markdown("", id="challenge")
+                yield Static("", id="goal")
+                yield Static("", id="demo-label")
+                yield Static("", id="demo-editor")
+                yield Static("", id="demo-console")
             with Vertical(id="side-examples"):
                 yield TabLabel("TASK", id="side-examples-title")
                 with VerticalScroll(id="side-scroll"):
                     yield Static("", id="side-inner")
-                yield Button("✓ COMPLETE", id="task-check", variant="primary")
-                yield Button("▶ RUN", id="task-run", variant="default")
-                yield Button("▶ STEP", id="task-step", variant="default")
-                yield Button("▶ CONTINUE", id="task-continue", variant="success", classes="hidden")
-            with VerticalScroll(id="editor-box"):
-                yield Static("", id="editor-label")
-                yield Static("", id="example-ref")
-                yield VimEditor(id="editor")
-                yield Static("", id="out-drag")
-                with VerticalScroll(id="output-scroll"):
-                    yield Static("", id="output")
-                yield Static("", id="output-bar")
-                yield Static("", id="wildmenu")
-                yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
             with Vertical(id="examples-box"):
                 yield TabLabel("EXAMPLES", id="examples-title")
                 with VerticalScroll(id="examples-scroll"):
                     yield Static("", id="examples-inner")
                     with Vertical(id="ex-lines"):
                         pass
-            with VerticalScroll(id="challenge-box"):
-                yield Static("[bold]CHALLENGE[/]", id="challenge-label")
-                yield Static("", id="mastery-note")
-                yield Static("", id="task")
-                yield Markdown("", id="challenge")
-                yield Static("", id="goal")
-                yield Static("", id="demo-label")
-                yield Static("", id="demo-editor")
-                yield Static("", id="demo-console")
             yield Markdown("", id="cheat")
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
@@ -14945,6 +14975,9 @@ class TutorApp(App):
         if event.button.id == "task-step":
             self.action_step()
             return
+        if event.button.id == "test-run":
+            self._run_test()
+            return
         if event.button.id == "name-save":
             self._save_name()
             return
@@ -15433,15 +15466,14 @@ class TutorApp(App):
             # NO-HELP exam: blank editor (write from scratch), no goal diagram,
             # no worked-example hint. The task panel already shows the goal.
             self.query_one("#goal", Static).update("")
-            self.query_one("#example-ref", Static).update("")
             self.query_one("#editor", VimEditor).set_text("")
+            self.query_one("#test-editor", VimEditor).set_text("")
         else:
             self.query_one("#mastery-note", Static).update("")
             self.query_one("#goal", Static).update(self._goal_panel(c))
-            self.query_one("#example-ref", Static).update(
-                "[dim]worked examples are on the right →  ([reverse]F8[/] hide/show · scroll for more)[/]")
             self.query_one("#editor", VimEditor).set_text(
                 self._plan_template(c) + c["starter"])
+            self._populate_test_editor(c)
         self._set_output("")
         self.last = None
         self._cancel_celebrate()
@@ -15451,6 +15483,12 @@ class TutorApp(App):
         self._update_status()
         self._update_guide()
         self._set_task_arrow(c["title"])
+        # the right test/scratch pane — starts collapsed, opens with <<< / ctrl+t
+        try:
+            self.query_one("#test-collapse", Static).update(
+                ">>>" if self._test_collapsed else "<<<")
+        except Exception:
+            pass
         self._render_side_examples()
         self._stop_demo()   # the F3 lesson demo is opt-in now — the task panel
                             # and editor own the screen by default
@@ -15667,6 +15705,56 @@ class TutorApp(App):
             t.stop()
             self._arrow_timer = None
         self.query_one("#task", Static).update(f"[bold]▶ {title}[/]  ·  read, type, test")
+
+    # ---- right test/scratch pane (Neovim split: LEFT = work, RIGHT = test) ---
+
+    def _populate_test_editor(self, c):
+        """Fill the right test/scratch editor with COMMENTED examples (syntax +
+        output) the user can un-comment and run. Starts collapsed."""
+        code = example_code(c.get("example", ""))[1]
+        lines = ["# TEST SCRATCH — un-comment a line (delete the #) then RUN",
+                 "# the # marks a comment, which Python skips",
+                 ""]
+        if code:
+            for ln in code.split("\n"):
+                if ln.strip():
+                    lines.append("# " + ln)
+        topic = c.get("topic", "custom")
+        for ex in LESSONS.get(topic, {}).get("examples", [])[:2]:
+            for ln in ex.get("code", "").split("\n"):
+                if ln.strip():
+                    lines.append("# " + ln)
+        self.query_one("#test-editor", VimEditor).set_text("\n".join(lines))
+        self.query_one("#test-label", Static).update(
+            "TEST SCRATCH — un-comment (#) then RUN")
+        self.query_one("#test-output", Static).update("")
+
+    def _run_test(self):
+        """Run the test editor's code (comments stripped) and show its output in
+        the right pane's console."""
+        code = self.query_one("#test-editor", VimEditor).get_text()
+        cleaned = []
+        for ln in code.split("\n"):
+            if ln.strip().startswith("#"):
+                ln = ln.replace("#", "", 1)
+            cleaned.append(ln)
+        out, err = run_lesson_code("\n".join(cleaned), "")
+        self.query_one("#test-output", Static).update(
+            Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1"))
+
+    def action_toggle_test(self):
+        """Open / collapse the right test/scratch pane (also via the <<< button)."""
+        self._test_collapsed = not self._test_collapsed
+        try:
+            self.query_one("#test-box", Vertical).toggle_class("collapsed")
+            self.query_one("#test-collapse", Static).update(
+                ">>>" if self._test_collapsed else "<<<")
+        except Exception:
+            pass
+
+    def action_run_test(self):
+        if self.mode == "challenge" and self.started and not self._test_collapsed:
+            self._run_test()
 
     # ---- textbook example (static, above your editor) ---------------------- #
 
@@ -20666,7 +20754,14 @@ class TutorApp(App):
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if getattr(event.widget, "id", None) == "split-drag":
             self._split_dragging = True
+            try:
+                self._test_drag_start_w = self.query_one("#test-box", Vertical).size.width
+            except Exception:
+                self._test_drag_start_w = 40
             self.capture_mouse(event.widget)
+            return
+        if getattr(event.widget, "id", None) == "test-collapse":
+            self.action_toggle_test()
             return
         if getattr(event.widget, "id", None) == "out-drag":
             self._out_dragging = True
@@ -20719,8 +20814,9 @@ class TutorApp(App):
             return
         try:
             w = self.size.width or 1
-            pct = max(38, min(82, round(event.screen_x / w * 100)))
-            self.query_one("#editor-box", VerticalScroll).styles.width = f"{pct}%"
+            # dragging the divider: the test pane's width is what's left of it
+            tb_w = max(20, min(80, w - event.screen_x))
+            self.query_one("#test-box", Vertical).styles.width = f"{tb_w}"
         except Exception:
             pass
 
