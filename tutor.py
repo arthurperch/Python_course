@@ -8947,7 +8947,7 @@ DEV_LESSONS = [
          ("COPY app.py /app/app.py", "copy your code from your computer into the container"),
          ("CMD", "the command the container runs when it starts"),
      ],
-     "say": "Type out the docker file — the recipe that tells docker how to build your app. Follow the ghost, and I'll explain each line as you write it.",
+     "say": "Create a Dockerfile — touch it, nvim in, and write the recipe that tells docker how to build your app. I'll explain each line as you write it.",
      "why": "A Dockerfile is a recipe: FROM picks a base, COPY moves your code in, CMD says what to run. Docker reads it top to bottom and bakes the image.",
      "on_win": "That's a complete Dockerfile. Four lines, and your app is packagable."},
 
@@ -9020,7 +9020,7 @@ DEV_LESSONS = [
          ("put_object", "store a file — bucket, key name, and the body text"),
          ("print", "report back that it worked"),
      ],
-     "say": "Now write the same thing in real Python. Type along with the ghost — this is boto3, the library engineers use to talk to AWS from code.",
+     "say": "Now write the same thing in real Python. Touch the file, nvim in, and write it — this is boto3, the library engineers use to talk to AWS from code.",
      "why": "boto3 is how you automate AWS. Everything you did on the command line, you can script — which means it can run a thousand times without you.",
      "on_win": "That's a real boto3 script. Code can now create buckets and store files."},
 
@@ -9106,17 +9106,17 @@ DEV_LESSONS = [
      "on_win": "Three new servers are running, each with its own id."},
 
     {"module": "EC2 / VPS", "kind": "run", "title": "power down",
-     "verify": lambda c: c.startswith("aws ec2 stop-instances"),
+     "verify": lambda c: c.startswith("aws ec2 stop-instances") and "i-0001" in c,
      "cmd_hint": "aws ec2 stop-instances --instance-ids i-0001",
-     "say": "Stop your first server, giving its instance id.",
-     "why": "stop-instances powers a server down without deleting it — you keep it, but stop paying for a running machine. Give the id of the one to stop.",
+     "say": "Stop your first server. Its id is i-0001 — not a placeholder, the real id the sim printed when you launched it. It's also in the CLOUD panel on the right.",
+     "why": "stop-instances powers a server down without deleting it. i-0001 is the actual id the sim assigned your first server (you saw INSTANCE i-0001 in the output). The CLOUD panel on the right lists every id you own, each with its state.",
      "on_win": "That server is now stopped. You still own it; it's just off."},
 
     {"module": "EC2 / VPS", "kind": "challenge", "title": "tear it all down",
-     "say": "Terminate every server so the CLOUD panel shows them all terminated. You have four, and one command can take them all at once.",
-     "why": "Terminating is permanent cleanup, and leaving servers running costs money. One command, every id listed together, does the whole fleet.",
-     "recall": "aws ec2 terminate-instances wants the --instance-ids flag, then every id you own — the CLOUD panel lists them.",
-     "hint": "one terminate command with --instance-ids, then ALL FOUR ids from the CLOUD panel, in one line.",
+     "say": "Terminate every server so the CLOUD panel shows them all terminated. You have four — their ids are in the CLOUD panel on the right (i-0001 through i-0004).",
+     "why": "Terminating is permanent cleanup, and leaving servers running costs money. Each id is the real id the sim assigned — put all four in ONE command.",
+     "recall": "aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004 — every id you own, all on one line.",
+     "hint": "one terminate command:  aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004",
      "tools": ["aws ec2 terminate-instances --instance-ids", "i-0001 · i-0002 · i-0003 · i-0004"],
      "verify_lab": lambda lab: bool(lab.aws.instances) and all(i["State"]["Name"] == "terminated" for i in lab.aws.instances.values()),
      "replay": ["aws ec2 terminate-instances --instance-ids i-0001 i-0002 i-0003 i-0004"]},
@@ -9295,7 +9295,7 @@ DEV_LESSONS = [
          ("bucket =", "the bucket's actual name in AWS"),
          ("acl", "who can access it — private means just you"),
      ],
-     "say": "Write a terraform file describing one S3 bucket. Follow the ghost and I'll explain each line.",
+     "say": "Write a terraform file describing one S3 bucket. Touch it, nvim in, and I'll explain each line.",
      "why": "This is a Terraform resource block: a type, a name, and the settings inside braces. Notice you're DESCRIBING what you want, not typing launch commands.",
      "on_win": "You just wrote infrastructure as code. That block describes a real bucket."},
 
@@ -9389,7 +9389,7 @@ DEV_LESSONS = [
          ("apt:", "the apt module installs packages"),
          ("name: nginx", "the package to install — nginx, a web server"),
      ],
-     "say": "Write the playbook that installs nginx on your web servers. Type along, and I'll explain each line.",
+     "say": "Write the playbook that installs nginx on your web servers. Touch it, nvim in, and I'll explain each line.",
      "why": "A playbook is a list of plays. This play targets the web group and runs one task: install nginx. You described the end state — 'nginx should be there' — not the install steps.",
      "on_win": "That's a real playbook. Declarative automation, three tasks deep."},
 
@@ -9626,7 +9626,7 @@ DEV_LESSONS = [
                ("selector: matchLabels", "how the controller finds the pods it owns"),
                ("template:", "the pod recipe — containers, image, ports"),
                ("image: app:latest", "the container image every replica runs")],
-     "say": "Real teams don't run ad-hoc commands — they write the desired state as a YAML manifest and check it into git. Type out the deployment manifest for an app called api with two replicas. Follow the ghost.",
+     "say": "Real teams don't run ad-hoc commands — they write the desired state as a YAML manifest and check it into git. Type out the deployment manifest for an app called api with two replicas. Touch it, nvim in, and write it out.",
      "why": "This is declarative configuration, the heart of GitOps: the file IS the source of truth. Anyone can read exactly what production should look like, changes are reviewed like code, and 'kubectl apply' makes reality match the file — today and after every incident.",
      "on_win": "A complete manifest. From now on, the file is the system of record — not someone's terminal history."},
 
@@ -9727,7 +9727,7 @@ DEV_LESSONS = [
                ("## symptom: slow responses", "a different symptom, a different play"),
                ("kubectl scale deployment web --replicas=3", "capacity first — scale out before you debug"),
                ("## last resort", "runbooks end with the human path: who to wake, when to stop self-helping")],
-     "say": "The runbook is what separates a calm on-call from a panicked one. Write the runbook for the web service: what to do for a spike in server errors, what to do for slowness, and where the last resort leads. Follow the ghost.",
+     "say": "The runbook is what separates a calm on-call from a panicked one. Write the runbook for the web service: what to do for a spike in server errors, what to do for slowness, and where the last resort leads. Touch it, nvim in, and write it.",
      "why": "At 2am nobody reasons well — that's what the runbook is for: pre-decided actions, ordered, each one safe. Symptom-based entries mean the pager message tells you which section to open. This is also how you on-board: runbooks are executable documentation of the system's failure modes.",
      "on_win": "A real runbook. The next incident starts with a document, not with fear."},
 
@@ -14051,6 +14051,114 @@ class VimDemoBuffer:
         return (b.row, b.col)
 
 
+class DevVimBuffer:
+    """A real-enough vim buffer for the DevOps 'write' lessons. The learner
+    `touch`es the file in bash, then `nvim`s into it here: INSERT mode types the
+    file, NORMAL mode (Esc) moves with hjkl, and `:wq` saves & quits."""
+
+    def __init__(self, target):
+        self.target = target.rstrip("\n")   # the exact file we verify against
+        self.lines = [""]                   # the learner's typed buffer
+        self.row = 0
+        self.col = 0
+        self.mode = "insert"                # insert / normal / cmd
+        self.cmd = ""                       # the ':' command text
+        self.msg = ""                       # status line
+
+    def get_text(self):
+        return "\n".join(self.lines)
+
+    def matches(self):
+        return self.get_text() == self.target
+
+    def _clamp(self):
+        self.row = max(0, min(len(self.lines) - 1, self.row))
+        self.col = max(0, min(len(self.lines[self.row]), self.col))
+
+    # ---- insert mode ----------------------------------------------------- #
+    def type_char(self, ch):
+        line = self.lines[self.row]
+        self.lines[self.row] = line[:self.col] + ch + line[self.col:]
+        self.col += 1
+
+    def newline(self):
+        line = self.lines[self.row]
+        self.lines[self.row] = line[:self.col]
+        self.lines.insert(self.row + 1, line[self.col:])
+        self.row += 1
+        self.col = 0
+
+    def backspace(self):
+        if self.col > 0:
+            line = self.lines[self.row]
+            self.lines[self.row] = line[:self.col - 1] + line[self.col:]
+            self.col -= 1
+        elif self.row > 0:
+            prev = self.lines[self.row - 1]
+            self.col = len(prev)
+            self.lines[self.row - 1] = prev + self.lines[self.row]
+            del self.lines[self.row]
+            self.row -= 1
+
+    def indent(self):
+        line = self.lines[self.row]
+        self.lines[self.row] = line[:self.col] + "    " + line[self.col:]
+        self.col += 4
+
+    # ---- normal mode ----------------------------------------------------- #
+    def move(self, d):
+        if d == "h":
+            self.col -= 1
+        elif d == "l":
+            self.col += 1
+        elif d == "j":
+            self.row += 1
+        elif d == "k":
+            self.row -= 1
+        self._clamp()
+
+    def to_insert(self, after=False):
+        if after and self.col < len(self.lines[self.row]):
+            self.col += 1
+        self.mode = "insert"
+
+    def delete_char(self):
+        line = self.lines[self.row]
+        if self.col < len(line):
+            self.lines[self.row] = line[:self.col] + line[self.col + 1:]
+
+    def delete_line(self):
+        if len(self.lines) > 1:
+            del self.lines[self.row]
+        else:
+            self.lines[self.row] = ""
+        self._clamp()
+
+    # ---- command mode ---------------------------------------------------- #
+    def start_cmd(self):
+        self.mode = "cmd"
+        self.cmd = ""
+
+    def cmd_type(self, ch):
+        self.cmd += ch
+
+    def cmd_backspace(self):
+        self.cmd = self.cmd[:-1]
+
+    def cmd_execute(self):
+        """Run the ':' command. Returns the command word ('wq','q!','w','q','x')
+        or None for an unknown command (message is set on the buffer)."""
+        cmd = self.cmd.strip()
+        self.cmd = ""
+        self.mode = "normal"
+        if cmd in ("wq", "x"):
+            return "wq"
+        if cmd in ("q!", "w", "q"):
+            return cmd
+        self.msg = f"E492: Not an editor command: {cmd}"
+        return None
+
+
 class VimTrainer(Vertical):
     """Full-screen VIM course overlay: a text buffer, an on-screen keyboard, the
     target key combo, and a blinking direction arrow. The app owns the state;
@@ -14787,6 +14895,9 @@ class TutorApp(App):
         self._dev_enter_blink_timer = None
         self._dev_write_blink = False # flashing Enter/Tab prompt in the write editor
         self._dev_write_blink_timer = None
+        self._dev_write_stage = "touch"  # touch -> nvim -> vim (write lessons)
+        self._dev_vim_buf = None         # DevVimBuffer when the editor is open
+        self._dev_vim_pending = None     # first key of dd / gg
         self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
@@ -20601,14 +20712,16 @@ class TutorApp(App):
         lesson = self._dev_lesson()
         self._dev_chal_done = set()   # reset challenge toolbox progress
         self._dev_explained_tokens = set()   # re-explain command pieces each lesson
+        self._dev_cmd = ""
         self._dev_write_blink_stop()
         if lesson["kind"] == "write":
             self._dev_phase = "write"
-            self._dev_target = lesson["content"]
-            self._dev_pos = 0
-            self._dev_explained = set()
-            self._dev_errors = {}
-            self._dev_write_prompt_update()
+            self._dev_write_stage = "touch"
+            self._dev_cmd = ""
+            self._dev_vim_buf = None
+            self._dev_vim_pending = None
+            self._dev_msg = ""
+            self._dev_msg_kind = ""
         else:
             self._dev_phase = "run"
             self._dev_target = ""
@@ -20793,86 +20906,195 @@ class TutorApp(App):
         return "follow the ghost — type the file exactly"
 
     def _dev_write_key(self, event):
+        stage = getattr(self, "_dev_write_stage", "touch")
+        if stage in ("touch", "nvim"):
+            self._dev_stage_key(event)
+        else:
+            self._dev_vim_key(event)
+
+    # -- touch / nvim stages: type a bash command to create & open the file -- #
+    def _dev_stage_key(self, event):
         key = event.key
-        target = self._dev_target
+        stage = self._dev_write_stage
+        fname = self._dev_lesson()["file"]
         if key == "enter":
-            if self._dev_at_newline():
-                self._dev_consume_newline()
-            elif self._dev_pos >= len(target):
-                if self._dev_errors:
-                    self._dev_msg = "almost — fix the red letters, then Enter"
+            cmd = self._dev_cmd.strip()
+            self._dev_history.append(("cmd", (self._dev_prompt(), self._dev_cmd)))
+            if stage == "touch":
+                if cmd == f"touch {fname}":
+                    p = self._dev_lab.fs._resolve(fname)
+                    self._dev_lab.fs.files[p] = ""
+                    self._dev_lab.fs.latest = p
+                    self._dev_write_stage = "nvim"
+                    self._dev_cmd = ""
+                    self._dev_msg = f"{fname} created — now open it"
+                    self._dev_msg_kind = "win"
+                    play_console_result(True)
+                else:
+                    self._dev_msg = f"create it first:  touch {fname}"
                     self._dev_msg_kind = "hint"
                     play_ghost_error()
-                    self._dev_render()
+            else:  # nvim
+                if cmd in (f"nvim {fname}", f"vim {fname}", f"vi {fname}"):
+                    self._dev_write_stage = "vim"
+                    self._dev_cmd = ""
+                    self._dev_vim_buf = DevVimBuffer(self._dev_lesson()["content"])
+                    self._dev_vim_pending = None
+                    self._dev_msg = ""
+                    self._dev_msg_kind = ""
+                    play_key()
                 else:
-                    self._dev_write_done()
-            else:
-                self._dev_msg = "keep going — finish the line, then Enter"
-                self._dev_msg_kind = "hint"
-                play_ghost_error()
-                self._dev_render()
-            self._dev_write_prompt_update()
-            return
-        if key == "tab":
-            if self._dev_at_indent():
-                self._dev_consume_indent()
-            else:
-                self._dev_msg = "Tab indents — press it at the start of a line"
-                self._dev_msg_kind = "hint"
-                play_ghost_error()
-                self._dev_render()
-            self._dev_write_prompt_update()
+                    self._dev_msg = f"open it with:  nvim {fname}"
+                    self._dev_msg_kind = "hint"
+                    play_ghost_error()
+            self._dev_render()
             return
         if key == "backspace":
-            if self._dev_pos > 0:
-                self._dev_pos -= 1
-                while self._dev_pos > 0 and self._dev_structural(self._dev_pos):
-                    self._dev_pos -= 1
-            # step back onto a char, clear any red error there so it's retyped
-            self._dev_errors.pop(self._dev_pos, None)
+            if self._dev_cmd:
+                self._dev_cmd = self._dev_cmd[:-1]
             self._dev_render()
-            self._dev_write_prompt_update()
+            return
+        if key in _VIM_MODIFIERS:
             return
         ch = event.character
-        if not ch:
+        if ch:
+            self._dev_cmd += ch
+            self._dev_render()
+
+    # -- vim stage: a real editor — insert / normal / command modes ---------- #
+    def _dev_vim_key(self, event):
+        key = event.key
+        buf = self._dev_vim_buf
+        if buf is None:
             return
-        if self._dev_pos >= len(target):
-            # typed to the end but red letters remain — nothing new to type
-            self._dev_msg = "fix the red letters, then Enter"
-            self._dev_msg_kind = "hint"
+        # the ':' command line owns the keys first
+        if buf.mode == "cmd":
+            if key == "escape":
+                buf.mode = "normal"; buf.cmd = ""
+                self._dev_render()
+            elif key == "enter":
+                self._dev_vim_execute(buf.cmd_execute())
+            elif key == "backspace":
+                buf.cmd_backspace()
+                self._dev_render()
+            else:
+                ch = event.character
+                if ch:
+                    buf.cmd_type(ch)
+                    self._dev_render()
+            return
+        if key == "escape":
+            buf.mode = "normal"
+            self._dev_vim_pending = None
             self._dev_render()
             return
-        if self._dev_structural(self._dev_pos):
-            # parked on a newline/indent — Enter drops a line, Tab indents. A
-            # space here is a harmless slip ("space after the end of the line"),
-            # so accept it: consume the newline/indent instead of flagging red.
-            if ch in " \t":
-                if self._dev_at_newline():
-                    self._dev_consume_newline()
-                elif self._dev_at_indent():
-                    self._dev_consume_indent()
+        if buf.mode == "insert":
+            if key == "enter":
+                buf.newline(); play_key(); self._dev_render()
+            elif key == "backspace":
+                buf.backspace(); play_key(); self._dev_render()
+            elif key == "tab":
+                buf.indent(); play_key(); self._dev_render()
+            elif key in _VIM_MODIFIERS:
+                return
             else:
-                self._dev_msg = "press Enter for a new line, Tab to indent"
+                ch = event.character
+                if ch:
+                    buf.type_char(ch); play_key(); self._dev_render()
+            return
+        # normal mode
+        if self._dev_vim_pending:
+            first = self._dev_vim_pending
+            self._dev_vim_pending = None
+            if first == "d" and key == "d":
+                buf.delete_line(); play_key(); self._dev_render(); return
+            if first == "g" and key == "g":
+                buf.row = 0; buf.col = 0; play_key(); self._dev_render(); return
+            play_ghost_error(); self._dev_render(); return
+        ch = event.character
+        if key == "colon" or ch == ":":
+            buf.start_cmd(); play_key(); self._dev_render()
+        elif ch == "i":
+            buf.to_insert(False); play_key(); self._dev_render()
+        elif ch == "a":
+            buf.to_insert(True); play_key(); self._dev_render()
+        elif ch in ("h", "j", "k", "l"):
+            buf.move(ch); play_key(); self._dev_render()
+        elif ch == "x":
+            buf.delete_char(); play_key(); self._dev_render()
+        elif ch == "d":
+            self._dev_vim_pending = "d"; play_key(); self._dev_render()
+        elif ch == "g":
+            self._dev_vim_pending = "g"; play_key(); self._dev_render()
+        elif ch == "0":
+            buf.col = 0; play_key(); self._dev_render()
+        elif ch == "$":
+            buf.col = max(0, len(buf.lines[buf.row]) - 1); play_key(); self._dev_render()
+        elif ch == "G":
+            buf.row = len(buf.lines) - 1; buf.col = 0; play_key(); self._dev_render()
+        elif key in _VIM_MODIFIERS:
+            return
+        else:
+            play_ghost_error(); self._dev_render()
+
+    def _dev_vim_execute(self, cmd):
+        buf = self._dev_vim_buf
+        if buf is None:
+            return
+        lesson = self._dev_lesson()
+        fname = lesson["file"]
+        p = self._dev_lab.fs._resolve(fname)
+        if cmd == "wq":
+            if buf.matches():
+                self._dev_lab.fs.files[p] = lesson["content"]
+                self._dev_lab.fs.latest = p
+                self._dev_write_done()
+            else:
+                self._dev_msg = self._dev_vim_diff(buf)
                 self._dev_msg_kind = "hint"
                 play_ghost_error()
                 self._dev_render()
-            self._dev_write_prompt_update()
-            return
-        if ch == target[self._dev_pos]:
-            self._dev_pos += 1
-            self._dev_explain_line()
-            if self._dev_pos >= len(target) and not self._dev_errors:
+        elif cmd == "q!":
+            self._dev_write_stage = "nvim"
+            self._dev_cmd = ""
+            self._dev_vim_buf = None
+            self._dev_vim_pending = None
+            self._dev_msg = "left without saving — nvim back in when ready"
+            self._dev_msg_kind = "hint"
+            self._dev_render()
+        elif cmd == "w":
+            self._dev_lab.fs.files[p] = buf.get_text()
+            self._dev_lab.fs.latest = p
+            self._dev_msg = f'"{fname}" written (still open)'
+            self._dev_msg_kind = "win"
+            play_console_result(True)
+            self._dev_render()
+        elif cmd == "q":
+            if buf.matches():
+                self._dev_lab.fs.files[p] = lesson["content"]
+                self._dev_lab.fs.latest = p
                 self._dev_write_done()
-                return
-            self._dev_render()
+            else:
+                self._dev_msg = "E37: No write since last change (add ! to force)"
+                self._dev_msg_kind = "hint"
+                play_ghost_error()
+                self._dev_render()
         else:
-            # wrong char is COMMITTED and flagged red — keep typing, fix it later
-            # (the old behaviour froze you here with a "not quite" dead-end)
-            self._dev_errors[self._dev_pos] = ch
-            self._dev_pos += 1
-            play_ghost_error()
+            self._dev_msg = buf.msg or "?"
+            self._dev_msg_kind = "hint"
             self._dev_render()
-        self._dev_write_prompt_update()
+
+    def _dev_vim_diff(self, buf):
+        """Point at the FIRST line that differs from the target file."""
+        want = buf.target.split("\n")
+        got = buf.lines
+        for i in range(max(len(want), len(got))):
+            w = want[i] if i < len(want) else "<missing>"
+            g = got[i] if i < len(got) else "<empty>"
+            if w != g:
+                return f"not saved — line {i + 1}: got {g!r}, want {w!r} (fix it, then :wq)"
+        return "not saved — the file isn't right yet (fix it, then :wq)"
+
 
     def _dev_mark_won(self, on_win):
         """A command/file just succeeded. Within a module this flows smoothly to
@@ -21388,7 +21610,13 @@ class TutorApp(App):
             t.append("✎ ", style="bold #7dd3fc")
             t.append(lesson["file"], style="bold #7dd3fc")
             t.append("   ")
-            t.append(self._dev_current_line_hint(), style="#d5d5d5")
+            stage = getattr(self, "_dev_write_stage", "touch")
+            if stage == "touch":
+                t.append("create it in bash, then open it in nvim", style="#d5d5d5")
+            elif stage == "nvim":
+                t.append("open it in nvim to start writing", style="#d5d5d5")
+            else:
+                t.append("i insert · Esc normal · :wq to save", style="#d5d5d5")
             return t
         typed = self._dev_ghost[:self._dev_ghost_typed]
         rest = self._dev_ghost[self._dev_ghost_typed:]
@@ -21407,7 +21635,10 @@ class TutorApp(App):
 
     def _dev_render_output(self):
         if self._dev_phase == "write":
-            return self._dev_render_editor()
+            if getattr(self, "_dev_write_stage", "touch") == "vim":
+                return self._dev_render_vim()
+            # touch / nvim stages are a bash prompt (type the create/open command)
+            return self._dev_render_term()
         return self._dev_render_term()
 
     def _dev_term_width(self):
@@ -21441,47 +21672,47 @@ class TutorApp(App):
         t.append("█", style="bold #22c55e")
         return _box_lines(_lines_of(t), max_width=term_w, border=False)
 
-    def _dev_render_editor(self):
-        target = self._dev_target
-        pos = min(self._dev_pos, len(target))
-        errors = getattr(self, "_dev_errors", {})
-        on = getattr(self, "_dev_write_blink", False)
+    def _dev_render_vim(self):
+        """Render the nvim editor: the learner's buffer with vim line numbers,
+        a mode indicator, the ':' command line, and a dim 'target' reference."""
+        buf = self._dev_vim_buf
+        if buf is None:
+            return _box_lines([], max_width=self._dev_term_width(), border=False)
+        fname = self._dev_lesson()["file"]
         t = Text()
         t.append("✎ ", style="bold #7dd3fc")
-        t.append(self._dev_lesson()["file"], style="bold #7dd3fc")
+        t.append(f"nvim {fname}", style="bold #7dd3fc")
+        if buf.mode == "insert":
+            t.append("   -- INSERT --", style="bold #22c55e")
+        elif buf.mode == "normal":
+            t.append("   -- NORMAL --", style="bold #fbbf24")
+        else:
+            t.append("   -- CMD --", style="bold #f472b6")
         t.append("\n\n")
-        offset = 0
-        for line in target.split("\n"):
-            start = offset
-            end = start + len(line)
-            if pos == end and end < len(target):
-                # cursor parked on this line's newline — flash a "press Enter"
-                for j in range(start, end):
-                    if j in errors:
-                        t.append(errors[j], style="bold underline #ff5555")
-                    else:
-                        t.append(target[j], style="#f0f0f5")
-                t.append(" ⏎", style="reverse bold" if on else "bold #22c55e")
-                t.append(" Enter", style="dim")
-            elif pos < start:
-                t.append(line, style="#5a5a5a")
+        for i, line in enumerate(buf.lines):
+            t.append(f"{i + 1:>2} ", style="dim")
+            if i == buf.row:
+                col = min(buf.col, len(line))
+                t.append(line[:col], style="#f0f0f5")
+                cell = line[col:col + 1] or " "
+                if buf.mode == "insert":
+                    t.append(cell, style="underline bold #f0f0f5")
+                else:
+                    t.append(cell, style="black on #e6e6e6 bold")
+                t.append(line[col + 1:], style="#f0f0f5")
             else:
-                upto = min(pos, end)
-                for j in range(start, upto):
-                    if j in errors:
-                        t.append(errors[j], style="bold underline #ff5555")
-                    else:
-                        t.append(target[j], style="#f0f0f5")
-                if pos < end:
-                    if self._dev_structural(pos):
-                        # leading indent — flash a "press Tab"
-                        t.append("⇥", style="reverse bold" if on else "bold #22c55e")
-                        t.append(" Tab", style="dim")
-                    else:
-                        t.append(target[pos], style="reverse bold")
-                        t.append(target[pos + 1:end], style="#5a5a5a")
+                t.append(line, style="#f0f0f5")
             t.append("\n")
-            offset = end + 1
+        if buf.mode == "cmd":
+            t.append("\n:" + buf.cmd, style="bold #f0f0f5")
+            t.append("█", style="bold #22c55e")
+        # the target file, dim, as the reference to type
+        t.append("\n\n")
+        t.append("target (what to write):", style="bold #8b8b8b")
+        t.append("\n")
+        for line in buf.target.split("\n"):
+            t.append(line, style="#5a5a5a")
+            t.append("\n")
         return _box_lines(_lines_of(t), max_width=self._dev_term_width(), border=False)
 
     def _dev_state_snapshot(self):
@@ -21618,7 +21849,15 @@ class TutorApp(App):
         if lab.aws.instances:
             sec("EC2 INSTANCES")
             for iid, inst in lab.aws.instances.items():
-                emit(f"instance {iid}", f"  {iid} {inst['State']['Name']}")
+                st = inst["State"]["Name"]
+                st_style = {"running": "bold #22c55e", "stopped": "bold #fbbf24",
+                            "terminated": "bold #f87171"}.get(st, "#d5d5d5")
+                prefix, _ = self._dev_flash_for(f"instance {iid}")
+                if prefix:
+                    t.append(prefix, style="bold #22c55e")
+                t.append(f"  {iid}", style="bold cyan")
+                t.append(f"  {st}", style=st_style)
+                t.append("\n")
 
         if lab.aws.lambda_fns:
             sec("LAMBDA")
@@ -21701,7 +21940,13 @@ class TutorApp(App):
             t.append(" · Esc exits · [?] manual", style="dim")
             return t
         if self._dev_phase == "write":
-            t.append("type the file · Enter new line · Tab indent · space slips are ok · Esc exits", style="dim")
+            stage = getattr(self, "_dev_write_stage", "touch")
+            if stage == "touch":
+                t.append(f"touch {lesson['file']} to create it · Enter runs · Esc exits", style="dim")
+            elif stage == "nvim":
+                t.append(f"nvim {lesson['file']} to open it · Enter runs · Esc exits", style="dim")
+            else:
+                t.append("i insert · Esc normal · hjkl move · :wq save & exit", style="dim")
             return t
         t.append("type the command, Enter to run · Esc exits · click [?] for the manual", style="dim")
         return t
