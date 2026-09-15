@@ -14246,7 +14246,12 @@ class DevVimBuffer:
         return "\n".join(self.lines)
 
     def matches(self):
-        return self.get_text() == self.target
+        """Lenient: trailing whitespace and blank lines (anywhere) don't block a
+        save — an extra empty line doesn't ruin the file. Content + indentation
+        still have to match."""
+        def norm(s):
+            return [ln.rstrip() for ln in s.split("\n") if ln.strip()]
+        return norm(self.get_text()) == norm(self.target)
 
     def _clamp(self):
         self.row = max(0, min(len(self.lines) - 1, self.row))
@@ -21404,7 +21409,7 @@ class TutorApp(App):
         elif cmd == "w":
             self._dev_lab.fs.files[p] = buf.get_text()
             self._dev_lab.fs.latest = p
-            self._dev_msg = f'"{fname}" written (still open)'
+            self._dev_msg = f"✓ SAVED — \"{fname}\" written. Type :q to close, or keep editing."
             self._dev_msg_kind = "win"
             play_console_result(True)
             self._dev_render()
@@ -22198,6 +22203,14 @@ class TutorApp(App):
         if buf.mode == "cmd":
             t.append("\n:" + buf.cmd, style="bold #f0f0f5")
             t.append("█", style="bold #f0f0f5")
+            t.append("\n")
+            t.append("  type ", style="#f0f0f5")
+            t.append("w", style="bold #fbbf24")
+            t.append(" = save  ·  ", style="#f0f0f5")
+            t.append("q", style="bold #fbbf24")
+            t.append(" = quit  ·  ", style="#f0f0f5")
+            t.append("wq", style="bold #fbbf24")
+            t.append(" = save AND quit", style="#f0f0f5")
         # the target file — a live fill bar correlated to the line you're on
         on = getattr(self, "_dev_write_blink", False)
         t.append("\n\n")
