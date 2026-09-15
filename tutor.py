@@ -14783,6 +14783,8 @@ class TutorApp(App):
         self._dev_confirm = False
         self._dev_won = False         # a command/file just succeeded — show output
                                        # and wait for Enter before advancing
+        self._dev_enter_blink = False # flashing "press Enter" indicator on/off
+        self._dev_enter_blink_timer = None
         self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
@@ -20596,6 +20598,9 @@ class TutorApp(App):
             self._dev_phase = "run"
             self._dev_target = ""
             self._dev_pos = 0
+            if lesson["kind"] == "info":
+                # info lesson waits for Enter — flash the prompt (voice-independent)
+                self._dev_enter_blink_start()
 
     def _dev_begin(self, module_first=None):
         """Open the CLOUD & DEVOPS overlay. With an explicit `module_first`
@@ -20777,6 +20782,28 @@ class TutorApp(App):
         # then the next lesson's explanations resume at 1.75x
         speak_write(_pers(on_win), rate=4 / 9, main=True)
         self._dev_render()
+        self._dev_enter_blink_start()
+
+    def _dev_enter_blink_start(self):
+        """Flash the 'press Enter to continue' bar so it's impossible to miss."""
+        self._dev_enter_blink = True
+        if self._dev_enter_blink_timer is None:
+            self._dev_enter_blink_timer = self.set_interval(0.45, self._dev_enter_blink_tick)
+
+    def _dev_enter_blink_tick(self):
+        if not self._dev_on:
+            return
+        self._dev_enter_blink = not self._dev_enter_blink
+        try:
+            self.query_one("#dev-foot", Static).update(self._dev_render_foot())
+        except Exception:
+            pass
+
+    def _dev_enter_blink_stop(self):
+        self._dev_enter_blink = False
+        if self._dev_enter_blink_timer is not None:
+            self._dev_enter_blink_timer.stop()
+            self._dev_enter_blink_timer = None
 
     def _dev_write_done(self):
         lesson = self._dev_lesson()
@@ -21011,6 +21038,7 @@ class TutorApp(App):
         # invalidate any in-flight win/info speech so a skip can't double-advance
         self._win_gen = getattr(self, "_win_gen", 0) + 1
         self._dev_won = False
+        self._dev_enter_blink_stop()
         self._dev_idx += 1
         self._dev_msg = ""
         self._dev_msg_kind = ""
@@ -21028,6 +21056,7 @@ class TutorApp(App):
     def _dev_graduate(self):
         self._dev_ghost_stop_timers()
         self._dev_flash_stop()
+        self._dev_enter_blink_stop()
         self._dev_ghost = ""
         self.query_one("#dev-ghost", Static).update(Text(""))
         self.p["dev_step"] = len(DEV_LESSONS)
@@ -21051,6 +21080,7 @@ class TutorApp(App):
         self._dev_confirm = False
         self._dev_ghost_stop_timers()
         self._dev_flash_stop()
+        self._dev_enter_blink_stop()
         self.query_one("#dev-help", Static).remove_class("visible")
         t = getattr(self, "_dev_adv_timer", None)
         if t is not None:
@@ -21511,10 +21541,14 @@ class TutorApp(App):
                 t.append(self._dev_msg, style="bold #fbbf24")
             t.append("\n")
         if self._dev_won:
-            t.append("press Enter to continue — you can read the output above", style="bold #22c55e")
+            style = "reverse bold" if self._dev_enter_blink else "bold #22c55e"
+            t.append("▶ PRESS ENTER to continue", style=style)
+            t.append("  — read the output above", style="dim")
             return t
         if lesson["kind"] == "info":
-            t.append("press Enter to continue · Esc exits · click [?] for the manual", style="dim")
+            style = "reverse bold" if self._dev_enter_blink else "bold #22c55e"
+            t.append("▶ PRESS ENTER to continue", style=style)
+            t.append(" · Esc exits · [?] manual", style="dim")
             return t
         if self._dev_phase == "write":
             t.append("type the file (follow the ghost) · Enter when done · Esc exits", style="dim")
