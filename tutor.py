@@ -2364,6 +2364,29 @@ _GHOST_WORDS = ["bean", "kiwi", "apple", "mango", "plum", "delta", "gamma", "nov
 _GHOST_NAMES = ["Alan", "Mira", "Leo", "Nora", "Omar", "Tess", "Ivan", "Ruby",
                 "Finn", "Cleo", "Hugo", "June", "Kai", "Nina", "Zoe", "Rex"]
 
+# classic Python snippets for the whole-course LAB playground — grouped under
+# "PYTHON CLASSICS". Each is a self-contained, runnable idiom worth knowing.
+LAB_EXTRAS = [
+    ("count down (while)", "n = 5\nwhile n > 0:\n    print(n)\n    n -= 1"),
+    ("sum a list (loop)", "nums = [1, 2, 3, 4]\ntotal = 0\nfor n in nums:\n    total += n\nprint(total)"),
+    ("sum with sum()", "print(sum([1, 2, 3, 4]))"),
+    ("reverse a string", 's = "hello"\nprint(s[::-1])'),
+    ("uppercase each word", 'words = ["hi", "there"]\nprint([w.upper() for w in words])'),
+    ("sorted list", "nums = [3, 1, 2]\nprint(sorted(nums))"),
+    ("count letters", 'from collections import Counter\nprint(Counter("banana"))'),
+    ("fizz buzz", 'for i in range(1, 16):\n    if i % 15 == 0:\n        print("FizzBuzz")\n    elif i % 3 == 0:\n        print("Fizz")\n    elif i % 5 == 0:\n        print("Buzz")\n    else:\n        print(i)'),
+    ("fibonacci (loop)", "a, b = 0, 1\nfor _ in range(8):\n    print(a)\n    a, b = b, a + b"),
+    ("factorial (loop)", "n = 5\nresult = 1\nfor i in range(1, n + 1):\n    result *= i\nprint(result)"),
+    ("dict comprehension", "nums = [1, 2, 3]\nprint({n: n * n for n in nums})"),
+    ("zip two lists", 'names = ["a", "b"]\nnums = [1, 2]\nfor name, num in zip(names, nums):\n    print(name, num)'),
+    ("filter evens", "nums = [1, 2, 3, 4, 5, 6]\nprint([n for n in nums if n % 2 == 0])"),
+    ("join a list", 'words = ["a", "b", "c"]\nprint("-".join(words))'),
+    ("unique items (set)", "nums = [1, 2, 2, 3, 3, 3]\nprint(sorted(set(nums)))"),
+    ("max and min", "nums = [4, 1, 7, 3]\nprint(max(nums), min(nums))"),
+    ("enumerate with index", 'for i, item in enumerate(["x", "y", "z"]):\n    print(i, item)'),
+    ("nested loop grid", "for row in range(3):\n    for col in range(3):\n        print(row, col)"),
+]
+
 # string literals that are STRUCTURE, not data — never value-swap these (doing so
 # breaks the code: open(..., "w") -> open(..., "bean") is an invalid file mode)
 _NO_SWAP = {"r", "w", "a", "x", "rb", "wb", "ab", "xb", "rt", "wt", "at", "xt",
@@ -5122,6 +5145,28 @@ class LabToggle(Static):
         self.app._lab_select(self)
 
 
+class LabGroupHeader(Static):
+    """A collapsible group header in the Lab list. Click to expand/collapse the
+    group's examples (▾ open / ▸ closed)."""
+
+    def __init__(self, group_id: int, name: str, count: int):
+        super().__init__(id=f"labgrp-{group_id}")
+        self.group_id = group_id
+        self.group_name = name
+        self.count = count
+        self.collapsed = False
+        self.update(self._build())
+
+    def _build(self) -> Text:
+        arrow = "▸" if self.collapsed else "▾"
+        return Text.from_markup(
+            f"[bold #89b4fa]{arrow} {self.group_name}[/] [dim]({self.count})[/]")
+
+    def on_click(self, event):
+        event.stop()
+        self.app._lab_group_toggle(self)
+
+
 class MenuList(Static):
     """The menu picker list — clickable so mouse selection works alongside j/k."""
 
@@ -5202,7 +5247,7 @@ class VimEditor(Static):
                 num = str(i + 1)
             else:
                 num = str(abs(i - self.cursor_row))
-            t.append(f"{num:>3} ", style="dim")
+            t.append(f"{num:>2} ", style="dim")
             if i == self.cursor_row:
                 col = min(self.cursor_col, len(line))
                 # indent guides on the cursor line too, so the line you're on shows
@@ -13247,6 +13292,10 @@ class TutorApp(App):
     #lab-list-items { height: auto; }
     LabToggle { width: 100%; height: auto; padding: 0 1; }
     LabToggle:hover { background: #2a2a3c; }
+    LabToggle.zebra { background: #1e1e2e; }
+    LabToggle.hidden { display: none; }
+    LabGroupHeader { width: 100%; height: 1; padding: 0 1; background: #14141f; color: #89b4fa; text-style: bold; }
+    LabGroupHeader:hover { background: #1f1f2e; }
     #lab-editor { height: 6; min-height: 6; padding: 0 1; background: #181825; border-top: solid #313244; }
     #editor.focused-pane { outline: solid #ffffff; background: #20203a; }
     #lab-editor.focused-pane { outline: solid #ffffff; background: #1c1c30; }
@@ -13552,6 +13601,7 @@ class TutorApp(App):
         self._lab_show_lab = False     # right pane shows TASK (False) or LAB (True)
         self._lab_menu_on = False      # the whole-course LAB playground overlay is up
         self._lab_menu_toggles = []    # LabToggle widgets in the menu Lab
+        self._lab_menu_headers = []    # LabGroupHeader widgets (collapsible groups)
         self._lab_toggles = []         # LabToggle widgets (checkbox example blocks)
         self._split_focus = "left"     # which pane is active: "left" (test) | "right" (lab)
         self._out_drag_start_y = 0
@@ -16138,28 +16188,40 @@ class TutorApp(App):
     # ---- whole-course LAB playground (from the main menu) ------------------ #
 
     def _all_lab_examples(self):
-        """Every distinct worked example across the whole course, for the menu
-        Lab — so you can play with any snippet you've seen (or will see)."""
-        seen, out = set(), []
+        """Every distinct worked example across the whole course, GROUPED by
+        course (and topic for lessons, plus a PYTHON CLASSICS bucket). Returns
+        [(group_name, [(caption, code), ...]), ...]."""
+        groups: list[tuple[str, list]] = []
+        group_map: dict[str, int] = {}
+        seen: set = set()
 
-        def add(cap, code):
+        def add(group_name, cap, code):
             code = (code or "").strip()
-            if code and code not in seen:
-                seen.add(code)
-                out.append((cap, code))
+            if not code or code in seen:
+                return
+            seen.add(code)
+            gi = group_map.get(group_name)
+            if gi is None:
+                gi = len(groups)
+                group_map[group_name] = gi
+                groups.append((group_name, []))
+            groups[gi][1].append((cap, code))
 
         for g in GROUPS:
             for c in g["challenges"]:
                 cap, code = example_code(c.get("example", ""))
                 if code:
                     head = cap.split("\n")[0].strip().rstrip(":").strip() if cap else ""
-                    add(head or c["title"], code)
+                    add(g["name"], head or c["title"], code)
                 for ex in EXAMPLES.get(c["title"], []):
-                    add(c["title"], ex.get("code", ""))
+                    add(g["name"], c["title"], ex.get("code", ""))
         for topic, lesson in LESSONS.items():
             for ex in lesson.get("examples", []):
-                add(ex.get("caption", topic), ex.get("code", ""))
-        return out
+                add("LESSONS · " + topic.upper(),
+                    ex.get("caption", topic), ex.get("code", ""))
+        for cap, code in LAB_EXTRAS:
+            add("PYTHON CLASSICS", cap, code)
+        return groups
 
     def _lab_menu_open(self):
         """Open the whole-course Lab playground from the main menu."""
@@ -16172,7 +16234,7 @@ class TutorApp(App):
         self.query_one("#lab-menu-statusline", Static).update(
             Text.from_markup("[bold]-- INSERT --[/]"))
         self.query_one("#lab-menu-hint", Static).update(
-            Text.from_markup("[dim]click a [ ] to load · edit · run · esc/q to close[/]"))
+            Text.from_markup("[dim]click a ▾ group to collapse · click a [ ] to load · edit · run · ✕ to close[/]"))
         items = self.query_one("#lab-menu-items", Vertical)
         for old in list(items.children):
             try:
@@ -16180,13 +16242,20 @@ class TutorApp(App):
             except Exception:
                 pass
         self._lab_menu_toggles = []
+        self._lab_menu_headers = []
         examples = self._all_lab_examples()
-        for i, (cap, code) in enumerate(examples):
-            out = self._lab_output(code, "")
-            tg = LabToggle(i, cap, out, code, editor_id="#lab-menu-editor",
-                           id_prefix="mlabtg")
-            items.mount(tg)
-            self._lab_menu_toggles.append(tg)
+        for gi, (gname, exlist) in enumerate(examples):
+            hdr = LabGroupHeader(gi, gname, len(exlist))
+            items.mount(hdr)
+            self._lab_menu_headers.append(hdr)
+            for i, (cap, code) in enumerate(exlist):
+                out = self._lab_output(code, "")
+                tg = LabToggle(len(self._lab_menu_toggles), cap, out, code,
+                               editor_id="#lab-menu-editor", id_prefix="mlabtg")
+                tg.group_id = gi
+                tg.set_class(i % 2 == 1, "zebra")   # alternating background shade
+                items.mount(tg)
+                self._lab_menu_toggles.append(tg)
         # preload the first example so the left editor isn't empty
         if self._lab_menu_toggles:
             self._lab_menu_toggles[0].checked = True
@@ -16195,6 +16264,14 @@ class TutorApp(App):
                 self._lab_menu_toggles[0].code)
         self.query_one("#lab-menu-output", Static).update("")
         self.query_one("#lab-menu", Vertical).focus()
+
+    def _lab_group_toggle(self, hdr):
+        """Collapse/expand one Lab group (▾ open / ▸ closed)."""
+        hdr.collapsed = not hdr.collapsed
+        hdr.update(hdr._build())
+        for tg in self._lab_menu_toggles:
+            if getattr(tg, "group_id", None) == hdr.group_id:
+                tg.set_class(hdr.collapsed, "hidden")
 
     def _lab_menu_close(self):
         self._lab_menu_on = False
