@@ -5060,6 +5060,37 @@ class ExLine(Static):
         self.ex_code = code
 
 
+class LabToggle(Static):
+    """One clickable example block in the Lab. Click to toggle the [x]/[ ] —
+    checked blocks run when you hit 'run checked'. No TTS — it's a quiet lab."""
+
+    def __init__(self, idx: int, caption: str, output: str, code: str):
+        super().__init__(id=f"labtg-{idx}")
+        self.caption = caption
+        self.output = output
+        self.code = code
+        self.checked = False
+        self.update(self._render())
+
+    def _render(self) -> Text:
+        t = Text()
+        t.append("[x] " if self.checked else "[ ] ",
+                 style="bold #cba6f7" if self.checked else "#a6adc8")
+        t.append(self.caption, style="bold #cdd6f4")
+        t.append("  ·  prints: ", style="dim")
+        t.append(self.output, style="bold #a6e3a1")
+        for ln in self.code.split("\n"):
+            if ln.strip():
+                t.append("\n      ")
+                t.append(ln, style="#a6e3a1" if self.checked else "#565f89")
+        return t
+
+    def on_click(self, event):
+        event.stop()
+        self.checked = not self.checked
+        self.update(self._render())
+
+
 class VimEditor(Static):
     can_focus = True
     GUTTER = 6   # left padding (2) + line-number gutter (" N  " = 4)
@@ -13121,13 +13152,18 @@ class TutorApp(App):
     #lab-task-inner { height: auto; }
     #lab-lab-view { height: 1fr; }
     #lab-lab-view.hidden { display: none; }
-    #lab-editor { height: 1fr; min-height: 6; padding: 1 2; background: #1a1a28; }
+    #lab-list { height: 1fr; background: #1a1a28; }
+    #lab-list-items { height: auto; }
+    LabToggle { width: 100%; height: auto; padding: 0 1; }
+    LabToggle:hover { background: #2a2a3c; }
     #lab-scroll { height: 7; border-top: solid #313244; background: #14141f; }
     #lab-output { height: auto; padding: 0 1; }
     #lab-run { height: 1; }
     #command-bar { height: auto; min-height: 2; padding: 0 1; background: #181825; border-top: solid #313244; }
-    #command-bar Button { min-width: 9; margin-right: 1; border: solid #313244; background: #313244; color: #cdd6f4; }
-    #command-bar Button:hover { background: #45475a; }
+    #command-bar Button { min-width: 12; height: 1; margin-right: 1; border: none; background: #313244; color: #cdd6f4; padding: 0 2; }
+    #command-bar Button:hover { background: #45475a; color: #ffffff; }
+    #command-bar Button.-primary { background: #1e6b3f; }
+    #command-bar Button.-success { background: #1e6b3f; }
     #cmd { width: 1fr; display: none; }
     #cmd.visible { display: block; }
     #cmd.flash { border: tall yellow; background: #4d4000; }
@@ -13140,7 +13176,6 @@ class TutorApp(App):
     #demo-label { height: 1; padding: 0 2; background: $boost; }
     #demo-editor { height: 7; padding: 1 2; background: #0d1117; border: solid $primary; }
     #demo-console { height: 5; padding: 1 2; background: #000000; border: solid $success; }
-    #task-check, #task-step, #task-run, #task-continue { min-height: 1; height: 1; }
     ExLine { width: 100%; height: 1; padding: 0 1; color: $text-muted; }
     ExLine:hover { background: $boost; color: $text; }
     #ex-lines { height: auto; }
@@ -13383,6 +13418,7 @@ class TutorApp(App):
         self._split_dragging = False   # dragging the editor/task divider
         self._out_dragging = False     # dragging the editor↔output divider
         self._lab_show_lab = False     # right pane shows TASK (False) or LAB (True)
+        self._lab_toggles = []         # LabToggle widgets (checkbox example blocks)
         self._out_drag_start_y = 0
         self._out_drag_start_h = 10
         self._demo_gen = 0
@@ -13681,10 +13717,12 @@ class TutorApp(App):
                     with VerticalScroll(id="lab-task-view"):
                         yield Static("", id="lab-task-inner")
                     with Vertical(id="lab-lab-view", classes="hidden"):
-                        yield VimEditor(id="lab-editor")
+                        with VerticalScroll(id="lab-list"):
+                            with Vertical(id="lab-list-items"):
+                                pass
+                        yield Button("run checked", id="lab-run", variant="default")
                         with VerticalScroll(id="lab-scroll"):
                             yield Static("", id="lab-output")
-                        yield Button("run", id="lab-run", variant="default")
             with Horizontal(id="command-bar"):
                 yield Button("run", id="task-run", variant="default")
                 yield Button("submit", id="task-check", variant="primary")
@@ -15474,7 +15512,7 @@ class TutorApp(App):
             # no worked-example hint. The task panel already shows the goal.
             self.query_one("#goal", Static).update("")
             self.query_one("#editor", VimEditor).set_text("")
-            self.query_one("#lab-editor", VimEditor).set_text("")
+            self._populate_lab(c)
         else:
             self.query_one("#mastery-note", Static).update("")
             self.query_one("#goal", Static).update(self._goal_panel(c))
@@ -15724,9 +15762,8 @@ class TutorApp(App):
         return "\n".join(lines)
 
     def _populate_lab(self, c):
-        """RIGHT Lab pane: Task view (brief) + Lab view (rich commented examples
-        with expected-output annotations, runnable in the separate console).
-        NO TTS on this side — it's a quiet scratch space."""
+        """RIGHT Lab pane: Task view (brief) + Lab view (checkbox example blocks,
+        scrollable). NO TTS on this side — it's a quiet scratch space."""
         # Task view — brief what-to-do
         t = Text()
         t.append("THE TASK", style="bold #f9a8d4")
@@ -15742,33 +15779,38 @@ class TutorApp(App):
             t.append("\nYOU'LL NEED:  ", style="bold #facc15")
             t.append("  ".join(f"`{n}`" for n in need), style="#fde68a")
         self.query_one("#lab-task-inner", Static).update(t)
-        # Lab view — great examples, each commented out with its expected output
-        lines = ["# LAB — un-comment a block (delete the #) then run",
-                 "# the comment above each block shows what it prints",
-                 ""]
+        # Lab view — one clickable [x]/[ ] checkbox block per example
+        items = self.query_one("#lab-list-items", Vertical)
+        for old in list(items.children):
+            try:
+                old.remove()
+            except Exception:
+                pass
+        self._lab_toggles = []
+        for i, (cap, code) in enumerate(self._lab_examples(c)):
+            out = self._lab_output(code, c.get("stdin", ""))
+            tg = LabToggle(i, cap, out, code)
+            items.mount(tg)
+            self._lab_toggles.append(tg)
+        self.query_one("#lab-output", Static).update("")
+        self._render_lab_tabs()
+
+    def _lab_examples(self, c):
+        """(caption, code) pairs for the Lab: the worked example + topic examples."""
+        out, seen = [], set()
         cap, code = example_code(c.get("example", ""))
         if code:
             head = cap.split("\n")[0].strip().rstrip(":").strip() if cap else ""
-            lines.append(f"# ── {head or 'the worked example'} ──")
-            lines.append(f"#    prints: {self._lab_output(code, c.get('stdin', ''))}")
-            for ln in code.split("\n"):
-                if ln.strip():
-                    lines.append("# " + ln)
-            lines.append("")
+            out.append((head or "the worked example", code))
+            seen.add(code.strip())
         topic = c.get("topic", "custom")
-        for ex in LESSONS.get(topic, {}).get("examples", [])[:2]:
+        for ex in LESSONS.get(topic, {}).get("examples", [])[:3]:
             ex_code = ex.get("code", "")
-            if not ex_code or ex_code.strip() == code.strip():
+            if not ex_code or ex_code.strip() in seen:
                 continue
-            lines.append(f"# ── {ex.get('caption', 'another example')} ──")
-            lines.append(f"#    prints: {self._lab_output(ex_code, ex.get('stdin', ''))}")
-            for ln in ex_code.split("\n"):
-                if ln.strip():
-                    lines.append("# " + ln)
-            lines.append("")
-        self.query_one("#lab-editor", VimEditor).set_text("\n".join(lines))
-        self.query_one("#lab-output", Static).update("")
-        self._render_lab_tabs()
+            seen.add(ex_code.strip())
+            out.append((ex.get("caption", "example"), ex_code))
+        return out
 
     def _lab_output(self, code, stdin=""):
         """Compute an example's printed output for the annotation line."""
@@ -15798,16 +15840,22 @@ class TutorApp(App):
         self._render_lab_tabs()
 
     def _run_lab(self):
-        """Run the Lab editor's code (comments stripped) into its own console."""
-        code = self.query_one("#lab-editor", VimEditor).get_text()
-        cleaned = []
-        for ln in code.split("\n"):
-            if ln.strip().startswith("#"):
-                ln = ln.replace("#", "", 1)
-            cleaned.append(ln)
-        out, err = run_lesson_code("\n".join(cleaned), "")
-        self.query_one("#lab-output", Static).update(
-            Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1"))
+        """Run every CHECKED example block separately into its own console."""
+        checked = [tg for tg in self._lab_toggles if tg.checked]
+        if not checked:
+            self.query_one("#lab-output", Static).update(
+                Text("check an example ([x]) then run", style="dim"))
+            return
+        out = Text()
+        for i, tg in enumerate(checked):
+            if i:
+                out.append("\n")
+            out.append(f"── {tg.caption} ──", style="bold #f9a8d4")
+            out.append("\n")
+            o, e = run_lesson_code(tg.code, "")
+            out.append((o or e or "(nothing)").rstrip("\n"), style="bold #a6e3a1")
+            out.append("\n")
+        self.query_one("#lab-output", Static).update(out)
 
     # ---- textbook example (static, above your editor) ---------------------- #
 
