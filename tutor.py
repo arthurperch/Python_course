@@ -10308,6 +10308,126 @@ DEV_LESSONS = [
      "say": "Check that your pods are actually running.",
      "why": "kubectl get pods is the first thing you type after any deploy — is everything up? It should be reflex by now.",
      "on_win": "Pods listed — all three running."},
+
+    # ==== EXPERT REPETITION · create / delete / rename until it's reflex ====
+    {"module": "Expert Repetition", "kind": "info", "title": "why repetition",
+     "say": "Every senior engineer's speed comes from one thing: they've typed create-and-delete ten thousand times. This last stretch makes you do the same handful of moves over and over with DIFFERENT names, so the command shape — not the example — is what sticks.",
+     "why": "New name every time forces you to read the command, not memorize a demo. That's the difference between 'I saw a tutorial' and 'my fingers know it'."},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "bake an image (rep-2)",
+     "say": "Build a Docker image named rep2 from the Dockerfile here.",
+     "why": "Same build as before, new name. The tag changes; the command never does.",
+     "recall": "build + tag: docker build -t <name> .",
+     "hint": "docker build -t rep2 .",
+     "tools": ["docker build -t rep2 ."],
+     "verify_lab": lambda lab: "rep2" in lab.docker.images,
+     "replay": ["docker build -t rep2 ."]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "run it (rep-2)",
+     "say": "Run rep2 as a detached container named rep2web on port 9090.",
+     "why": "New container name, same three flags: -d, --name, -p.",
+     "recall": "detached + named + port: -d --name -p.",
+     "hint": "docker run -d --name rep2web -p 9090:80 rep2",
+     "tools": ["docker run -d --name rep2web -p 9090:80 rep2"],
+     "verify_lab": lambda lab: "rep2web" in lab.docker.containers,
+     "replay": ["docker run -d --name rep2web -p 9090:80 rep2"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "stop it",
+     "say": "Stop the rep2web container.",
+     "why": "docker stop only wants a NAME — no flags, nothing else.",
+     "recall": "stop takes a name, not flags.",
+     "hint": "docker stop rep2web",
+     "tools": ["docker stop rep2web"],
+     "verify_lab": lambda lab: lab.docker.containers.get("rep2web", {}).get("running") is False,
+     "replay": ["docker stop rep2web"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "remove the container",
+     "say": "Delete the (now stopped) rep2web container.",
+     "why": "docker rm deletes a container. It refuses if it's still running — that's why you stop first.",
+     "recall": "rm removes; it must be stopped first.",
+     "hint": "docker rm rep2web",
+     "tools": ["docker rm rep2web"],
+     "verify_lab": lambda lab: "rep2web" not in lab.docker.containers,
+     "replay": ["docker rm rep2web"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "delete the image",
+     "say": "Remove the rep2 image now that nothing uses it.",
+     "why": "docker rmi deletes an image. Cleaning up images you don't need is the tidy-engineer habit.",
+     "recall": "rmi = remove image (the 'i').",
+     "hint": "docker rmi rep2",
+     "tools": ["docker rmi rep2"],
+     "verify_lab": lambda lab: "rep2" not in lab.docker.images,
+     "replay": ["docker rmi rep2"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "make a bucket (rep-3)",
+     "say": "Create an S3 bucket named rep3-bucket.",
+     "why": "Another bucket, another name — the command stays identical.",
+     "recall": "make bucket = mb, then s3://name.",
+     "hint": "aws s3 mb s3://rep3-bucket",
+     "tools": ["aws s3 mb s3://rep3-bucket"],
+     "verify_lab": lambda lab: "rep3-bucket" in lab.aws.buckets,
+     "replay": ["aws s3 mb s3://rep3-bucket"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "put a file in it",
+     "say": "Upload app.py into rep3-bucket as app.py.",
+     "why": "aws s3 cp <local> s3://<bucket>/<key> — copy local to cloud.",
+     "recall": "cp local s3://bucket/key.",
+     "hint": "aws s3 cp app.py s3://rep3-bucket/app.py",
+     "tools": ["aws s3 cp app.py s3://rep3-bucket/app.py"],
+     "verify_lab": lambda lab: bool(lab.aws.buckets.get("rep3-bucket", {}).get("app.py")),
+     "replay": ["aws s3 cp app.py s3://rep3-bucket/app.py"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "delete the file, then the bucket",
+     "say": "Remove the file, then delete the bucket. (A non-empty bucket won't delete.)",
+     "why": "rb refuses a non-empty bucket — delete the object first, then the bucket. Two-step teardown.",
+     "recall": "rm the key, then rb the bucket.",
+     "hint": "aws s3 rm s3://rep3-bucket/app.py  →  aws s3 rb s3://rep3-bucket",
+     "tools": ["aws s3 rm s3://rep3-bucket/app.py", "aws s3 rb s3://rep3-bucket"],
+     "verify_lab": lambda lab: "rep3-bucket" not in lab.aws.buckets,
+     "replay": ["aws s3 rm s3://rep3-bucket/app.py", "aws s3 rb s3://rep3-bucket"]},
+
+    {"module": "Expert Repetition", "kind": "challenge", "title": "commit (rep-4)",
+     "say": "Commit the current change with the message 'rep4'.",
+     "why": "The git loop again, but a fresh message every time — so 'edit, add, commit' becomes one motion.",
+     "recall": "stage, then commit with a message.",
+     "hint": "git add .  →  git commit -m \"rep4\"",
+     "tools": ["git add .", "git commit -m \"rep4\""],
+     "verify_lab": lambda lab: any("rep4" in c.get("msg", "") for c in lab.git.commits),
+     "replay": ["git add .", "git commit -m \"rep4\""]},
+
+    {"module": "Expert Repetition", "kind": "write", "title": "re-type the deployment (5 replicas)",
+     "file": "web.yaml",
+     "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: 5\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      containers:\n        - name: app\n          image: model:v1\n          resources:\n            limits:\n              nvidia.com/gpu: 1\n",
+     "lines": [
+         ("apiVersion: apps/v1", "the API version"),
+         ("kind: Deployment", "declaring a deployment"),
+         ("name: web", "the name"),
+         ("replicas: 5", "five copies this time — the value changed, the shape didn't"),
+         ("image: model:v1", "the image"),
+         ("nvidia.com/gpu: 1", "one GPU per pod"),
+     ],
+     "say": "Re-type the deployment — same shape, but 5 replicas this time.",
+     "why": "The value changed (3 → 5) but the YAML skeleton is identical. Recognizing the SHAPE while the numbers vary is the skill.",
+     "on_win": "Deployment re-typed with 5 replicas."},
+
+    {"module": "Expert Repetition", "kind": "run", "title": "scale it to 5",
+     "verify": lambda c: c.startswith("kubectl scale") and "5" in c,
+     "cmd_hint": "kubectl scale deployment web --replicas=5",
+     "say": "Scale the web deployment to 5 replicas.",
+     "why": "kubectl scale deployment <name> --replicas=<n> — grow or shrink a service in one line.",
+     "on_win": "Scaled to 5."},
+
+    {"module": "Expert Repetition", "kind": "run", "title": "list your images",
+     "expect": ["docker images"], "cmd_hint": "docker images",
+     "say": "List every image you've built.",
+     "why": "docker images is the inventory check — you'll type it constantly to see what you have lying around.",
+     "on_win": "Here's everything you've built."},
+
+    {"module": "Expert Repetition", "kind": "run", "title": "check the repo",
+     "expect": ["git status"], "cmd_hint": "git status",
+     "say": "Check what's changed in the repo.",
+     "why": "git status is the habit every engineer runs before touching anything — know what's dirty first.",
+     "on_win": "Clean working tree — you know exactly where you stand."},
 ]
 
 # Group DEV_LESSONS into ordered modules: [{name, first, count}, ...]
@@ -14607,8 +14727,8 @@ class TutorApp(App):
         self._dev_attempts = 0
         self._dev_chal_done = set()   # challenge: toolbox step indices completed
         self._dev_confirm = False
-        self._dev_flash = 0
-        self._dev_flash_timer = None
+        self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
+        self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
         self._net_on = False          # NETWORK+ overlay open
         self._net_module = 0          # current module idx (0-3)
@@ -20668,7 +20788,14 @@ class TutorApp(App):
             return
         lesson = self._dev_lesson()
         self._dev_history.append(("cmd", (self._dev_prompt(), cmd)))
+        before = self._dev_state_snapshot()
         out, err = self._dev_lab.run(cmd)
+        after = self._dev_state_snapshot()
+        created = {k for k in after if k not in before}
+        deleted = {k for k in before if k not in after}
+        changed = {k for k in after if k in before and before[k] != after[k]}
+        if created or deleted or changed:
+            self._dev_flash_start(created, deleted, changed)
         for line in out:
             if line == "__CLEAR__":
                 self._dev_history = []
@@ -20748,7 +20875,8 @@ class TutorApp(App):
             return "not quite — look at the hint bar above"
         if tier == 1:
             return "check the spelling and the flags"
-        return "type exactly what the hint bar shows"
+        hint = lesson.get("cmd_hint") or (lesson.get("expect") or ["?"])[0]
+        return f"copy this exactly:  {hint}"
 
     def _dev_on_key(self, event):
         if not self._dev_on:
@@ -20841,6 +20969,7 @@ class TutorApp(App):
 
     def _dev_graduate(self):
         self._dev_ghost_stop_timers()
+        self._dev_flash_stop()
         self._dev_ghost = ""
         self.query_one("#dev-ghost", Static).update(Text(""))
         self.p["dev_step"] = len(DEV_LESSONS)
@@ -20863,6 +20992,7 @@ class TutorApp(App):
         self._dev_on = False
         self._dev_confirm = False
         self._dev_ghost_stop_timers()
+        self._dev_flash_stop()
         self.query_one("#dev-help", Static).remove_class("visible")
         t = getattr(self, "_dev_adv_timer", None)
         if t is not None:
@@ -21116,6 +21246,80 @@ class TutorApp(App):
             offset = end + 1
         return _box_lines(_lines_of(t), max_width=self._dev_term_width())
 
+    def _dev_state_snapshot(self):
+        """A flat {label: value} picture of the whole cloud, so a command's
+        create/change/delete can be diffed against the snapshot from before."""
+        lab = self._dev_lab
+        s = {}
+        if lab.git.inited:
+            s["git repo"] = f"{lab.git.branch}:{len(lab.git.commits)}"
+        for c in lab.git.commits:
+            s[f"commit {c.get('hash', '?')[:7]}"] = c.get("msg", "")
+        for name, img in lab.docker.images.items():
+            s[f"image {name}"] = str(img.get("id", ""))
+        for name, ctr in lab.docker.containers.items():
+            s[f"container {name}"] = "up" if ctr.get("running") else "stopped"
+        for b in lab.aws.buckets:
+            s[f"bucket {b}"] = str(len(lab.aws.buckets[b]))
+        for iid, inst in lab.aws.instances.items():
+            s[f"instance {iid}"] = inst["State"]["Name"]
+        for n in lab.aws.lambda_fns:
+            s[f"function {n}"] = ""
+        for n in lab.aws.dynamo_tables:
+            s[f"table {n}"] = str(len(lab.aws.dynamo_tables[n]))
+        for u in lab.aws.iam_users:
+            s[f"user {u}"] = ""
+        for r in lab.aws.iam_roles:
+            s[f"role {r}"] = ""
+        for k in lab.tf.resources:
+            s[f"resource {k}"] = ""
+        for h, st in lab.ansible.hosts.items():
+            s[f"host {h}"] = ",".join(sorted(st.get("packages", [])))
+        for r in lab.pipeline.runs:
+            ok = all(x["status"] == "pass" for x in r["stages"])
+            s[f"build #{r['id']}"] = "green" if ok else "red"
+        return s
+
+    def _dev_flash_start(self, created, deleted, changed):
+        for k in created:
+            self._dev_flash[k] = {"kind": "create", "n": 0, "label": k}
+        for k in deleted:
+            self._dev_flash[k] = {"kind": "delete", "n": 0, "label": k}
+        for k in changed:
+            self._dev_flash[k] = {"kind": "change", "n": 0, "label": k}
+        if self._dev_flash and self._dev_flash_timer is None:
+            self._dev_flash_timer = self.set_interval(0.16, self._dev_flash_tick)
+
+    def _dev_flash_tick(self):
+        for k in list(self._dev_flash):
+            self._dev_flash[k]["n"] += 1
+            if self._dev_flash[k]["n"] >= 6:
+                del self._dev_flash[k]
+        if not self._dev_flash and self._dev_flash_timer is not None:
+            self._dev_flash_timer.stop()
+            self._dev_flash_timer = None
+        try:
+            self.query_one("#dev-state-tree", Static).update(self._dev_render_state())
+        except Exception:
+            pass
+
+    def _dev_flash_stop(self):
+        self._dev_flash.clear()
+        if self._dev_flash_timer is not None:
+            self._dev_flash_timer.stop()
+            self._dev_flash_timer = None
+
+    def _dev_flash_for(self, key):
+        """(prefix, style) for a live create/change flash, or (None, None)."""
+        f = self._dev_flash.get(key)
+        if not f or f["kind"] not in ("create", "change"):
+            return None, None
+        n = f["n"]
+        if f["kind"] == "create":
+            grow = "▮" * min(n + 1, 5)          # grows 1 block each flash → full size
+            return ("+" + grow + " ", "bold #4ade80" if n % 2 == 0 else "bold #d9f99d")
+        return ("~ ", "bold #fbbf24" if n % 2 == 0 else "bold #fde68a")
+
     def _dev_render_state(self):
         lab = self._dev_lab
         t = Text()
@@ -21127,67 +21331,92 @@ class TutorApp(App):
             t.append(title, style="bold cyan")
             t.append("\n")
 
+        def emit(key, label, default="#d5d5d5"):
+            prefix, style = self._dev_flash_for(key)
+            if prefix:
+                t.append(prefix, style="bold #22c55e")
+                t.append(label, style=style)
+            else:
+                t.append(label, style=default)
+            t.append("\n")
+
+        # what the last command removed — bold → fades, gone after 5 flashes
+        removed = [(k, f) for k, f in self._dev_flash.items() if f["kind"] == "delete"]
+        if removed:
+            t.append("JUST REMOVED", style="bold #f87171")
+            t.append("\n")
+            for _k, f in removed:
+                n = f["n"]
+                style = ("bold #f87171" if n % 2 == 0 else "#f87171") if n < 4 else "#6b7280"
+                t.append("− ", style="bold #f87171")
+                t.append(f["label"], style=style)
+                t.append("\n")
+            t.append("\n")
+
         if lab.git.inited:
             sec("GIT")
-            t.append(f"  branch {lab.git.branch} · {len(lab.git.commits)} commits", style="#d5d5d5")
-            t.append("\n")
+            emit("git repo", f"  branch {lab.git.branch} · {len(lab.git.commits)} commits")
+            for c in lab.git.commits[-3:]:
+                key = f"commit {c.get('hash', '?')[:7]}"
+                emit(key, f"    ✓ {c.get('msg', '')[:24]}")
+
         if lab.docker.images:
             sec("DOCKER IMAGES")
             for name in lab.docker.images:
-                t.append(f"  {name}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"image {name}", f"  {name}")
+
         if lab.docker.containers:
             sec("CONTAINERS")
             for name, c in lab.docker.containers.items():
                 st = "up" if c["running"] else "stopped"
-                t.append(f"  {name} ({st})", style="#d5d5d5")
-                t.append("\n")
+                emit(f"container {name}", f"  {name} ({st})")
+
         if lab.aws.buckets:
             sec("S3 BUCKETS")
             for b in sorted(lab.aws.buckets):
                 n = len(lab.aws.buckets[b])
-                t.append(f"  {b} ({n} files)", style="#d5d5d5")
-                t.append("\n")
+                emit(f"bucket {b}", f"  {b} ({n} files)")
+
         if lab.aws.instances:
             sec("EC2 INSTANCES")
             for iid, inst in lab.aws.instances.items():
-                t.append(f"  {iid} {inst['State']['Name']}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"instance {iid}", f"  {iid} {inst['State']['Name']}")
+
         if lab.aws.lambda_fns:
             sec("LAMBDA")
             for n in sorted(lab.aws.lambda_fns):
-                t.append(f"  {n}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"function {n}", f"  {n}")
+
         if lab.aws.dynamo_tables:
             sec("DYNAMODB")
             for n in sorted(lab.aws.dynamo_tables):
-                t.append(f"  {n} ({len(lab.aws.dynamo_tables[n])})", style="#d5d5d5")
-                t.append("\n")
+                emit(f"table {n}", f"  {n} ({len(lab.aws.dynamo_tables[n])})")
+
         if lab.aws.iam_users or lab.aws.iam_roles:
             sec("IAM")
             for u in sorted(lab.aws.iam_users):
-                t.append(f"  user {u}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"user {u}", f"  user {u}")
             for r in sorted(lab.aws.iam_roles):
-                t.append(f"  role {r}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"role {r}", f"  role {r}")
+
         if lab.tf.resources:
             sec("TERRAFORM")
             for k in sorted(lab.tf.resources):
-                t.append(f"  {k}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"resource {k}", f"  {k}")
+
         if lab.ansible.hosts:
             sec("ANSIBLE HOSTS")
             for h, st in lab.ansible.hosts.items():
                 pkgs = ", ".join(sorted(st["packages"])) or "—"
-                t.append(f"  {h}: {pkgs}", style="#d5d5d5")
-                t.append("\n")
+                emit(f"host {h}", f"  {h}: {pkgs}")
+
         if lab.pipeline.runs:
             r = lab.pipeline.runs[-1]
             ok = all(s["status"] == "pass" for s in r["stages"])
             sec("CI/CD")
-            t.append(f"  #{r['id']} {'green' if ok else 'red'}", style="green" if ok else "red")
-            t.append("\n")
+            emit(f"build #{r['id']}", f"  #{r['id']} {'green' if ok else 'red'}",
+                 default=("green" if ok else "red"))
+
         if not added:
             t.append("the cloud is empty —", style="#d5d5d5")
             t.append("\n")
