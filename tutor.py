@@ -22167,6 +22167,16 @@ class TutorApp(App):
         t.append("█", style="bold #22c55e")
         return _box_lines(_lines_of(t), max_width=term_w, border=False)
 
+    def _dev_append_code(self, t, text, style):
+        """Append code text with underscores given a visible background block, so
+        '_' never reads as a blank space (it's easy to mistake for a space)."""
+        u = (style + " on #3f4756") if style else "on #3f4756"
+        for i, seg in enumerate(text.split("_")):
+            if i:
+                t.append("_", style=u)
+            if seg:
+                t.append(seg, style=style)
+
     def _dev_render_vim(self):
         """Render a realistic nvim editor. The ONLY colored thing is the target
         file (what to write) — amber and flashing. Everything else is white."""
@@ -22176,7 +22186,9 @@ class TutorApp(App):
         fname = self._dev_lesson()["file"]
         t = Text()
         # tab line (plain white)
-        t.append(f" nvim {fname} ", style="bold #f0f0f5")
+        t.append(" nvim ", style="bold #f0f0f5")
+        self._dev_append_code(t, fname, "bold #f0f0f5")
+        t.append(" ", style="bold #f0f0f5")
         t.append("\n\n")
         # buffer: line numbers + cursor + '~' on empty lines (like real vim)
         n = max(len(buf.lines), 3)
@@ -22186,16 +22198,16 @@ class TutorApp(App):
                 line = buf.lines[i]
                 if i == buf.row:
                     col = min(buf.col, len(line))
-                    t.append(line[:col], style="#f0f0f5")
+                    self._dev_append_code(t, line[:col], "#f0f0f5")
                     cell = line[col:col + 1] or " "
                     if buf.mode == "insert":
                         # solid BLOCK cursor while typing (green), not an underline
                         t.append(cell, style="black on #22c55e bold")
                     else:
                         t.append(cell, style="black on #e6e6e6 bold")
-                    t.append(line[col + 1:], style="#f0f0f5")
+                    self._dev_append_code(t, line[col + 1:], "#f0f0f5")
                 else:
-                    t.append(line, style="#f0f0f5")
+                    self._dev_append_code(t, line, "#f0f0f5")
             else:
                 t.append("~", style="#3a3f4b")
             t.append("\n")
@@ -22221,7 +22233,7 @@ class TutorApp(App):
             if i < buf.row:
                 # finished line — green ✓
                 t.append("  ✓ ", style="bold #22c55e")
-                t.append(tline, style="bold #22c55e")
+                self._dev_append_code(t, tline, "bold #22c55e")
             elif i == buf.row:
                 # the line you're on — fills left-to-right as you type each char
                 t.append("  ▸ ", style="bold #fbbf24")
@@ -22229,18 +22241,20 @@ class TutorApp(App):
                 for j, ch in enumerate(tline):
                     if j < len(typed):
                         if typed[j] == ch:
-                            t.append(ch, style="bold #fbbf24")          # filled
+                            st = "bold #fbbf24"
+                            t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
                         else:
                             # wrong char — red, flashing
                             t.append(typed[j], style="bold underline #ff5555" if on else "bold #7a2020")
                     else:
-                        t.append(ch, style="#3a3f4b")                    # not typed yet
+                        st = "#3a3f4b"
+                        t.append(ch, style=(st + " on #3f4756") if ch == "_" else st)
                 if len(typed) > len(tline):
                     t.append(typed[len(tline):], style="bold #ff5555")   # over-typed
             else:
                 # not reached yet — dim ghost
                 t.append("    ", style="")
-                t.append(tline, style="#5a5a5a")
+                self._dev_append_code(t, tline, "#5a5a5a")
             t.append("\n")
         t.append("\n")
         # statusline — white mode indicator (the cursor already shows mode)
@@ -22251,7 +22265,8 @@ class TutorApp(App):
         else:
             mode, hint = "CMD", "wq = save & quit"
         t.append(f" -- {mode} -- ", style="bold #f0f0f5")
-        t.append(f" {fname}", style="bold #f0f0f5")
+        t.append(" ", style="bold #f0f0f5")
+        self._dev_append_code(t, fname, "bold #f0f0f5")
         t.append(f"   {hint}", style="#c9cdd6")
         return _box_lines(_lines_of(t), max_width=self._dev_term_width(), border=False)
 
