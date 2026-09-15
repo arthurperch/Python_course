@@ -14739,6 +14739,19 @@ class TutorApp(App):
         self.query_one("#menu-list-inner", Static).update(t)
         self._snap_menu_scroll(sel_line)
 
+    def _series_order(self) -> list:
+        """The ordered list of series `si` values as they appear on screen —
+        navigation follows THIS list, so every row (including PYTHON LAB and the
+        conditional FIX THESE) is reachable with j/k."""
+        order = []
+        if self._failed_entries():
+            order.append(-5)          # FIX THESE (only when there are misses)
+        order += [-4, -3, -2, -1]     # NETWORK+, CLOUD, BUILD, VIM
+        order.append(-6)              # PYTHON LAB
+        order += list(range(len(GROUPS)))
+        order.append(len(GROUPS))     # PYTHON REVIEW
+        return order
+
     def _render_series_list(self):
         """One line per series — every course visible at once, the selected
         row reverse-highlighted so the selection is impossible to miss. The
@@ -14835,6 +14848,8 @@ class TutorApp(App):
             n = len(self._py_due_topics())
             note = (f"⏰ {n} topics due today — Enter to review them now"
                     if n else "all caught up — nothing due today")
+        elif self.series_sel == -6:
+            note = "playground — every example in the course, edit & run · Enter to open"
         else:
             g = GROUPS[self.series_sel]
             note = f"{g['name']} — Enter to browse its challenges"
@@ -14916,6 +14931,19 @@ class TutorApp(App):
             if len(failed) > 12:
                 t.append(f"\n… and {len(failed) - 12} more\n", style="dim")
             t.append("\nEnter jumps into the first one.", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
+        if self.series_sel == -6:
+            self.query_one("#menu-preview-title", Static).update("PYTHON LAB")
+            t = Text()
+            t.append("A playground for the whole course.\n\n", style="#f0f0f5")
+            for line in ("every worked example, in one scrollable list",
+                         "click one to load it, edit it, run it",
+                         "write your own code and see the output below"):
+                t.append("• ", style="dim")
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\nEnter to open the Lab", style="dim")
             self.query_one("#menu-preview-inner", Static).update(t)
             return
         if self.series_sel == len(GROUPS):
@@ -15256,9 +15284,9 @@ class TutorApp(App):
         if self.mode != "menu":
             return
         if self.menu_level == "series":
-            self.series_sel += 1
-            if self.series_sel >= len(GROUPS) + 1:
-                self.series_sel = -4
+            order = self._series_order()
+            i = order.index(self.series_sel) if self.series_sel in order else 0
+            self.series_sel = order[(i + 1) % len(order)]
         elif self.menu_level == "dev_modules":
             n = len(self._dev_module_items())
             self.menu_sel = (self.menu_sel + 1) % n
@@ -15280,9 +15308,9 @@ class TutorApp(App):
         if self.mode != "menu":
             return
         if self.menu_level == "series":
-            self.series_sel -= 1
-            if self.series_sel < -4:
-                self.series_sel = len(GROUPS)
+            order = self._series_order()
+            i = order.index(self.series_sel) if self.series_sel in order else 0
+            self.series_sel = order[(i - 1) % len(order)]
         elif self.menu_level == "dev_modules":
             n = len(self._dev_module_items())
             self.menu_sel = (self.menu_sel - 1) % n
