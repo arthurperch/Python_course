@@ -5094,11 +5094,13 @@ class LabToggle(Static):
     """One clickable example block in the Lab. Click to toggle the [x]/[ ] —
     checked blocks run when you hit 'run checked'. No TTS — it's a quiet lab."""
 
-    def __init__(self, idx: int, caption: str, output: str, code: str):
-        super().__init__(id=f"labtg-{idx}")
+    def __init__(self, idx: int, caption: str, output: str, code: str,
+                 editor_id: str = "#lab-editor", id_prefix: str = "labtg"):
+        super().__init__(id=f"{id_prefix}-{idx}")
         self.caption = caption
         self.output = output
         self.code = code
+        self.editor_id = editor_id   # which editor clicking this loads into
         self.checked = False
         self.update(self._build_text())
 
@@ -13284,6 +13286,21 @@ class TutorApp(App):
     #ghost-statusline-b { height: 1; background: #313244; padding: 0 1; }
     #ghost-why { width: 34%; border: tall #313244; padding: 1 1; background: #181825; }
     #ghost-why.active { border: tall #89b4fa; }
+    #ghost-lab { width: 38%; border: tall #313244; background: #1a1a28; display: none; }
+    #ghost-lab.visible { display: block; }
+    #ghost-lab-tabs { height: 1; padding: 0 1; background: #181825; }
+    #ghost-lab-tabs Button { min-width: 6; height: 1; border: none; padding: 0 1; background: #313244; color: #cdd6f4; }
+    #ghost-lab-tabs Button.-primary { background: #1e6b3f; color: #ffffff; }
+    #ghost-lab-tabs-hint { width: 1fr; content-align: right middle; color: #7f849c; }
+    #ghost-lab-task-view { height: 1fr; padding: 1 2; }
+    #ghost-lab-lab-view { height: 1fr; }
+    #ghost-lab-lab-view.hidden { display: none; }
+    #ghost-lab-list { height: 1fr; background: #1a1a28; }
+    #ghost-lab-items { height: auto; }
+    #ghost-lab-editor { height: 5; min-height: 5; padding: 0 1; background: #181825; border-top: solid #313244; }
+    #ghost-lab-scroll { height: 5; border-top: solid #313244; background: #14141f; }
+    #ghost-lab-output { height: auto; padding: 0 1; }
+    #ghost-lab-run { height: 1; }
     #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
     #ghost-foot-row { height: 5; padding: 0 1; }
     #ghost-foot { width: 1fr; height: auto; min-height: 1; padding: 1 1 0 1; }
@@ -13526,6 +13543,8 @@ class TutorApp(App):
         self._ghost_fade = False            # FADE recall mode (faint purple ghost, silent)
         self._ghost_fade_wrong = 0          # consecutive wrong chars in fade mode
         self._ghost_silhouette = False      # SILHOUETTE recall (shape-only, words hidden)
+        self._ghost_lab_on = False          # ghost Lab pane is open (split screen)
+        self._ghost_show_lab = False        # ghost Lab shows LAB view (vs TASK)
         self._ghost_silhouette_fails = 0    # letter-by-letter misses (reveal at 5+)
         self._ghost_silhouette_help = False # after 5 misses: show word first-letters
         self._ghost_reveal = 0               # "show code" countdown (0 = hidden)
@@ -13836,6 +13855,21 @@ class TutorApp(App):
                     yield Static("", id="ghost-winbar-b")
                     yield Static("", id="ghost-code-b")
                     yield Static("", id="ghost-statusline-b")
+                with Vertical(id="ghost-lab"):
+                    with Horizontal(id="ghost-lab-tabs"):
+                        yield Button("TASK", id="ghost-lab-tab-task", variant="primary")
+                        yield Button("LAB", id="ghost-lab-tab-lab", variant="default")
+                        yield Static("", id="ghost-lab-tabs-hint")
+                    with VerticalScroll(id="ghost-lab-task-view"):
+                        yield Static("", id="ghost-lab-task-inner")
+                    with Vertical(id="ghost-lab-lab-view", classes="hidden"):
+                        with VerticalScroll(id="ghost-lab-list"):
+                            with Vertical(id="ghost-lab-items"):
+                                pass
+                        yield VimEditor(id="ghost-lab-editor")
+                        yield Button("run", id="ghost-lab-run", variant="default")
+                        with VerticalScroll(id="ghost-lab-scroll"):
+                            yield Static("", id="ghost-lab-output")
                 yield Static("", id="ghost-why")
             yield Static("", id="ghost-console")
             with Horizontal(id="ghost-foot-row"):
@@ -15096,6 +15130,15 @@ class TutorApp(App):
         if event.button.id == "lab-tab-lab":
             self._show_lab_view()
             return
+        if event.button.id == "ghost-lab-tab-task":
+            self._ghost_show_lab_task()
+            return
+        if event.button.id == "ghost-lab-tab-lab":
+            self._ghost_show_lab_view()
+            return
+        if event.button.id == "ghost-lab-run":
+            self._run_lab("#ghost-lab-editor", "#ghost-lab-output")
+            return
         if event.button.id == "name-save":
             self._save_name()
             return
@@ -15972,6 +16015,10 @@ class TutorApp(App):
 
     def action_focus_left(self):
         """tmux-style switch: focus the LEFT (test/work) editor."""
+        if self._ghost_on:
+            if self._ghost_lab_on:
+                self.action_ghost_toggle_lab()   # close the ghost lab
+            return
         self._show_lab_task()
         try:
             self.query_one("#editor", VimEditor).focus()
@@ -15980,28 +16027,134 @@ class TutorApp(App):
 
     def action_focus_right(self):
         """tmux-style switch: focus the RIGHT (lab) editor (shows Lab view)."""
+        if self._ghost_on:
+            self.action_ghost_toggle_lab()
+            return
         self._show_lab_view()
 
-    def _run_lab(self):
+    def _run_lab(self, editor_id: str = "#lab-editor", output_id: str = "#lab-output"):
         """Run whatever is in the editable lab editor into its own console."""
-        code = self.query_one("#lab-editor", VimEditor).get_text()
+        code = self.query_one(editor_id, VimEditor).get_text()
         out, err = run_lesson_code(code, "")
-        self.query_one("#lab-output", Static).update(
+        self.query_one(output_id, Static).update(
             Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1"))
 
     def _lab_select(self, tg):
         """RADIO: picking one example block turns the others off, and loads its
         code into the editable lab editor so you can change it, then run."""
-        for other in self._lab_toggles:
+        siblings = (self._ghost_lab_toggles if tg in getattr(self, "_ghost_lab_toggles", [])
+                    else self._lab_toggles)
+        for other in siblings:
             if other is not tg:
                 other.checked = False
                 other.update(other._build_text())
         tg.checked = True
         tg.update(tg._build_text())
         try:
-            self.query_one("#lab-editor", VimEditor).set_text(tg.code)
+            self.query_one(tg.editor_id, VimEditor).set_text(tg.code)
         except Exception:
             pass
+
+    # ---- ghost Lab (split-screen experiment pane inside ghost writing) ---- #
+
+    def _populate_ghost_lab(self, c):
+        """Populate the ghost Lab (split-screen examples) with the current
+        challenge's worked example + topic examples. NO TTS — quiet scratch."""
+        try:
+            t = Text()
+            t.append("THE TASK", style="bold #f9a8d4")
+            t.append("\n\n")
+            t.append(c["title"], style="bold #cdd6f4")
+            t.append("\n")
+            prompt = re.sub(r"[`*_#>~]", "", c.get("prompt", "")).strip()
+            for ln in _wrap_words(prompt, 46):
+                t.append(ln, style="#a6adc8")
+                t.append("\n")
+            self.query_one("#ghost-lab-task-inner", Static).update(t)
+        except Exception:
+            pass
+        items = self.query_one("#ghost-lab-items", Vertical)
+        for old in list(items.children):
+            try:
+                old.remove()
+            except Exception:
+                pass
+        self._ghost_lab_toggles = []
+        for i, (cap, code) in enumerate(self._lab_examples(c)):
+            out = self._lab_output(code, c.get("stdin", ""))
+            tg = LabToggle(i, cap, out, code, editor_id="#ghost-lab-editor",
+                           id_prefix="glabtg")
+            items.mount(tg)
+            self._ghost_lab_toggles.append(tg)
+        try:
+            self.query_one("#ghost-lab-output", Static).update("")
+        except Exception:
+            pass
+        self._ghost_render_lab_tabs()
+
+    def _ghost_render_lab_tabs(self):
+        """Update the ghost Lab TASK/LAB buttons + hint."""
+        try:
+            self.query_one("#ghost-lab-tab-task", Button).variant = (
+                "primary" if not self._ghost_show_lab else "default")
+            self.query_one("#ghost-lab-tab-lab", Button).variant = (
+                "primary" if self._ghost_show_lab else "default")
+            self.query_one("#ghost-lab-tabs-hint", Static).update(
+                Text.from_markup("[dim]ctrl+l lab · ctrl+h back[/]"))
+        except Exception:
+            pass
+
+    def _ghost_lab_set_views(self):
+        try:
+            self.query_one("#ghost-lab-task-view", VerticalScroll).set_class(
+                self._ghost_show_lab, "hidden")
+            self.query_one("#ghost-lab-lab-view", Vertical).set_class(
+                not self._ghost_show_lab, "hidden")
+        except Exception:
+            pass
+
+    def _ghost_show_lab_view(self):
+        """Open the ghost Lab pane (or its LAB view) and focus the editor."""
+        self._ghost_lab_on = True
+        self._ghost_show_lab = True
+        try:
+            self.query_one("#ghost-lab", Vertical).add_class("visible")
+        except Exception:
+            pass
+        self._ghost_lab_set_views()
+        self._ghost_render_lab_tabs()
+        try:
+            ed = self.query_one("#ghost-lab-editor", VimEditor)
+            ed.mode = "insert"
+            ed.focus()
+        except Exception:
+            pass
+
+    def _ghost_show_lab_task(self):
+        """Show the ghost Lab's TASK view (or close back to the recall)."""
+        self._ghost_show_lab = False
+        self._ghost_lab_set_views()
+        self._ghost_render_lab_tabs()
+        try:
+            self.query_one("#ghost", GhostWriter).focus()
+        except Exception:
+            pass
+
+    def action_ghost_toggle_lab(self):
+        """tmux-style: toggle the ghost Lab split pane open/closed."""
+        if self._ghost_lab_on:
+            self._ghost_lab_on = False
+            try:
+                self.query_one("#ghost-lab", Vertical).remove_class("visible")
+            except Exception:
+                pass
+            self._ghost_render_lab_tabs()
+            try:
+                self.query_one("#ghost", GhostWriter).focus()
+            except Exception:
+                pass
+        else:
+            self._ghost_show_lab_view()
 
     # ---- textbook example (static, above your editor) ---------------------- #
 
@@ -16185,6 +16338,7 @@ class TutorApp(App):
         self.query_one("#ghost", GhostWriter).add_class("visible")
         self.query_one("#ghost", GhostWriter).focus()
         self._ghost_begin_example(0)
+        self._populate_ghost_lab(self._current())
 
     def _ghost_help_level(self) -> int:
         """How much help the ghost gives, based on how far through the current
@@ -16331,6 +16485,7 @@ class TutorApp(App):
         self.query_one("#ghost", GhostWriter).add_class("visible")
         self.query_one("#ghost", GhostWriter).focus()
         self._ghost_begin_example(0)
+        self._populate_ghost_lab(self._current())
 
     def _finish_required_ghost(self):
         """Ghost drill complete — run the vim edit warm-up, then unlock the editor."""
@@ -16637,6 +16792,16 @@ class TutorApp(App):
             if key == "escape":
                 event.stop(); event.prevent_default()
                 self._hide_profile()
+            return
+        # tmux-style pane switch inside ghost writing (never ctrl+e)
+        if key == "ctrl+l":
+            event.stop(); event.prevent_default()
+            self.action_ghost_toggle_lab()
+            return
+        if key == "ctrl+h":
+            event.stop(); event.prevent_default()
+            if self._ghost_lab_on:
+                self.action_ghost_toggle_lab()   # close the lab, back to recall
             return
         ch = event.character
         # ---- FILL mode: a constrained vim-ish blank — you only edit the blank,
@@ -17256,9 +17421,15 @@ class TutorApp(App):
     def _ghost_dismiss(self):
         self._ghost_on = False
         self._ghost_required = False
+        self._ghost_lab_on = False
+        self._ghost_show_lab = False
         self._ghost_gen += 1
         self._ghost_stop_timers()
         self.query_one("#ghost", GhostWriter).remove_class("visible")
+        try:
+            self.query_one("#ghost-lab", Vertical).remove_class("visible")
+        except Exception:
+            pass
         self._ghost_exit_confirm = False
         self.query_one("#ghost-exit-popup", Static).remove_class("visible")
         self._update_guide()
