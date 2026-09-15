@@ -5139,6 +5139,7 @@ class VimEditor(Static):
         self._insert_snapshot: list[str] | None = None
         self.hint_lines: set[int] = set()
         self.scroll_top = 0   # first visible line (viewport follows the cursor)
+        self.visible_rows = 12  # how many lines fit; updated by on_resize
 
     def set_text(self, text: str) -> None:
         # strip a trailing newline so the buffer has no phantom empty last line
@@ -5174,10 +5175,20 @@ class VimEditor(Static):
         return line[start:end]
 
     def render(self) -> Text:
+        # viewport follows the cursor; only the visible window is drawn, so a
+        # long file scrolls with the mouse wheel (or the cursor pulling it down)
+        vr = max(1, getattr(self, "visible_rows", 12))
+        if self.cursor_row < self.scroll_top:
+            self.scroll_top = self.cursor_row
+        elif self.cursor_row >= self.scroll_top + vr:
+            self.scroll_top = self.cursor_row - vr + 1
+        self.scroll_top = max(0, min(self.scroll_top, max(0, len(self.buffer) - vr)))
         t = Text()
-        for i, line in enumerate(self.buffer):
-            if i > 0:
+        bottom = min(len(self.buffer), self.scroll_top + vr)
+        for i in range(self.scroll_top, bottom):
+            if i > self.scroll_top:
                 t.append("\n")
+            line = self.buffer[i]
             # relative line numbers like LazyVim (current line = its number, others = distance)
             if i == self.cursor_row:
                 num = str(i + 1)
@@ -5248,6 +5259,20 @@ class VimEditor(Static):
         if getattr(app, "_split_focus", None) is not None:
             app._split_focus = "right" if self.id == "lab-editor" else "left"
             app._apply_split_focus()
+
+    def on_resize(self, event: events.Resize) -> None:
+        # track how many lines fit so the viewport scrolls correctly
+        self.visible_rows = max(1, self.content_size.height)
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        event.stop()
+        self.scroll_top = min(self.scroll_top + 3, max(0, len(self.buffer) - 1))
+        self._redraw()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        event.stop()
+        self.scroll_top = max(0, self.scroll_top - 3)
+        self._redraw()
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "ctrl+enter":
@@ -13195,7 +13220,7 @@ class TutorApp(App):
     #volume-icon { width: 9; padding: 1 1; }
     #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
-    #task { height: auto; min-height: 1; max-height: 3; padding: 0 2; background: #181825; border-bottom: solid #313244; color: #cdd6f4; }
+    #task { height: auto; min-height: 1; max-height: 3; padding: 0 1; background: #181825; border-bottom: solid #313244; color: #cdd6f4; }
     #split { height: 1fr; }
     #editor-box { width: 1fr; height: 100%; border: tall #313244; background: #1e1e2e; }
     #split-drag { width: 1; background: #313244; }
@@ -13217,11 +13242,11 @@ class TutorApp(App):
     #lab-editor { height: 6; min-height: 6; padding: 0 1; background: #181825; border-top: solid #313244; }
     #editor.focused-pane { outline: solid #ffffff; background: #20203a; }
     #lab-editor.focused-pane { outline: solid #ffffff; background: #1c1c30; }
-    #lab-scroll { height: 6; border-top: solid #313244; background: #14141f; }
+    #lab-scroll { height: 4; border-top: solid #313244; background: #14141f; }
     #lab-output { height: auto; padding: 0 1; }
     #lab-run { height: 1; }
     #command-bar { height: auto; min-height: 2; padding: 0 1; background: #181825; border-top: solid #313244; }
-    #command-bar Button { min-width: 12; height: 1; margin-right: 1; border: none; background: #313244; color: #cdd6f4; padding: 0 2; }
+    #command-bar Button { min-width: 9; height: 1; margin-right: 1; border: none; background: #313244; color: #cdd6f4; padding: 0 2; }
     #command-bar Button:hover { background: #45475a; color: #ffffff; }
     #command-bar Button.-primary { background: #1e6b3f; }
     #command-bar Button.-success { background: #1e6b3f; }
@@ -13243,8 +13268,8 @@ class TutorApp(App):
     #editor-label { height: 1; padding: 0 2; color: #cdd6f4; background: #181825; }
     #editor-label.normal { background: #313244; }
     #editor-label.insert { background: #1e6b3f; }
-    #editor { height: 1fr; min-height: 8; padding: 1 2; background: #1e1e2e; }
-    #output-scroll { height: 7; border-top: solid #313244; background: #11111b; }
+    #editor { height: 1fr; min-height: 8; padding: 0 1; background: #1e1e2e; }
+    #output-scroll { height: 4; border-top: solid #313244; background: #11111b; }
     #out-drag { height: 1; background: #313244; }
     #out-drag:hover { background: $accent; }
     #output { height: auto; padding: 0 1; }
@@ -13298,16 +13323,33 @@ class TutorApp(App):
     #ghost-lab-list { height: 1fr; background: #1a1a28; }
     #ghost-lab-items { height: auto; }
     #ghost-lab-editor { height: 5; min-height: 5; padding: 0 1; background: #181825; border-top: solid #313244; }
-    #ghost-lab-scroll { height: 5; border-top: solid #313244; background: #14141f; }
+    #ghost-lab-scroll { height: 4; border-top: solid #313244; background: #14141f; }
     #ghost-lab-output { height: auto; padding: 0 1; }
     #ghost-lab-run { height: 1; }
-    #ghost-console { height: 8; border: tall #313244; padding: 0 1; background: #11111b; }
+    #ghost-console { height: 5; border: tall #313244; padding: 0 1; background: #11111b; }
     #ghost-foot-row { height: 5; padding: 0 1; }
     #ghost-foot { width: 1fr; height: auto; min-height: 1; padding: 1 1 0 1; }
     #syntax-hint { width: 15; height: 3; border: round #cba6f7; color: #cba6f7; text-align: center; padding: 0 1; background: $boost; }
     #syntax-hint:hover { background: $surface; color: $text; }
     #vim { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #vim.visible { display: block; }
+    #lab-menu { layer: overlay; width: 100%; height: 100%; background: #11111b; display: none; }
+    #lab-menu.visible { display: block; }
+    #lab-menu-top { height: 1; padding: 0 1; background: #181825; }
+    #lab-menu-title { width: 1fr; color: #f9a8d4; text-style: bold; }
+    #lab-menu-exit { width: 4; min-width: 4; height: 1; }
+    #lab-menu-body { height: 1fr; }
+    #lab-menu-editor-pane { width: 1fr; border: tall #313244; background: #1e1e2e; }
+    #lab-menu-winbar { height: 1; background: #181825; padding: 0 1; }
+    #lab-menu-editor { height: 1fr; min-height: 8; padding: 0 1; background: #1e1e2e; }
+    #lab-menu-statusline { height: 1; background: #313244; padding: 0 1; }
+    #lab-menu-list { width: 40%; border: tall #313244; background: #1a1a28; }
+    #lab-menu-items { height: auto; }
+    #lab-menu-scroll { height: 6; border-top: solid #313244; background: #14141f; }
+    #lab-menu-output { height: auto; padding: 0 1; }
+    #lab-menu-foot { height: 2; padding: 0 1; background: #181825; }
+    #lab-menu-run { width: 9; height: 1; }
+    #lab-menu-hint { width: 1fr; content-align: right middle; color: #7f849c; }
     #vim-head { width: 100%; text-align: center; }
     #vim-body { width: 100%; height: 1fr; }
     #vim-buffer { width: 100%; height: 1fr; }
@@ -13496,6 +13538,8 @@ class TutorApp(App):
         self._split_dragging = False   # dragging the editor/task divider
         self._out_dragging = False     # dragging the editor↔output divider
         self._lab_show_lab = False     # right pane shows TASK (False) or LAB (True)
+        self._lab_menu_on = False      # the whole-course LAB playground overlay is up
+        self._lab_menu_toggles = []    # LabToggle widgets in the menu Lab
         self._lab_toggles = []         # LabToggle widgets (checkbox example blocks)
         self._split_focus = "left"     # which pane is active: "left" (test) | "right" (lab)
         self._out_drag_start_y = 0
@@ -13876,6 +13920,23 @@ class TutorApp(App):
                 yield SyntaxHint(id="syntax-hint")
                 yield Static("", id="ghost-foot")
         yield Static("", id="ghost-exit-popup")
+        with Vertical(id="lab-menu"):
+            with Horizontal(id="lab-menu-top"):
+                yield Static("", id="lab-menu-title")
+                yield Button(" ✕ ", id="lab-menu-exit", variant="error")
+            with Horizontal(id="lab-menu-body"):
+                with Vertical(id="lab-menu-editor-pane"):
+                    yield Static("", id="lab-menu-winbar")
+                    yield VimEditor(id="lab-menu-editor")
+                    yield Static("", id="lab-menu-statusline")
+                with VerticalScroll(id="lab-menu-list"):
+                    with Vertical(id="lab-menu-items"):
+                        pass
+            with VerticalScroll(id="lab-menu-scroll"):
+                yield Static("", id="lab-menu-output")
+            with Horizontal(id="lab-menu-foot"):
+                yield Button("run", id="lab-menu-run", variant="primary")
+                yield Static("", id="lab-menu-hint")
         with VimTrainer(id="vim"):
             yield Static("", id="vim-head")
             with Vertical(id="vim-body"):
@@ -14704,6 +14765,7 @@ class TutorApp(App):
             (-2, "BUILD STUFF", "#7ee787", "bash → your programs",
              "✓ done" if build_done else ""),
             (-1, "VIM / NEOVIM", "#d8b4fe", "keyboard dojo", ""),
+            (-6, "PYTHON LAB", "#a6e3a1", "playground — every example, edit & run", ""),
         ]
         for gi, g in enumerate(GROUPS):
             done, total = self._group_progress(gi)
@@ -15137,7 +15199,13 @@ class TutorApp(App):
             self._ghost_show_lab_view()
             return
         if event.button.id == "ghost-lab-run":
-            self._run_lab("#ghost-lab-editor", "#ghost-lab-output")
+            self._run_lab("#ghost-lab-editor", "#ghost-lab-output", "#ghost-lab-scroll")
+            return
+        if event.button.id == "lab-menu-run":
+            self._run_lab("#lab-menu-editor", "#lab-menu-output", "#lab-menu-scroll")
+            return
+        if event.button.id == "lab-menu-exit":
+            self._lab_menu_close()
             return
         if event.button.id == "name-save":
             self._save_name()
@@ -15270,6 +15338,9 @@ class TutorApp(App):
             return   # CLOUD & DEVOPS overlay owns the keyboard; Esc there exits it
         if self._net_on:
             return   # NETWORK+ overlay owns the keyboard; Esc there exits it
+        if self._lab_menu_on:
+            self._lab_menu_close()
+            return
         if self._map_visible:
             self._hide_map()
             return
@@ -15551,6 +15622,9 @@ class TutorApp(App):
                     return
                 if self.series_sel == -1:
                     self._vim_begin()
+                    return
+                if self.series_sel == -6:
+                    self._lab_menu_open()
                     return
                 if self.series_sel == len(GROUPS):
                     self._start_py_review()
@@ -15929,6 +16003,75 @@ class TutorApp(App):
             out.append((ex.get("caption", "example"), ex_code))
         return out
 
+    # ---- whole-course LAB playground (from the main menu) ------------------ #
+
+    def _all_lab_examples(self):
+        """Every distinct worked example across the whole course, for the menu
+        Lab — so you can play with any snippet you've seen (or will see)."""
+        seen, out = set(), []
+
+        def add(cap, code):
+            code = (code or "").strip()
+            if code and code not in seen:
+                seen.add(code)
+                out.append((cap, code))
+
+        for g in GROUPS:
+            for c in g["challenges"]:
+                cap, code = example_code(c.get("example", ""))
+                if code:
+                    head = cap.split("\n")[0].strip().rstrip(":").strip() if cap else ""
+                    add(head or c["title"], code)
+                for ex in EXAMPLES.get(c["title"], []):
+                    add(c["title"], ex.get("code", ""))
+        for topic, lesson in LESSONS.items():
+            for ex in lesson.get("examples", []):
+                add(ex.get("caption", topic), ex.get("code", ""))
+        return out
+
+    def _lab_menu_open(self):
+        """Open the whole-course Lab playground from the main menu."""
+        self._lab_menu_on = True
+        self.query_one("#lab-menu", Vertical).add_class("visible")
+        self.query_one("#lab-menu-title", Static).update(
+            Text.from_markup("[bold #f9a8d4]PYTHON LAB[/]  [dim]— pick an example, edit, run[/]"))
+        self.query_one("#lab-menu-winbar", Static).update(
+            Text.from_markup("[dim]  lab.py[/]"))
+        self.query_one("#lab-menu-statusline", Static).update(
+            Text.from_markup("[bold]-- INSERT --[/]"))
+        self.query_one("#lab-menu-hint", Static).update(
+            Text.from_markup("[dim]click a [ ] to load · edit · run · esc/q to close[/]"))
+        items = self.query_one("#lab-menu-items", Vertical)
+        for old in list(items.children):
+            try:
+                old.remove()
+            except Exception:
+                pass
+        self._lab_menu_toggles = []
+        examples = self._all_lab_examples()
+        for i, (cap, code) in enumerate(examples):
+            out = self._lab_output(code, "")
+            tg = LabToggle(i, cap, out, code, editor_id="#lab-menu-editor",
+                           id_prefix="mlabtg")
+            items.mount(tg)
+            self._lab_menu_toggles.append(tg)
+        # preload the first example so the left editor isn't empty
+        if self._lab_menu_toggles:
+            self._lab_menu_toggles[0].checked = True
+            self._lab_menu_toggles[0].update(self._lab_menu_toggles[0]._build_text())
+            self.query_one("#lab-menu-editor", VimEditor).set_text(
+                self._lab_menu_toggles[0].code)
+        self.query_one("#lab-menu-output", Static).update("")
+        self.query_one("#lab-menu", Vertical).focus()
+
+    def _lab_menu_close(self):
+        self._lab_menu_on = False
+        try:
+            self.query_one("#lab-menu", Vertical).remove_class("visible")
+        except Exception:
+            pass
+        self._render_menu()
+
     def _lab_output(self, code, stdin=""):
         """Compute an example's printed output for the annotation line."""
         try:
@@ -16032,17 +16175,20 @@ class TutorApp(App):
             return
         self._show_lab_view()
 
-    def _run_lab(self, editor_id: str = "#lab-editor", output_id: str = "#lab-output"):
+    def _run_lab(self, editor_id: str = "#lab-editor", output_id: str = "#lab-output",
+                 scroll_id: str = "#lab-scroll"):
         """Run whatever is in the editable lab editor into its own console."""
         code = self.query_one(editor_id, VimEditor).get_text()
         out, err = run_lesson_code(code, "")
-        self.query_one(output_id, Static).update(
-            Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1"))
+        txt = Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1")
+        self.query_one(output_id, Static).update(txt)
+        self._autosize_console(scroll_id, txt, base=3, maxh=14)
 
     def _lab_select(self, tg):
         """RADIO: picking one example block turns the others off, and loads its
         code into the editable lab editor so you can change it, then run."""
         siblings = (self._ghost_lab_toggles if tg in getattr(self, "_ghost_lab_toggles", [])
+                    else self._lab_menu_toggles if tg in getattr(self, "_lab_menu_toggles", [])
                     else self._lab_toggles)
         for other in siblings:
             if other is not tg:
@@ -21667,10 +21813,26 @@ class TutorApp(App):
             return 60
 
     def _set_output(self, renderable) -> None:
-        """Update the output console and auto-scroll to the newest line."""
+        """Update the output console, auto-expand to fit, and scroll to the end."""
         self.query_one("#output", Static).update(renderable)
+        self._autosize_console("#output-scroll", renderable)
         try:
             self.query_one("#output-scroll", VerticalScroll).scroll_end(animate=False)
+        except Exception:
+            pass
+
+    def _autosize_console(self, scroll_id: str, renderable, base: int = 4,
+                          maxh: int = 16) -> None:
+        """Grow a console to fit its output (small when empty, expands on print,
+        capped so it never eats the whole screen)."""
+        try:
+            txt = renderable.plain if isinstance(renderable, Text) else str(renderable)
+        except Exception:
+            txt = ""
+        lines = txt.count("\n") + (1 if txt else 0)
+        target = min(max(base, lines + 1), maxh) if lines else base
+        try:
+            self.query_one(scroll_id, VerticalScroll).styles.height = target
         except Exception:
             pass
 
