@@ -2357,8 +2357,12 @@ def example_why(example: str) -> str:
 
 
 GHOST_TARGET = 3   # how many distinct styles to drill (value-swapped) before unlock
-_GHOST_WORDS = ["bean", "kiwi", "apple", "delta", "gamma", "thing", "value",
-                "city", "item", "name"]
+_GHOST_WORDS = ["bean", "kiwi", "apple", "mango", "plum", "delta", "gamma", "nova",
+                "echo", "zephyr", "orbit", "river", "forest", "ember", "crystal",
+                "harbor", "luna", "atlas", "cedar", "iris", "onyx", "pepper",
+                "willow", "zinnia", "brook", "comet", "meadow", "tundra"]
+_GHOST_NAMES = ["Alan", "Mira", "Leo", "Nora", "Omar", "Tess", "Ivan", "Ruby",
+                "Finn", "Cleo", "Hugo", "June", "Kai", "Nina", "Zoe", "Rex"]
 
 # string literals that are STRUCTURE, not data — never value-swap these (doing so
 # breaks the code: open(..., "w") -> open(..., "bean") is an invalid file mode)
@@ -2375,12 +2379,18 @@ def _with_prefix(prefix: str, code: str) -> str:
 
 
 def _swap_word(m, q: str) -> str:
-    """Swap a quoted word for a fresh value, unless it's structural (file mode /
-    encoding) — those must stay put so the code still runs."""
+    """Swap a quoted value for a FRESH one (varied names/words) so ghost reps
+    don't repeat the same strings. Capitalized → a name, lowercase → a word;
+    structural tokens (file mode / encoding) stay put. Picks randomly (not a
+    fixed hash) so the same challenge shows different strings each run."""
     w = m.group(1)
-    if w in _NO_SWAP:
+    if not w or w.strip() in _NO_SWAP:
         return m.group(0)
-    return q + _GHOST_WORDS[abs(hash(w)) % len(_GHOST_WORDS)] + q
+    if w and w[0].isupper():
+        pool = [n for n in _GHOST_NAMES if n != w]
+        return q + (random.choice(pool) if pool else w) + q
+    pool = [x for x in _GHOST_WORDS if x != w]
+    return q + (random.choice(pool) if pool else w) + q
 
 
 def _ghost_variant(code: str, stdin: str = "", prefix: str = "") -> str | None:
@@ -2392,8 +2402,8 @@ def _ghost_variant(code: str, stdin: str = "", prefix: str = "") -> str | None:
     broken variants are rejected so the drill never hands you crashing code.
     Returns None when nothing can safely change."""
     v = code
-    v = re.sub(r'"([a-zA-Z_][a-zA-Z0-9_]*)"', lambda m: _swap_word(m, '"'), v)
-    v = re.sub(r"'([a-zA-Z_][a-zA-Z0-9_]*)'", lambda m: _swap_word(m, "'"), v)
+    v = re.sub(r'"([^"]*)"', lambda m: _swap_word(m, '"'), v)
+    v = re.sub(r"'([^']*)'", lambda m: _swap_word(m, "'"), v)
     # bump standalone positive integers, but never slice/index bits: skip digits
     # preceded by '[' (index), ':' (slice step) or '-' (a negative literal's sign).
     # Bumping the -1 in s[::-1] to 0 would emit the invalid s[::0].
@@ -4041,11 +4051,25 @@ def _indent_guides(line: str) -> Text | None:
     t = Text()
     levels = indent // 4
     for _ in range(levels):
-        t.append("│", style="#2a2a35")
-        t.append("   ", style="#2a2a35")
+        t.append("│", style="#585b70")
+        t.append("   ", style="#585b70")
     if indent % 4:
-        t.append(" " * (indent % 4), style="#2a2a35")
+        t.append(" " * (indent % 4), style="#585b70")
     return t
+
+
+def _string_content(line: str) -> set:
+    """Line-relative indices of characters INSIDE string literals (the quoted
+    text itself). String DATA is not syntax — the recall modes (fade/silhouette/
+    blind) must never hide it, so the user can write any string they like."""
+    out: set = set()
+    in_str = False
+    for i, ch in enumerate(line):
+        if ch in ('"', "'"):
+            in_str = not in_str
+        elif in_str:
+            out.add(i)
+    return out
 
 
 def _reveal_output_lines(text: str, upto: int) -> list[Text]:
@@ -4969,8 +4993,14 @@ def _print_gloss(code: str) -> list[str]:
             reason = "prints a blank line"
         elif "," in arg:
             reason = "shows each value in order, joined by a single space"
+        elif arg[:2] in ("f\"", "f'", "F\"", "F'"):
+            reason = "an f-string: each {name} is replaced with its value, then shown"
         elif arg[0] in ("'", '"'):
             reason = "shows the text as written — the quotes mark text, they don't show"
+        elif arg.startswith("len(") or " len(" in arg:
+            reason = "counts how many items are inside (len), then shows that count"
+        elif ".upper()" in arg or ".lower()" in arg or ".title()" in arg:
+            reason = "changes the text's case first, then shows the result"
         elif re.fullmatch(r"[\d\s+\-*/%().]+", arg):
             try:
                 result = eval(arg)
@@ -5070,9 +5100,9 @@ class LabToggle(Static):
         self.output = output
         self.code = code
         self.checked = False
-        self.update(self._render())
+        self.update(self._build_text())
 
-    def _render(self) -> Text:
+    def _build_text(self) -> Text:
         t = Text()
         t.append("[x] " if self.checked else "[ ] ",
                  style="bold #cba6f7" if self.checked else "#a6adc8")
@@ -5087,8 +5117,7 @@ class LabToggle(Static):
 
     def on_click(self, event):
         event.stop()
-        self.checked = not self.checked
-        self.update(self._render())
+        self.app._lab_select(self)
 
 
 class VimEditor(Static):
@@ -5155,11 +5184,21 @@ class VimEditor(Static):
             t.append(f"{num:>3} ", style="dim")
             if i == self.cursor_row:
                 col = min(self.cursor_col, len(line))
-                before = highlight_line(line[:col])
-                after = highlight_line(line[col + 1:])
+                # indent guides on the cursor line too, so the line you're on shows
+                # the same vertical spacing bars as the code around it
+                guides = _indent_guides(line)
+                if guides is not None:
+                    indent = len(line) - len(line.lstrip(" "))
+                    t.append_text(guides)
+                    line_body = line[indent:]
+                    col = max(0, min(col - indent, len(line_body)))
+                else:
+                    line_body = line
+                before = highlight_line(line_body[:col])
+                after = highlight_line(line_body[col + 1:])
                 # the character under the cursor — or a blank cell if we're past EOL,
                 # so the cursor is ALWAYS visible even on an empty line
-                ch = line[col] if col < len(line) else " "
+                ch = line_body[col] if col < len(line_body) else " "
                 # cursorline: subtle bg on the whole current line (red-tinted if flagged)
                 hl = "on #3a1a1a" if (i + 1) in self.hint_lines else "on #2b2b2b"
                 before.stylize(hl)
@@ -5194,6 +5233,19 @@ class VimEditor(Static):
 
     def _redraw(self) -> None:
         self.refresh()
+
+    def on_enter(self, event: events.Enter) -> None:
+        # hover-to-focus: moving the mouse over a vim pane focuses it
+        if event.node is self and not self.has_focus:
+            self.focus()
+
+    def on_focus(self, event: events.Focus) -> None:
+        # track which split pane is active so the white wireframe follows the
+        # focus wherever it comes from (key, click, or hover)
+        app = self.app
+        if getattr(app, "_split_focus", None) is not None:
+            app._split_focus = "right" if self.id == "lab-editor" else "left"
+            app._apply_split_focus()
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "ctrl+enter":
@@ -13148,6 +13200,10 @@ class TutorApp(App):
     #split-drag:hover { background: $accent; }
     #lab-box { width: 46%; height: 100%; border: tall #313244; background: #1a1a28; }
     #lab-tabs { height: 1; padding: 0 1; background: #181825; color: #a6adc8; }
+    #lab-tabs Button { min-width: 6; height: 1; border: none; padding: 0 1; background: #313244; color: #cdd6f4; }
+    #lab-tabs Button.-primary { background: #1e6b3f; color: #ffffff; }
+    #lab-tabs-hint { width: 1fr; content-align: right middle; color: #7f849c; }
+    #tmux-hint { width: 1fr; content-align: right middle; color: #7f849c; }
     #lab-task-view { height: 1fr; padding: 1 2; }
     #lab-task-inner { height: auto; }
     #lab-lab-view { height: 1fr; }
@@ -13156,7 +13212,10 @@ class TutorApp(App):
     #lab-list-items { height: auto; }
     LabToggle { width: 100%; height: auto; padding: 0 1; }
     LabToggle:hover { background: #2a2a3c; }
-    #lab-scroll { height: 7; border-top: solid #313244; background: #14141f; }
+    #lab-editor { height: 6; min-height: 6; padding: 0 1; background: #181825; border-top: solid #313244; }
+    #editor.focused-pane { outline: solid #ffffff; background: #20203a; }
+    #lab-editor.focused-pane { outline: solid #ffffff; background: #1c1c30; }
+    #lab-scroll { height: 6; border-top: solid #313244; background: #14141f; }
     #lab-output { height: auto; padding: 0 1; }
     #lab-run { height: 1; }
     #command-bar { height: auto; min-height: 2; padding: 0 1; background: #181825; border-top: solid #313244; }
@@ -13367,7 +13426,9 @@ class TutorApp(App):
         Binding("r", "step_rewind", "Rewind", show=False),
         Binding("plus,equals", "step_faster", "Faster", show=False),
         Binding("minus", "step_slower", "Slower", show=False),
-        Binding("ctrl+e", "toggle_lab", "Lab", show=False),
+        Binding("ctrl+h", "focus_left", "Left", show=False),
+        Binding("ctrl+l", "focus_right", "Right", show=False),
+        Binding("ctrl+t", "toggle_lab", "Lab", show=False),
     ]
 
     def __init__(self):
@@ -13419,6 +13480,7 @@ class TutorApp(App):
         self._out_dragging = False     # dragging the editor↔output divider
         self._lab_show_lab = False     # right pane shows TASK (False) or LAB (True)
         self._lab_toggles = []         # LabToggle widgets (checkbox example blocks)
+        self._split_focus = "left"     # which pane is active: "left" (test) | "right" (lab)
         self._out_drag_start_y = 0
         self._out_drag_start_h = 10
         self._demo_gen = 0
@@ -13713,20 +13775,25 @@ class TutorApp(App):
                     yield Static("", id="output-bar")
                 yield Static("", id="split-drag")
                 with Vertical(id="lab-box"):
-                    yield Static("", id="lab-tabs")
+                    with Horizontal(id="lab-tabs"):
+                        yield Button("TASK", id="lab-tab-task", variant="primary")
+                        yield Button("LAB", id="lab-tab-lab", variant="default")
+                        yield Static("", id="lab-tabs-hint")
                     with VerticalScroll(id="lab-task-view"):
                         yield Static("", id="lab-task-inner")
                     with Vertical(id="lab-lab-view", classes="hidden"):
                         with VerticalScroll(id="lab-list"):
                             with Vertical(id="lab-list-items"):
                                 pass
-                        yield Button("run checked", id="lab-run", variant="default")
+                        yield VimEditor(id="lab-editor")
+                        yield Button("run", id="lab-run", variant="default")
                         with VerticalScroll(id="lab-scroll"):
                             yield Static("", id="lab-output")
             with Horizontal(id="command-bar"):
                 yield Button("run", id="task-run", variant="default")
                 yield Button("submit", id="task-check", variant="primary")
                 yield Button("step", id="task-step", variant="default")
+                yield Static("", id="tmux-hint")
                 yield Button("next", id="task-continue", variant="success", classes="hidden")
                 yield Static("", id="wildmenu")
                 yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
@@ -15023,6 +15090,12 @@ class TutorApp(App):
         if event.button.id == "lab-run":
             self._run_lab()
             return
+        if event.button.id == "lab-tab-task":
+            self._show_lab_task()
+            return
+        if event.button.id == "lab-tab-lab":
+            self._show_lab_view()
+            return
         if event.button.id == "name-save":
             self._save_name()
             return
@@ -15794,6 +15867,7 @@ class TutorApp(App):
             self._lab_toggles.append(tg)
         self.query_one("#lab-output", Static).update("")
         self._render_lab_tabs()
+        self._apply_split_focus()
 
     def _lab_examples(self, c):
         """(caption, code) pairs for the Lab: the worked example + topic examples."""
@@ -15821,41 +15895,113 @@ class TutorApp(App):
             return "(nothing)"
 
     def _render_lab_tabs(self):
-        """The Task ⇄ Lab toggle bar (clickable, hotkey shown)."""
-        on = "bold reverse"
-        off = "dim"
-        task = f"[{on}]TASK[/]" if not self._lab_show_lab else f"[{off}]TASK[/]"
-        lab = f"[{on}]LAB[/]" if self._lab_show_lab else f"[{off}]LAB[/]"
-        self.query_one("#lab-tabs", Static).update(
-            Text.from_markup(f"{task}  |  {lab}    [dim](ctrl+e = switch)[/]"))
-
-    def action_toggle_lab(self):
-        """Toggle the right pane between the Task view and the Lab view."""
-        self._lab_show_lab = not self._lab_show_lab
+        """Update the TASK / LAB buttons + the tmux key hints."""
         try:
-            self.query_one("#lab-task-view", VerticalScroll).toggle_class("hidden")
-            self.query_one("#lab-lab-view", Vertical).toggle_class("hidden")
+            self.query_one("#lab-tab-task", Button).variant = (
+                "primary" if not self._lab_show_lab else "default")
+            self.query_one("#lab-tab-lab", Button).variant = (
+                "primary" if self._lab_show_lab else "default")
         except Exception:
             pass
+        keys = "ctrl+t toggle · ctrl+h ← left · ctrl+l → right"
+        try:
+            self.query_one("#lab-tabs-hint", Static).update(
+                Text.from_markup(f"[dim]{keys}[/]"))
+            self.query_one("#tmux-hint", Static).update(
+                Text.from_markup(f"[dim]{keys}[/]"))
+        except Exception:
+            pass
+
+    def _lab_set_views(self):
+        """Show/hide the task vs lab view to match `_lab_show_lab`."""
+        try:
+            self.query_one("#lab-task-view", VerticalScroll).set_class(
+                self._lab_show_lab, "hidden")
+            self.query_one("#lab-lab-view", Vertical).set_class(
+                not self._lab_show_lab, "hidden")
+        except Exception:
+            pass
+
+    def _show_lab_task(self):
+        """Click TASK: show the task view, focus the left (work) editor."""
+        self._lab_show_lab = False
+        self._lab_set_views()
         self._render_lab_tabs()
+        self._split_focus = "left"
+        self._apply_split_focus()
+
+    def _show_lab_view(self):
+        """Click LAB: show the lab view, focus the right editor, enter INSERT."""
+        self._lab_show_lab = True
+        self._lab_set_views()
+        self._render_lab_tabs()
+        self._split_focus = "right"
+        self._apply_split_focus()
+        try:
+            ed = self.query_one("#lab-editor", VimEditor)
+            ed.mode = "insert"     # auto insert mode so you can type right away
+            ed.focus()
+        except Exception:
+            pass
+
+    def action_toggle_lab(self):
+        """tmux-style (ctrl+t): toggle the right pane between Task and Lab."""
+        self._lab_show_lab = not self._lab_show_lab
+        self._lab_set_views()
+        self._render_lab_tabs()
+        self._split_focus = "right" if self._lab_show_lab else "left"
+        self._apply_split_focus()
+        if self._lab_show_lab:
+            try:
+                ed = self.query_one("#lab-editor", VimEditor)
+                ed.mode = "insert"
+                ed.focus()
+            except Exception:
+                pass
+
+    def _apply_split_focus(self):
+        """White 'wireframe' outline + slight zoom-forward on the active pane,
+        so it's obvious which editor you're typing into (tmux-style)."""
+        try:
+            left = self.query_one("#editor", VimEditor)
+            right = self.query_one("#lab-editor", VimEditor)
+        except Exception:
+            return
+        left.set_class(self._split_focus == "left", "focused-pane")
+        right.set_class(self._split_focus == "right", "focused-pane")
+
+    def action_focus_left(self):
+        """tmux-style switch: focus the LEFT (test/work) editor."""
+        self._show_lab_task()
+        try:
+            self.query_one("#editor", VimEditor).focus()
+        except Exception:
+            pass
+
+    def action_focus_right(self):
+        """tmux-style switch: focus the RIGHT (lab) editor (shows Lab view)."""
+        self._show_lab_view()
 
     def _run_lab(self):
-        """Run every CHECKED example block separately into its own console."""
-        checked = [tg for tg in self._lab_toggles if tg.checked]
-        if not checked:
-            self.query_one("#lab-output", Static).update(
-                Text("check an example ([x]) then run", style="dim"))
-            return
-        out = Text()
-        for i, tg in enumerate(checked):
-            if i:
-                out.append("\n")
-            out.append(f"── {tg.caption} ──", style="bold #f9a8d4")
-            out.append("\n")
-            o, e = run_lesson_code(tg.code, "")
-            out.append((o or e or "(nothing)").rstrip("\n"), style="bold #a6e3a1")
-            out.append("\n")
-        self.query_one("#lab-output", Static).update(out)
+        """Run whatever is in the editable lab editor into its own console."""
+        code = self.query_one("#lab-editor", VimEditor).get_text()
+        out, err = run_lesson_code(code, "")
+        self.query_one("#lab-output", Static).update(
+            Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1"))
+
+    def _lab_select(self, tg):
+        """RADIO: picking one example block turns the others off, and loads its
+        code into the editable lab editor so you can change it, then run."""
+        for other in self._lab_toggles:
+            if other is not tg:
+                other.checked = False
+                other.update(other._build_text())
+        tg.checked = True
+        tg.update(tg._build_text())
+        try:
+            self.query_one("#lab-editor", VimEditor).set_text(tg.code)
+        except Exception:
+            pass
 
     # ---- textbook example (static, above your editor) ---------------------- #
 
@@ -17594,6 +17740,7 @@ class TutorApp(App):
                     # FIX THIS CODE: syntax symbols stay fully visible (the clear
                     # structural hints), while each word shows only its first
                     # letter — the rest is a symbolic '▢' blank to recall.
+                    str_pos = _string_content(line)
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
@@ -17601,6 +17748,10 @@ class TutorApp(App):
                             # the 3s peek — reveal the whole char in purple
                             t.append(self._ghost_visible(ch) if ch == " " else ch,
                                      style="reverse bold #cba6f7" if cur else "#cba6f7")
+                        elif (typed_n + k) in str_pos:
+                            # string DATA — always visible; writing your own string
+                            # is the point, hiding it just makes that harder
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
                         elif ch == " ":
                             t.append(" ", style="reverse bold" if cur else "#585b70")
                         elif ch.isdigit():
@@ -17623,13 +17774,17 @@ class TutorApp(App):
                     # (spaces) and punctuation are faint outlines — you see WHERE
                     # the symbols go — but every LETTER is a hidden ▢. Numbers stay
                     # visible (the point is syntax, not math). After 5 misses the
-                    # word first-letters appear.
+                    # word first-letters appear. String DATA also stays visible.
+                    str_pos = _string_content(line)
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
                         if ch == " ":
                             # indentation / spacing stays visible — block structure
                             t.append(" ", style="reverse bold" if cur else "#585b70")
+                        elif (typed_n + k) in str_pos:
+                            # string DATA — always visible (write any string you like)
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
                         elif ch.isdigit():
                             # numbers stay visible — the point is syntax, not math
                             t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
@@ -17645,12 +17800,16 @@ class TutorApp(App):
                             # punctuation / symbol — a faint outline (the shape hint)
                             t.append(ch, style="reverse bold #6d5c9e" if cur else "#4a4a58")
                 elif blind:
+                    str_pos = _string_content(line)
                     for k, ch in enumerate(rest):
                         a = start + typed_n + k
                         cur = (a == pos and a < end)
                         if a < self._ghost_blind_from + self._ghost_blind_reveal:
                             t.append(self._ghost_visible(ch),
                                      style="reverse bold" if cur else "#5a5a5a")
+                        elif (typed_n + k) in str_pos:
+                            # string DATA — always visible even blind (syntax is the goal)
+                            t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
                         elif ch.isdigit():
                             # numbers stay visible even blind — syntax is the goal
                             t.append(ch, style="reverse bold #cba6f7" if cur else "#cba6f7")
