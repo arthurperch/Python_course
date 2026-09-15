@@ -22078,7 +22078,8 @@ class TutorApp(App):
                     t.append(line[:col], style="#f0f0f5")
                     cell = line[col:col + 1] or " "
                     if buf.mode == "insert":
-                        t.append(cell, style="underline bold #f0f0f5")
+                        # solid BLOCK cursor while typing (green), not an underline
+                        t.append(cell, style="black on #22c55e bold")
                     else:
                         t.append(cell, style="black on #e6e6e6 bold")
                     t.append(line[col + 1:], style="#f0f0f5")
@@ -22091,13 +22092,36 @@ class TutorApp(App):
         if buf.mode == "cmd":
             t.append("\n:" + buf.cmd, style="bold #f0f0f5")
             t.append("█", style="bold #f0f0f5")
-        # the target file — the ONLY colored thing, amber + flashing
+        # the target file — a live fill bar correlated to the line you're on
         on = getattr(self, "_dev_write_blink", False)
         t.append("\n\n")
         t.append("write this file:", style="bold #f0f0f5")
         t.append("\n")
-        for line in buf.target.split("\n"):
-            t.append("  " + line, style="bold #fbbf24" if on else "#8a7430")
+        target_lines = buf.target.split("\n")
+        for i, tline in enumerate(target_lines):
+            if i < buf.row:
+                # finished line — green ✓
+                t.append("  ✓ ", style="bold #22c55e")
+                t.append(tline, style="bold #22c55e")
+            elif i == buf.row:
+                # the line you're on — fills left-to-right as you type each char
+                t.append("  ▸ ", style="bold #fbbf24")
+                typed = buf.lines[i] if i < len(buf.lines) else ""
+                for j, ch in enumerate(tline):
+                    if j < len(typed):
+                        if typed[j] == ch:
+                            t.append(ch, style="bold #fbbf24")          # filled
+                        else:
+                            # wrong char — red, flashing
+                            t.append(typed[j], style="bold underline #ff5555" if on else "bold #7a2020")
+                    else:
+                        t.append(ch, style="#3a3f4b")                    # not typed yet
+                if len(typed) > len(tline):
+                    t.append(typed[len(tline):], style="bold #ff5555")   # over-typed
+            else:
+                # not reached yet — dim ghost
+                t.append("    ", style="")
+                t.append(tline, style="#5a5a5a")
             t.append("\n")
         t.append("\n")
         # statusline — white mode indicator (the cursor already shows mode)
