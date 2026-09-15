@@ -5122,6 +5122,14 @@ class LabToggle(Static):
         self.app._lab_select(self)
 
 
+class MenuList(Static):
+    """The menu picker list — clickable so mouse selection works alongside j/k."""
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._menu_list_click(event)
+
+
 class VimEditor(Static):
     can_focus = True
     GUTTER = 6   # left padding (2) + line-number gutter (" N  " = 4)
@@ -13295,7 +13303,7 @@ class TutorApp(App):
     #ghost.visible { display: block; }
     #ghost-top { height: 1; background: #181825; }
     #ghost-bufferline { height: 1; padding: 0 1; width: 1fr; }
-    #ghost-exit-btn { width: 4; min-width: 4; height: 1; }
+    #ghost-exit-btn { width: 9; min-width: 9; height: 1; }
     #ghost-exit-popup { layer: overlay; width: 46; height: 9; background: #181825; border: thick #f38ba8; display: none; padding: 1 2; }
     #ghost-exit-popup.visible { display: block; }
     #ghost-main { height: 1fr; }
@@ -13455,6 +13463,10 @@ class TutorApp(App):
         Binding("down", "menu_down", "Down", show=False),
         Binding("k", "menu_up", "Up", show=False),
         Binding("up", "menu_up", "Up", show=False),
+        Binding("pagedown", "menu_page_down", "PageDn", show=False),
+        Binding("pageup", "menu_page_up", "PageUp", show=False),
+        Binding("home", "menu_top", "Top", show=False),
+        Binding("end", "menu_bottom", "Bottom", show=False),
         Binding("escape", "menu", "Menu", show=False),
         Binding("colon", "command", "Command", show=False),
         Binding("ctrl+n", "next_challenge", "Next", show=False),
@@ -13808,7 +13820,7 @@ class TutorApp(App):
                 with VerticalScroll(id="menu-preview-scroll"):
                     yield Static("", id="menu-preview-inner")
             with VerticalScroll(id="menu-list"):
-                yield Static("", id="menu-list-inner")
+                yield MenuList(id="menu-list-inner")
         yield Static("", id="menu-help")
         # profile popout (name + settings) — opened via the blue ◉ icon, any time
         with Vertical(id="profile-popout", classes="hidden"):
@@ -13889,7 +13901,7 @@ class TutorApp(App):
         with GhostWriter(id="ghost"):
             with Horizontal(id="ghost-top"):
                 yield Static("", id="ghost-bufferline")
-                yield Button(" ✕ ", id="ghost-exit-btn", variant="error")
+                yield Button(" ✕ exit", id="ghost-exit-btn", variant="error")
             with Horizontal(id="ghost-main"):
                 with Vertical(id="ghost-editor-pane"):
                     yield Static("", id="ghost-winbar")
@@ -14790,20 +14802,24 @@ class TutorApp(App):
                      "your due-today queue",
                      f"⏰ {n_due} due" if n_due else "✓ all clear"))
         sel_line = 0
+        line_no = 2                       # header (line 0) + blank (line 1)
+        self._series_line_map = {}         # rendered line → series `si` (mouse select)
         for i, (si, name, color, desc, status) in enumerate(rows):
+            self._series_line_map[line_no] = si
             sel = self.series_sel == si
             if sel:
-                # the selected row is a SOLID bar in the series color —
-                # impossible to miss, even at a glance
+                # BOXED selection: a solid full-bar with ▐/▌ edges so the chosen
+                # row reads as a distinct box, never wraps (desc clipped)
                 line = Text()
-                line.append("▸ ", style=f"bold black on {color}")
+                line.append("▐ ", style=f"bold black on {color}")
                 line.append(name, style=f"bold black on {color}")
                 line.append("  ")
-                line.append(desc, style=f"black on {color}")
+                line.append(self._clip(desc, 32), style=f"black on {color}")
                 if status:
                     line.append("  ")
                     line.append(status, style=f"bold black on {color}")
-                sel_line = i
+                line.append(" ▌", style=f"bold black on {color}")
+                sel_line = line_no
             else:
                 line = Text()
                 line.append("▸ ", style="dim")
@@ -14818,11 +14834,13 @@ class TutorApp(App):
                                       else "dim"))
             t.append_text(line)
             t.append("\n")
+            line_no += 1
             # a clean divider between the non-Python paths and the Python
             # course stack, and again before the review queue
             if si == -1 or si == len(GROUPS) - 1:
                 t.append("─" * 46, style="#3a3a3a")
                 t.append("\n")
+                line_no += 1
         # one context line for the selected series: where you'd resume
         t.append("\n")
         note = ""
@@ -14868,9 +14886,11 @@ class TutorApp(App):
         t.append(f"({len(g['challenges'])} challenges)", style="dim")
         t.append("\n\n")
         sel_line = 0
-        line_no = 0
+        line_no = 2                       # header (line 0) + blank (line 1)
+        self._challenge_line_map = {}      # rendered line -> menu_sel (mouse select)
         # MASTERY CHECK rides at the top of every course: 3 no-help challenges
         sel = self.menu_sel == -1
+        self._challenge_line_map[line_no] = -1
         line = Text()
         line.append("▶ " if sel else "  ")
         line.append("🏁 ", style="bold #c084fc")
@@ -14886,6 +14906,7 @@ class TutorApp(App):
             st = challenge_stat(self.p, c["title"])
             right, wrong = st["right"], st["wrong"]
             sel = ci == self.menu_sel
+            self._challenge_line_map[line_no] = ci
             line = Text()
             line.append("▶ " if sel else "  ")
             if right > 0:
@@ -15324,6 +15345,89 @@ class TutorApp(App):
                 self.menu_sel = n - 1
         play_menu_blip(0)
         self._render_menu()
+
+    def _menu_sel_count(self):
+        """How many rows the current menu list has (for page/top/bottom jumps)."""
+        if self.menu_level == "series":
+            return len(self._series_order())
+        if self.menu_level == "dev_modules":
+            return len(self._dev_module_items())
+        if self.menu_level == "net_modules":
+            return len(self._net_module_items())
+        return len(GROUPS[self.series_sel]["challenges"])
+
+    def action_menu_page_down(self):
+        """PageDown — jump a whole page (10 rows) down the menu list."""
+        if self._jump_visible:
+            self._jump_move(10); return
+        if self.mode != "menu":
+            return
+        if self.menu_level == "series":
+            order = self._series_order()
+            i = order.index(self.series_sel) if self.series_sel in order else 0
+            self.series_sel = order[min(len(order) - 1, i + 10)]
+        else:
+            self.menu_sel = min(self._menu_sel_count() - 1, self.menu_sel + 10)
+        play_menu_blip(0)
+        self._render_menu()
+
+    def action_menu_page_up(self):
+        """PageUp — jump a whole page (10 rows) up the menu list."""
+        if self._jump_visible:
+            self._jump_move(-10); return
+        if self.mode != "menu":
+            return
+        if self.menu_level == "series":
+            order = self._series_order()
+            i = order.index(self.series_sel) if self.series_sel in order else 0
+            self.series_sel = order[max(0, i - 10)]
+        else:
+            self.menu_sel = max(-1, self.menu_sel - 10)
+        play_menu_blip(0)
+        self._render_menu()
+
+    def action_menu_top(self):
+        """Home — jump to the very top of the menu list."""
+        if self._jump_visible:
+            self._jump_move(-999); return
+        if self.mode != "menu":
+            return
+        if self.menu_level == "series":
+            self.series_sel = self._series_order()[0]
+        else:
+            self.menu_sel = -1 if self.menu_level not in ("dev_modules", "net_modules") else 0
+        play_menu_blip(0)
+        self._render_menu()
+
+    def action_menu_bottom(self):
+        """End — jump to the very bottom of the menu list."""
+        if self._jump_visible:
+            self._jump_move(999); return
+        if self.mode != "menu":
+            return
+        if self.menu_level == "series":
+            self.series_sel = self._series_order()[-1]
+        else:
+            self.menu_sel = self._menu_sel_count() - 1
+        play_menu_blip(0)
+        self._render_menu()
+
+    def _menu_list_click(self, event):
+        """Mouse selection: map the clicked line to a row and select it."""
+        try:
+            y = event.offset.y
+        except Exception:
+            return
+        if self.menu_level == "series":
+            val = getattr(self, "_series_line_map", {}).get(y)
+            if val is not None:
+                self.series_sel = val
+                self._render_menu()
+        else:
+            val = getattr(self, "_challenge_line_map", {}).get(y)
+            if val is not None:
+                self.menu_sel = val
+                self._render_menu()
 
     def action_quit(self):
         """q — vim-style: first press asks save/quit, second press quits."""
@@ -17686,7 +17790,7 @@ class TutorApp(App):
             "blind": "write from memory · two clean runs in a row = mastered",
         }.get(self._ghost_mode, "type the ghost · Enter = new line · Tab = indent · Enter at the end = run")
         if not self._ghost_required:
-            foot = "Esc quit · " + foot
+            foot = "✕ exit = leave · " + foot
         # the "Syntax Hint" recipe: shows WHAT the code needs (counts), never
         # the answer. It clears as soon as the user keeps typing.
         if self._ghost_recipe_text:
