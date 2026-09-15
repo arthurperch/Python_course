@@ -13110,6 +13110,29 @@ class TutorApp(App):
     #volume-icon { width: 9; padding: 1 1; }
     #volume-icon:hover { background: $surface; }
     #body { height: 1fr; }
+    #task { height: auto; min-height: 1; max-height: 3; padding: 0 2; background: #181825; border-bottom: solid #313244; color: #cdd6f4; }
+    #split { height: 1fr; }
+    #editor-box { width: 1fr; height: 100%; border: tall #313244; background: #1e1e2e; }
+    #split-drag { width: 1; background: #313244; }
+    #split-drag:hover { background: $accent; }
+    #lab-box { width: 46%; height: 100%; border: tall #313244; background: #1a1a28; }
+    #lab-tabs { height: 1; padding: 0 1; background: #181825; color: #a6adc8; }
+    #lab-task-view { height: 1fr; padding: 1 2; }
+    #lab-task-inner { height: auto; }
+    #lab-lab-view { height: 1fr; }
+    #lab-lab-view.hidden { display: none; }
+    #lab-editor { height: 1fr; min-height: 6; padding: 1 2; background: #1a1a28; }
+    #lab-scroll { height: 7; border-top: solid #313244; background: #14141f; }
+    #lab-output { height: auto; padding: 0 1; }
+    #lab-run { height: 1; }
+    #command-bar { height: auto; min-height: 2; padding: 0 1; background: #181825; border-top: solid #313244; }
+    #command-bar Button { min-width: 9; margin-right: 1; border: solid #313244; background: #313244; color: #cdd6f4; }
+    #command-bar Button:hover { background: #45475a; }
+    #cmd { width: 1fr; display: none; }
+    #cmd.visible { display: block; }
+    #cmd.flash { border: tall yellow; background: #4d4000; }
+    #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
+    #wildmenu.visible { display: block; }
     #challenge-box { width: 100%; height: auto; max-height: 16; border: tall $accent; display: none; }
     #challenge-box.visible { display: block; }
     #challenge { height: auto; min-height: 4; max-height: 12; padding: 1 2; overflow: auto; }
@@ -13117,34 +13140,24 @@ class TutorApp(App):
     #demo-label { height: 1; padding: 0 2; background: $boost; }
     #demo-editor { height: 7; padding: 1 2; background: #0d1117; border: solid $primary; }
     #demo-console { height: 5; padding: 1 2; background: #000000; border: solid $success; }
-    #editor-box { width: 100%; height: 1fr; border: tall $primary; }
-    #split-drag { display: none; }
-    #task-check { dock: bottom; width: 100%; min-height: 3; }
-    #task-step { dock: bottom; width: 100%; min-height: 3; }
-    #task-run { dock: bottom; width: 100%; min-height: 2; }
-    #task-continue { dock: bottom; width: 100%; min-height: 3; }
+    #task-check, #task-step, #task-run, #task-continue { min-height: 1; height: 1; }
     ExLine { width: 100%; height: 1; padding: 0 1; color: $text-muted; }
     ExLine:hover { background: $boost; color: $text; }
     #ex-lines { height: auto; }
-    #editor-label { height: 1; padding: 0 2; color: $text; }
-    #editor-label.normal { background: #1f4e79; }
+    #editor-label { height: 1; padding: 0 2; color: #cdd6f4; background: #181825; }
+    #editor-label.normal { background: #313244; }
     #editor-label.insert { background: #1e6b3f; }
-    #example-ref { height: auto; padding: 1 2; background: #0d1117; border-bottom: solid $warning; }
-    #editor { height: auto; min-height: 8; padding: 1 2; }
-    #output-scroll { height: 7; border-top: solid $primary; background: $surface-darken-1; }
-    #out-drag { height: 1; background: $surface-darken-2; }
+    #editor { height: 1fr; min-height: 8; padding: 1 2; background: #1e1e2e; }
+    #output-scroll { height: 7; border-top: solid #313244; background: #11111b; }
+    #out-drag { height: 1; background: #313244; }
     #out-drag:hover { background: $accent; }
     #output { height: auto; padding: 0 1; }
-    #output-bar { height: 1; padding: 0 1; background: $boost; }
+    #output-bar { height: 1; padding: 0 1; background: #313244; color: #a6adc8; }
     #guide { height: 3; padding: 1 2; background: $boost; border-top: solid $primary; }
-    #task { height: 3; padding: 1 2; background: $accent; color: $text; }
-    #cmd { dock: bottom; display: none; }
-    #cmd.visible { display: block; }
     #volume-bar { dock: bottom; height: 4; padding: 0 2; background: #0d1117; border-top: solid $accent; display: none; }
     #volume-bar.visible { display: block; }
-    #cmd.flash { border: tall yellow; background: #4d4000; }
-    #wildmenu { height: 1; display: none; padding: 0 2; background: $boost; border-top: solid $primary; }
-    #wildmenu.visible { display: block; }
+    #side-examples { display: none; }
+    #examples-box { display: none; }
     #lesson { layer: overlay; width: 100%; height: 100%; padding: 2 4; background: #000000; display: none; overflow: auto; }
     #lesson.visible { display: block; }
     #step { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #0a0a0a; display: none; overflow: auto; }
@@ -13319,6 +13332,7 @@ class TutorApp(App):
         Binding("r", "step_rewind", "Rewind", show=False),
         Binding("plus,equals", "step_faster", "Faster", show=False),
         Binding("minus", "step_slower", "Slower", show=False),
+        Binding("ctrl+e", "toggle_lab", "Lab", show=False),
     ]
 
     def __init__(self):
@@ -13367,6 +13381,7 @@ class TutorApp(App):
         self._demo_next_timer = None
         self._split_dragging = False   # dragging the editor/task divider
         self._out_dragging = False     # dragging the editor↔output divider
+        self._lab_show_lab = False     # right pane shows TASK (False) or LAB (True)
         self._out_drag_start_y = 0
         self._out_drag_start_h = 10
         self._demo_gen = 0
@@ -13647,42 +13662,54 @@ class TutorApp(App):
             yield Checkbox("Key sounds  (typing + blips)", id="set-keys", value=True)
             yield Checkbox("Hints  (underline mistakes)", id="set-hints", value=True)
             yield Static("Esc or click ◉ to close", id="profile-popout-close")
-        # challenge view (hidden until a challenge is selected) — VERTICAL:
-        # TASK on top, editor full-width in the middle, demo/examples at the bottom
+        # FINAL TEST view (hidden until a challenge is selected) — a Vim :vsplit:
+        # LEFT = the test, RIGHT = the Lab (Task ⇄ Lab), ghost-Vim themed
         with Vertical(id="body", classes="hidden"):
+            yield Static("", id="task")
+            with Horizontal(id="split"):
+                with Vertical(id="editor-box"):
+                    yield Static("", id="editor-label")
+                    yield VimEditor(id="editor")
+                    yield Static("", id="out-drag")
+                    with VerticalScroll(id="output-scroll"):
+                        yield Static("", id="output")
+                    yield Static("", id="output-bar")
+                yield Static("", id="split-drag")
+                with Vertical(id="lab-box"):
+                    yield Static("", id="lab-tabs")
+                    with VerticalScroll(id="lab-task-view"):
+                        yield Static("", id="lab-task-inner")
+                    with Vertical(id="lab-lab-view", classes="hidden"):
+                        yield VimEditor(id="lab-editor")
+                        with VerticalScroll(id="lab-scroll"):
+                            yield Static("", id="lab-output")
+                        yield Button("run", id="lab-run", variant="default")
+            with Horizontal(id="command-bar"):
+                yield Button("run", id="task-run", variant="default")
+                yield Button("submit", id="task-check", variant="primary")
+                yield Button("step", id="task-step", variant="default")
+                yield Button("next", id="task-continue", variant="success", classes="hidden")
+                yield Static("", id="wildmenu")
+                yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
+            # demoted/hidden panels (their render methods still target these)
+            with VerticalScroll(id="challenge-box"):
+                yield Static("[bold]CHALLENGE[/]", id="challenge-label")
+                yield Static("", id="mastery-note")
+                yield Markdown("", id="challenge")
+                yield Static("", id="goal")
+                yield Static("", id="demo-label")
+                yield Static("", id="demo-editor")
+                yield Static("", id="demo-console")
             with Vertical(id="side-examples"):
                 yield TabLabel("TASK", id="side-examples-title")
                 with VerticalScroll(id="side-scroll"):
                     yield Static("", id="side-inner")
-                yield Button("✓ COMPLETE", id="task-check", variant="primary")
-                yield Button("▶ RUN", id="task-run", variant="default")
-                yield Button("▶ STEP", id="task-step", variant="default")
-                yield Button("▶ CONTINUE", id="task-continue", variant="success", classes="hidden")
-            with VerticalScroll(id="editor-box"):
-                yield Static("", id="editor-label")
-                yield Static("", id="example-ref")
-                yield VimEditor(id="editor")
-                yield Static("", id="out-drag")
-                with VerticalScroll(id="output-scroll"):
-                    yield Static("", id="output")
-                yield Static("", id="output-bar")
-                yield Static("", id="wildmenu")
-                yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
             with Vertical(id="examples-box"):
                 yield TabLabel("EXAMPLES", id="examples-title")
                 with VerticalScroll(id="examples-scroll"):
                     yield Static("", id="examples-inner")
                     with Vertical(id="ex-lines"):
                         pass
-            with VerticalScroll(id="challenge-box"):
-                yield Static("[bold]CHALLENGE[/]", id="challenge-label")
-                yield Static("", id="mastery-note")
-                yield Static("", id="task")
-                yield Markdown("", id="challenge")
-                yield Static("", id="goal")
-                yield Static("", id="demo-label")
-                yield Static("", id="demo-editor")
-                yield Static("", id="demo-console")
             yield Markdown("", id="cheat")
         yield Static("", id="guide", classes="hidden")
         yield Static("", id="status", classes="hidden")
@@ -14945,6 +14972,9 @@ class TutorApp(App):
         if event.button.id == "task-step":
             self.action_step()
             return
+        if event.button.id == "lab-run":
+            self._run_lab()
+            return
         if event.button.id == "name-save":
             self._save_name()
             return
@@ -15433,15 +15463,13 @@ class TutorApp(App):
             # NO-HELP exam: blank editor (write from scratch), no goal diagram,
             # no worked-example hint. The task panel already shows the goal.
             self.query_one("#goal", Static).update("")
-            self.query_one("#example-ref", Static).update("")
             self.query_one("#editor", VimEditor).set_text("")
+            self.query_one("#lab-editor", VimEditor).set_text("")
         else:
             self.query_one("#mastery-note", Static).update("")
             self.query_one("#goal", Static).update(self._goal_panel(c))
-            self.query_one("#example-ref", Static).update(
-                "[dim]worked examples are on the right →  ([reverse]F8[/] hide/show · scroll for more)[/]")
-            self.query_one("#editor", VimEditor).set_text(
-                self._plan_template(c) + c["starter"])
+            self.query_one("#editor", VimEditor).set_text(self._test_editor_text(c))
+            self._populate_lab(c)
         self._set_output("")
         self.last = None
         self._cancel_celebrate()
@@ -15666,7 +15694,82 @@ class TutorApp(App):
         if t is not None:
             t.stop()
             self._arrow_timer = None
-        self.query_one("#task", Static).update(f"[bold]▶ {title}[/]  ·  read, type, test")
+        self.query_one("#task", Static).update(
+            f"[bold]▶ FINAL TEST — {title}[/]  ·  write your answer, then :submit")
+
+    # ---- LEFT test editor + RIGHT Lab pane --------------------------------- #
+
+    def _test_editor_text(self, c):
+        """LEFT test editor: starter code, 10 blank lines, then (line 11) a
+        comment showing the expected output, then per-line syntax IDEAS."""
+        starter = self._plan_template(c) + c.get("starter", "")
+        lines = starter.split("\n") if starter else [""]
+        for _ in range(10):
+            lines.append("")
+        goal = self._goal_values(c)
+        lines.append("# output should look like: "
+                     + ("  ".join(goal) if goal else "see the task"))
+        for i, h in enumerate(self._task_suggestions(c)[:8], 1):
+            lines.append(f"# line {i} idea: {h}")
+        return "\n".join(lines)
+
+    def _populate_lab(self, c):
+        """RIGHT Lab pane: Task view (brief) + Lab view (commented examples)."""
+        t = Text()
+        t.append("THE TASK", style="bold #f9a8d4")
+        t.append("\n\n")
+        t.append(c["title"], style="bold #cdd6f4")
+        t.append("\n")
+        prompt = re.sub(r"[`*_#>~]", "", c.get("prompt", "")).strip()
+        for ln in _wrap_words(prompt, 60):
+            t.append(ln, style="#a6adc8")
+            t.append("\n")
+        need = c.get("need", [])
+        if need:
+            t.append("\nYOU'LL NEED:  ", style="bold #facc15")
+            t.append("  ".join(f"`{n}`" for n in need), style="#fde68a")
+        self.query_one("#lab-task-inner", Static).update(t)
+        # Lab view — commented examples you can un-comment and run
+        code = example_code(c.get("example", ""))[1]
+        lines = ["# LAB — un-comment a line (delete the #) then run", ""]
+        if code:
+            for ln in code.split("\n"):
+                if ln.strip():
+                    lines.append("# " + ln)
+        self.query_one("#lab-editor", VimEditor).set_text("\n".join(lines))
+        self.query_one("#lab-output", Static).update("")
+        self._render_lab_tabs()
+
+    def _render_lab_tabs(self):
+        """The Task ⇄ Lab toggle bar (clickable, hotkey shown)."""
+        on = "bold reverse"
+        off = "dim"
+        task = f"[{on}]TASK[/]" if not self._lab_show_lab else f"[{off}]TASK[/]"
+        lab = f"[{on}]LAB[/]" if self._lab_show_lab else f"[{off}]LAB[/]"
+        self.query_one("#lab-tabs", Static).update(
+            Text.from_markup(f"{task}  |  {lab}    [dim](ctrl+e = switch)[/]"))
+
+    def action_toggle_lab(self):
+        """Toggle the right pane between the Task view and the Lab view."""
+        self._lab_show_lab = not self._lab_show_lab
+        try:
+            self.query_one("#lab-task-view", VerticalScroll).toggle_class("hidden")
+            self.query_one("#lab-lab-view", Vertical).toggle_class("hidden")
+        except Exception:
+            pass
+        self._render_lab_tabs()
+
+    def _run_lab(self):
+        """Run the Lab editor's code (comments stripped) into its own console."""
+        code = self.query_one("#lab-editor", VimEditor).get_text()
+        cleaned = []
+        for ln in code.split("\n"):
+            if ln.strip().startswith("#"):
+                ln = ln.replace("#", "", 1)
+            cleaned.append(ln)
+        out, err = run_lesson_code("\n".join(cleaned), "")
+        self.query_one("#lab-output", Static).update(
+            Text((out or err or "(no output)").rstrip("\n"), style="bold #a6e3a1"))
 
     # ---- textbook example (static, above your editor) ---------------------- #
 
@@ -20668,6 +20771,9 @@ class TutorApp(App):
             self._split_dragging = True
             self.capture_mouse(event.widget)
             return
+        if getattr(event.widget, "id", None) == "lab-tabs":
+            self.action_toggle_lab()
+            return
         if getattr(event.widget, "id", None) == "out-drag":
             self._out_dragging = True
             self._out_drag_start_y = event.screen_y
@@ -20719,8 +20825,9 @@ class TutorApp(App):
             return
         try:
             w = self.size.width or 1
-            pct = max(38, min(82, round(event.screen_x / w * 100)))
-            self.query_one("#editor-box", VerticalScroll).styles.width = f"{pct}%"
+            # dragging the divider: the Lab pane's width is what's left of it
+            lab_w = max(20, min(80, w - event.screen_x))
+            self.query_one("#lab-box", Vertical).styles.width = f"{lab_w}"
         except Exception:
             pass
 
