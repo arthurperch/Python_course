@@ -3848,6 +3848,41 @@ def _colorize_command(cmd: str) -> Text:
     return t
 
 
+def _colorize_output(line: str) -> Text:
+    """Color a fake-terminal output line like a real shell: success words green,
+    errors red, warnings yellow, paths cyan, numbers blue. The base is a soft,
+    slightly smaller-looking gray."""
+    t = Text()
+    low = line.lower()
+
+    def has_any(words):
+        return any(re.search(rf"\b{re.escape(w)}\b", low) for w in words)
+
+    if any(w in low for w in ("error", "failed", "no such", "not found",
+                              "refused", "denied", "exception", "traceback")):
+        t.append(line, style="#f87171")
+        return t
+    if (has_any(("running", "up", "success", "created", "deployed",
+                 "completed", "passed", "clean"))
+            or any(s in low for s in ("up to date", "nothing to commit"))
+            or "✓" in line):
+        t.append(line, style="#4ade80")
+        return t
+    if has_any(("warning", "pending", "waiting", "skipping")):
+        t.append(line, style="#fbbf24")
+        return t
+    for part in re.split(r'(/\S+|\./\S+|~\S*|\b\d+\b)', line):
+        if not part:
+            continue
+        if re.match(r'^(/\S+|\./\S+|~\S*)', part):
+            t.append(part, style="#7dd3fc")        # path — cyan
+        elif part.isdigit():
+            t.append(part, style="#93c5fd")        # number — blue
+        else:
+            t.append(part, style="#aab0bd")        # base — soft gray (smaller look)
+    return t
+
+
 # ---- command anatomy: a beginner one-liner for each piece you type -------- #
 # Spoken (and shown) as the learner types, so "docker stop web" gets decoded:
 # what docker is, what stop does, what the name means. Same for git/aws/etc.
@@ -20426,7 +20461,7 @@ class TutorApp(App):
                 t.append(p, style="bold #c8c8c8")
                 t.append_text(_colorize_command(c))
             elif kind == "out":
-                t.append(text, style="#e6e6e6")
+                t.append_text(_colorize_output(text))
             elif kind == "err":
                 t.append(text, style="bold #f87171")
             t.append("\n")
@@ -20489,7 +20524,18 @@ class TutorApp(App):
         return DEV_LESSONS[self._dev_idx]
 
     def _dev_prompt(self):
-        return "you@cloud:~$"
+        return "you@cloud ~ ❯ "
+
+    def _dev_prompt_colored(self):
+        """zsh-style prompt: user in green, host in cyan, cwd in blue, arrow in
+        green — an icon-y prompt instead of a flat green '$'."""
+        t = Text()
+        t.append("you", style="bold #4ade80")
+        t.append("@", style="#6b7280")
+        t.append("cloud", style="bold #7dd3fc")
+        t.append(" ~ ", style="#93c5fd")
+        t.append("❯ ", style="bold #4ade80")
+        return t
 
     def _dev_hand_hold(self):
         """0 = full hand-holding … 3 = near-zero (TTS slowly lets go)."""
@@ -20727,7 +20773,9 @@ class TutorApp(App):
         self._dev_msg_kind = "win"
         self._dev_won = True
         play_console_result(True)
-        speak_write(_pers(on_win), rate=4 / 7, main=True)
+        # win speech at 2.25x — finish fast so the learner can read the output,
+        # then the next lesson's explanations resume at 1.75x
+        speak_write(_pers(on_win), rate=4 / 9, main=True)
         self._dev_render()
 
     def _dev_write_done(self):
@@ -21207,7 +21255,7 @@ class TutorApp(App):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\n")
-            t.append(self._dev_prompt() + " ", style="bold #c8c8c8")
+            t.append_text(self._dev_prompt_colored())
             t.append("█", style="bold #22c55e")
             return _box_lines(_lines_of(t), max_width=term_w, border=False)
         for kind, text in self._dev_history[-18:]:
@@ -21216,11 +21264,11 @@ class TutorApp(App):
                 t.append(p, style="bold #c8c8c8")
                 t.append_text(_colorize_command(c))
             elif kind == "out":
-                t.append(text, style="#e6e6e6")
+                t.append_text(_colorize_output(text))
             elif kind == "err":
                 t.append(text, style="bold #f87171")
             t.append("\n")
-        t.append(self._dev_prompt() + " ", style="bold #c8c8c8")
+        t.append_text(self._dev_prompt_colored())
         t.append_text(_colorize_command(self._dev_cmd))
         t.append("█", style="bold #22c55e")
         return _box_lines(_lines_of(t), max_width=term_w, border=False)
