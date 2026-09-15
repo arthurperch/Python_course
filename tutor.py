@@ -14788,6 +14788,7 @@ class TutorApp(App):
         self._dev_flash = {}          # state-change flash: key -> {"kind","n","label","old"}
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
+        self._dev_auto_timer = None   # smooth auto-advance after a command win
         self._net_on = False          # NETWORK+ overlay open
         self._net_module = 0          # current module idx (0-3)
         self._net_queue: list = []    # pending steps for this module
@@ -20771,18 +20772,36 @@ class TutorApp(App):
             self._dev_render()
 
     def _dev_mark_won(self, on_win):
-        """A command/file just succeeded — stamp the win, speak it, and hold the
-        screen (waiting for Enter) so the learner can read the output and verify
-        before advancing. No auto-skip."""
+        """A command/file just succeeded. Within a module this flows smoothly to
+        the next task (auto-advance after a short read-the-output pause); at the
+        END of a module it holds + flashes, waiting for Enter — a big objective
+        is done, so the learner decides when to start the next session."""
         self._dev_msg = on_win
         self._dev_msg_kind = "win"
-        self._dev_won = True
         play_console_result(True)
         # win speech at 2.25x — finish fast so the learner can read the output,
         # then the next lesson's explanations resume at 1.75x
         speak_write(_pers(on_win), rate=4 / 9, main=True)
         self._dev_render()
-        self._dev_enter_blink_start()
+        if self._dev_is_module_boundary(self._dev_idx):
+            self._dev_won = True
+            self._dev_enter_blink_start()
+        else:
+            self._dev_won = False
+            self._dev_schedule_auto_advance()
+
+    def _dev_is_module_boundary(self, idx):
+        """True when this lesson is the LAST in its module — the seam between
+        two 'sessions' where the learner should pause and press Enter."""
+        if idx + 1 >= len(DEV_LESSONS):
+            return True
+        return DEV_LESSONS[idx]["module"] != DEV_LESSONS[idx + 1]["module"]
+
+    def _dev_schedule_auto_advance(self):
+        t = getattr(self, "_dev_auto_timer", None)
+        if t is not None:
+            t.stop()
+        self._dev_auto_timer = self.set_timer(1.5, self._dev_next)
 
     def _dev_enter_blink_start(self):
         """Flash the 'press Enter to continue' bar so it's impossible to miss."""
@@ -20816,22 +20835,29 @@ class TutorApp(App):
     # -- run-phase command entry -------------------------------------------- #
 
     def _dev_explain_command_piece(self):
-        """Speak (and show) ONE beginner one-liner for the COMMAND NAME, once
-        per lesson. The per-flag chatter was too much and overlapped — flag
-        meanings live in the hint bar / manual instead."""
+        """Speak a brief one-liner for the command name, then each flag/subcommand
+        — ONE piece per keystroke so the voice stays fast and never overlaps."""
         if not self.voice_on:
             return
         parts = self._dev_cmd.split()
         if not parts:
             return
         explained = getattr(self, "_dev_explained_tokens", set())
-        key = parts[0]
-        expl = _CMD_MEANING.get(key)
-        if key not in explained and expl:
+
+        def _say(key, expl):
+            if key in explained or not expl:
+                return False
             explained.add(key)
             self._dev_msg = expl
             self._dev_msg_kind = "say"
             speak_write(_pers(expl), rate=4 / 7, main=True)
+            return True
+
+        # command name first; then one new flag/subcommand per keystroke
+        if not _say(parts[0], _CMD_MEANING.get(parts[0])):
+            for tok in parts[1:]:
+                if _say(tok, _piece_explain(parts[0], tok)):
+                    break
         self._dev_explained_tokens = explained
 
     def _dev_tool_tokens(self, tool):
@@ -21035,6 +21061,10 @@ class TutorApp(App):
         if t is not None:
             t.stop()          # a manual Enter skip must cancel the pending auto-advance
         self._dev_adv_timer = None
+        at = getattr(self, "_dev_auto_timer", None)
+        if at is not None:
+            at.stop()
+        self._dev_auto_timer = None
         # invalidate any in-flight win/info speech so a skip can't double-advance
         self._win_gen = getattr(self, "_win_gen", 0) + 1
         self._dev_won = False
@@ -21081,6 +21111,9 @@ class TutorApp(App):
         self._dev_ghost_stop_timers()
         self._dev_flash_stop()
         self._dev_enter_blink_stop()
+        at = getattr(self, "_dev_auto_timer", None)
+        if at is not None:
+            at.stop(); self._dev_auto_timer = None
         self.query_one("#dev-help", Static).remove_class("visible")
         t = getattr(self, "_dev_adv_timer", None)
         if t is not None:
@@ -21542,8 +21575,8 @@ class TutorApp(App):
             t.append("\n")
         if self._dev_won:
             style = "reverse bold" if self._dev_enter_blink else "bold #22c55e"
-            t.append("▶ PRESS ENTER to continue", style=style)
-            t.append("  — read the output above", style="dim")
+            t.append("▶ OBJECTIVE DONE — PRESS ENTER", style=style)
+            t.append("  to start the next module", style="dim")
             return t
         if lesson["kind"] == "info":
             style = "reverse bold" if self._dev_enter_blink else "bold #22c55e"
