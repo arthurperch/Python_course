@@ -4403,13 +4403,14 @@ _CONSOLE = Console()
 
 
 def _box_lines(lines: list[Text], title: str = "", center: bool = False,
-               min_width: int = 0, max_width: int = 0) -> Text:
+               min_width: int = 0, max_width: int = 0, border: bool = True) -> Text:
     """Wrap styled lines in a rounded single-line box. Returns a multiline Text.
     `center=True` centers each line inside the box (for prose); code stays
     left-aligned by default. `min_width` forces the box to at least this inner
     width (used to make the VIM editor fill the screen). `max_width` hard-wraps
     any line longer than this many columns (styles preserved) so the box never
-    overflows its panel — the 'unbreakable box'."""
+    overflows its panel — the 'unbreakable box'. `border=False` skips the
+    `┌─┐││└─┘` frame entirely (still wraps) — used for the real-terminal look."""
     if not lines:
         lines = [Text("")]
     if max_width > 0:
@@ -4420,6 +4421,13 @@ def _box_lines(lines: list[Text], title: str = "", center: bool = False,
             else:
                 wrapped.append(ln)
         lines = wrapped
+    if not border:
+        t = Text()
+        for i, ln in enumerate(lines):
+            if i:
+                t.append("\n")
+            t.append_text(ln)
+        return t
     inner = max([ln.cell_len for ln in lines] + ([len(title)] if title else []))
     inner = max(inner, min_width)
     t = Text()
@@ -14396,7 +14404,7 @@ class TutorApp(App):
     #shell-help-icon:hover { background: $surface; color: $text; }
     #shell-ghost { width: 100%; height: 3; padding: 0 2; background: #0d1117; border: solid #30363d; }
     #shell-body { width: 100%; height: 1fr; }
-    #shell-term { width: 1fr; height: 1fr; border: tall $primary; }
+    #shell-term { width: 1fr; height: 1fr; }
     #shell-output { height: 1fr; padding: 1 2; background: #0d1117; }
     #shell-fs { width: 30%; height: 1fr; border: tall $warning; }
     #shell-fs-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
@@ -14423,7 +14431,7 @@ class TutorApp(App):
     #dev-help-icon:hover { background: $surface; color: $text; }
     #dev-ghost { width: 100%; height: 3; padding: 0 2; background: #0d1117; border: solid #30363d; }
     #dev-body { width: 100%; height: 1fr; }
-    #dev-term { width: 1fr; height: 1fr; border: tall $primary; }
+    #dev-term { width: 1fr; height: 1fr; }
     #dev-output { height: 1fr; padding: 1 2; background: #0d1117; }
     #dev-state { width: 34%; height: 1fr; border: tall $warning; }
     #dev-state-title { height: 1; padding: 0 2; background: $boost; color: $text; text-style: bold; }
@@ -20404,7 +20412,7 @@ class TutorApp(App):
             t.append(self._shell_prompt() + " ", style="bold #c8c8c8")
             t.append(self._shell_cmd or " ", style="#f0f0f5")
             t.append("▍", style="bold #22c55e")
-            return _box_lines(_lines_of(t))
+            return _box_lines(_lines_of(t), border=False)
         for kind, text in self._shell_history[-16:]:
             if kind == "cmd":
                 p, c = text
@@ -20418,7 +20426,7 @@ class TutorApp(App):
         t.append(self._shell_prompt() + " ", style="bold #c8c8c8")
         t.append_text(_colorize_command(self._shell_cmd))
         t.append("▍", style="bold #22c55e")
-        return _box_lines(_lines_of(t))
+        return _box_lines(_lines_of(t), border=False)
 
     def _shell_render_fs(self):
         t = Text()
@@ -21199,7 +21207,7 @@ class TutorApp(App):
             t.append("\n")
             t.append(self._dev_prompt() + " ", style="bold #c8c8c8")
             t.append("█", style="bold #22c55e")
-            return _box_lines(_lines_of(t), max_width=term_w)
+            return _box_lines(_lines_of(t), max_width=term_w, border=False)
         for kind, text in self._dev_history[-18:]:
             if kind == "cmd":
                 p, c = text
@@ -21213,7 +21221,7 @@ class TutorApp(App):
         t.append(self._dev_prompt() + " ", style="bold #c8c8c8")
         t.append_text(_colorize_command(self._dev_cmd))
         t.append("█", style="bold #22c55e")
-        return _box_lines(_lines_of(t), max_width=term_w)
+        return _box_lines(_lines_of(t), max_width=term_w, border=False)
 
     def _dev_render_editor(self):
         target = self._dev_target
@@ -21244,7 +21252,7 @@ class TutorApp(App):
                     t.append(target[pos + 1:end], style="#5a5a5a")
             t.append("\n")
             offset = end + 1
-        return _box_lines(_lines_of(t), max_width=self._dev_term_width())
+        return _box_lines(_lines_of(t), max_width=self._dev_term_width(), border=False)
 
     def _dev_state_snapshot(self):
         """A flat {label: value} picture of the whole cloud, so a command's
