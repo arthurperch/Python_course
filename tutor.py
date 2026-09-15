@@ -15724,7 +15724,10 @@ class TutorApp(App):
         return "\n".join(lines)
 
     def _populate_lab(self, c):
-        """RIGHT Lab pane: Task view (brief) + Lab view (commented examples)."""
+        """RIGHT Lab pane: Task view (brief) + Lab view (rich commented examples
+        with expected-output annotations, runnable in the separate console).
+        NO TTS on this side — it's a quiet scratch space."""
+        # Task view — brief what-to-do
         t = Text()
         t.append("THE TASK", style="bold #f9a8d4")
         t.append("\n\n")
@@ -15739,16 +15742,41 @@ class TutorApp(App):
             t.append("\nYOU'LL NEED:  ", style="bold #facc15")
             t.append("  ".join(f"`{n}`" for n in need), style="#fde68a")
         self.query_one("#lab-task-inner", Static).update(t)
-        # Lab view — commented examples you can un-comment and run
-        code = example_code(c.get("example", ""))[1]
-        lines = ["# LAB — un-comment a line (delete the #) then run", ""]
+        # Lab view — great examples, each commented out with its expected output
+        lines = ["# LAB — un-comment a block (delete the #) then run",
+                 "# the comment above each block shows what it prints",
+                 ""]
+        cap, code = example_code(c.get("example", ""))
         if code:
+            head = cap.split("\n")[0].strip().rstrip(":").strip() if cap else ""
+            lines.append(f"# ── {head or 'the worked example'} ──")
+            lines.append(f"#    prints: {self._lab_output(code, c.get('stdin', ''))}")
             for ln in code.split("\n"):
                 if ln.strip():
                     lines.append("# " + ln)
+            lines.append("")
+        topic = c.get("topic", "custom")
+        for ex in LESSONS.get(topic, {}).get("examples", [])[:2]:
+            ex_code = ex.get("code", "")
+            if not ex_code or ex_code.strip() == code.strip():
+                continue
+            lines.append(f"# ── {ex.get('caption', 'another example')} ──")
+            lines.append(f"#    prints: {self._lab_output(ex_code, ex.get('stdin', ''))}")
+            for ln in ex_code.split("\n"):
+                if ln.strip():
+                    lines.append("# " + ln)
+            lines.append("")
         self.query_one("#lab-editor", VimEditor).set_text("\n".join(lines))
         self.query_one("#lab-output", Static).update("")
         self._render_lab_tabs()
+
+    def _lab_output(self, code, stdin=""):
+        """Compute an example's printed output for the annotation line."""
+        try:
+            out, err = run_lesson_code(code, stdin)
+            return (out or err or "(nothing)").strip().replace("\n", " · ")
+        except Exception:
+            return "(nothing)"
 
     def _render_lab_tabs(self):
         """The Task ⇄ Lab toggle bar (clickable, hotkey shown)."""
