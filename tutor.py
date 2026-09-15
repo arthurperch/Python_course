@@ -3618,9 +3618,10 @@ def _writing_tts_loop() -> None:
         with _WRITE_COND:
             while not _WRITE_Q:
                 _WRITE_COND.wait()
-            text, rate = _WRITE_Q.pop(0)
+            text, rate, main = _WRITE_Q.pop(0)
+        vol = voice_volume() if main else writing_volume()
         if _tts_engine() == "espeak":
-            amp = int(round(200 * writing_volume()))
+            amp = int(round(200 * vol))
             if amp <= 0:
                 continue
             speed = max(120, int(180 / rate))
@@ -3633,7 +3634,7 @@ def _writing_tts_loop() -> None:
             raw = synthesize(text, rate)
             if not raw:
                 continue
-            gain = writing_volume()
+            gain = vol
             if gain <= 0.0:
                 continue
             raw = _scale_raw(raw, gain)
@@ -3651,13 +3652,15 @@ def _writing_tts_loop() -> None:
 threading.Thread(target=_writing_tts_loop, daemon=True).start()
 
 
-def speak_write(text: str, rate: float = 0.85) -> None:
-    """Enqueue a quick writing cue. `rate` < 1.0 = faster (piper length_scale)."""
+def speak_write(text: str, rate: float = 0.85, main: bool = False) -> None:
+    """Enqueue a sequential cue. `rate` < 1.0 = faster (piper length_scale).
+    `main=True` uses the main VOICE volume (lesson narration); the default uses
+    the quieter writing-cue volume (ghost-typing feedback)."""
     clean = _prep_tts(text)
     if not clean:
         return
     with _WRITE_COND:
-        _WRITE_Q.append((clean, rate))
+        _WRITE_Q.append((clean, rate, main))
         _WRITE_COND.notify()
 
 
@@ -20091,17 +20094,11 @@ class TutorApp(App):
         if not self.voice_on:
             setattr(self, timer_attr, self.set_timer(0.5, advance_fn))
             return
-        gen = getattr(self, "_win_gen", 0) + 1
-        self._win_gen = gen
-
-        def _synth():
-            raw = synthesize(text, TEACH_RATE)
-            if gen != getattr(self, "_win_gen", 0):
-                return
-            self.call_from_thread(self._on_win_ready, text, raw, gen,
-                                  advance_fn, timer_attr)
-
-        threading.Thread(target=_synth, daemon=True).start()
+        # queue the audio through the ONE sequential voice queue (no overlap
+        # with the explain-as-you-type cues), and advance after a short fixed
+        # pause — never gate the flow on the audio finishing
+        speak_write(text, rate=2 / 3, main=True)
+        setattr(self, timer_attr, self.set_timer(0.6, advance_fn))
 
     def _on_win_ready(self, text, raw, gen, advance_fn, timer_attr):
         if gen != getattr(self, "_win_gen", 0):
@@ -20609,22 +20606,20 @@ class TutorApp(App):
                                  self._dev_next, self._dev_render, "_dev_adv_timer")
             return
         say = lesson.get("say", "")
-        why = lesson.get("why", "")
         if lesson["kind"] == "challenge":
             # challenges get a spoken RECALL line first: the key facts from
             # the lessons you just did, so the blank terminal isn't scary
             recall = lesson.get("recall", "")
-            text = say + " " + why
-            if recall:
-                text += " Quick recall: " + recall
-            speak(_pers(text))
+            text = say + (" Quick recall: " + recall if recall else "")
+            speak_write(_pers(text), rate=2 / 3, main=True)
             return
+        # keep the spoken intro SHORT — just the instruction, not the full
+        # say+why (the why stays on screen). The per-piece explanations while
+        # you type do the teaching, and it must not over-talk.
         if tier <= 1:
-            speak(_pers(say + " " + why))
-        elif tier == 2:
-            speak(_pers(say))
+            speak_write(_pers(say), rate=2 / 3, main=True)
         else:
-            speak(_pers(say.split(". ")[0].rstrip(".") + "."))
+            speak_write(_pers(say.split(". ")[0].rstrip(".") + "."), rate=2 / 3, main=True)
 
     # -- write-phase ghost typing (the "white transparent text") ------------ #
 
@@ -20652,7 +20647,7 @@ class TutorApp(App):
         for sub, explain in lines:
             if sub in cur_line and sub not in self._dev_explained:
                 self._dev_explained.add(sub)
-                speak_write(_pers(explain), rate=2 / 3)   # 1.5x faster, queued (finishes)
+                speak_write(_pers(explain), rate=2 / 3, main=True)  # 1.5x, queued
 
     def _dev_current_line_hint(self):
         lesson = self._dev_lesson()
@@ -20734,31 +20729,22 @@ class TutorApp(App):
     # -- run-phase command entry -------------------------------------------- #
 
     def _dev_explain_command_piece(self):
-        """As the learner types a command, speak (and show) a beginner one-liner
-        for each finished piece — the command name, then each subcommand/flag —
-        once per lesson. Decodes 'what am I actually writing here?'."""
+        """Speak (and show) ONE beginner one-liner for the COMMAND NAME, once
+        per lesson. The per-flag chatter was too much and overlapped — flag
+        meanings live in the hint bar / manual instead."""
         if not self.voice_on:
             return
         parts = self._dev_cmd.split()
         if not parts:
             return
         explained = getattr(self, "_dev_explained_tokens", set())
-
-        def _speak_if_new(key, expl):
-            if key in explained or not expl:
-                return False
+        key = parts[0]
+        expl = _CMD_MEANING.get(key)
+        if key not in explained and expl:
             explained.add(key)
             self._dev_msg = expl
             self._dev_msg_kind = "say"
-            speak_write(_pers(expl), rate=2 / 3)   # 1.5x faster, queued (finishes)
-            return True
-
-        # the command name first — explain it the moment it's recognizable
-        if not _speak_if_new(parts[0], _CMD_MEANING.get(parts[0])):
-            finished = parts[:-1] if not self._dev_cmd.endswith(" ") else parts
-            for tok in finished[1:]:
-                if _speak_if_new(tok, _piece_explain(parts[0], tok)):
-                    break
+            speak_write(_pers(expl), rate=2 / 3, main=True)
         self._dev_explained_tokens = explained
 
     def _dev_tool_tokens(self, tool):
