@@ -8605,6 +8605,14 @@ class CloudLab:
 #   say       — the spoken instruction (plain english, NEVER spells the command)
 #   why       — the plain-english meaning (TTS reads this too)
 #   on_win    — TTS celebration that points out the thing the user just made
+_SHELL_MEANING = {
+    "pwd": "print working directory", "whoami": "who am I?", "ls": "list",
+    "echo": "print back", "clear": "wipe the screen", "mkdir": "make directory",
+    "cd": "change directory", "touch": "make a file", "cat": "read a file",
+    "head": "first lines", "wc": "word count", "cp": "copy", "grep": "search",
+    "mv": "move / rename", "rm": "remove", "python3": "run Python",
+    "chmod": "change permissions", "./hello.py": "run your program",
+}
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
     {"title": "where am I?", "stage": 0, "expect": ["pwd"], "cmd_hint": "pwd",
@@ -14566,6 +14574,7 @@ class TutorApp(App):
     #shell-foot { width: 100%; height: auto; margin-top: 1; }
     #shell-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #shell-help.visible { display: block; }
+    #shell-explain { layer: overlay; width: 70%; height: auto; max-height: 60%; border: tall #22c55e; background: #0d1117; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #dev { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #dev.visible { display: block; }
     #dev-topbar { width: 100%; height: auto; }
@@ -14867,6 +14876,8 @@ class TutorApp(App):
         self._shell_flash = 0          # >0 → flash the just-made entry in the tree
         self._shell_flash_timer = None
         self._shell_adv_timer = None   # short hold after a win before the next lesson
+        self._shell_explain_on = False # center 'what this command does' overlay
+        self._shell_explain_timer = None
         self._shell_fs = ShellFS()
         self._dev_on = False          # CLOUD & DEVOPS track overlay open
         self._dev_idx = 0             # current DEV_LESSONS index
@@ -15171,6 +15182,7 @@ class TutorApp(App):
                     yield Static("", id="shell-fs-tree")
             yield Static("", id="shell-foot")
         yield Static("", id="shell-help")
+        yield Static("", id="shell-explain")
         with CloudTrainer(id="dev"):
             with Horizontal(id="dev-topbar"):
                 yield Static("", id="dev-head")
@@ -20195,9 +20207,11 @@ class TutorApp(App):
             return
         lesson = self._shell_lesson()
         if lesson.get("kind") == "info":
-            speak(_pers(lesson["why"]))
+            speak_write(_pers(lesson["why"]), rate=4 / 7, main=True)
         else:
-            speak(_pers(lesson.get("say", lesson["goal"]) + " " + lesson["why"]))
+            # just the brief instruction — the full 'what it does' explanation
+            # is saved for the center overlay AFTER the command runs
+            speak_write(_pers(lesson.get("say", lesson["goal"])), rate=4 / 7, main=True)
 
     def _shell_on_key(self, event):
         if not self._shell_on:
@@ -20313,8 +20327,9 @@ class TutorApp(App):
             self._shell_msg = lesson["on_win"]
             self._shell_msg_kind = "win"
             self._shell_flash_start()
-            self._speak_win_then(_pers(lesson["on_win"]), self._shell_next,
-                                 self._shell_render, "_shell_adv_timer")
+            self._shell_last_cmd = cmd
+            self._shell_explain_show()
+            self._shell_speak_explain_then_advance()
         else:
             play_ghost_error()
             self._shell_attempts += 1
@@ -20323,9 +20338,75 @@ class TutorApp(App):
             self._shell_msg = lesson.get("cmd_hint", lesson.get("goal", ""))
             self._shell_msg_kind = "hint"
             if self.voice_on:
-                speak(_pers(self._shell_wrong_hint(lesson)), rate=1.2)
+                speak_write(_pers(self._shell_wrong_hint(lesson)), rate=4 / 7, main=True)
             self._shell_ghost_blink_again()
             self._shell_render()
+
+    # -- center 'what this command does' overlay ------------------------------ #
+    def _shell_explain_show(self):
+        lesson = self._shell_lesson()
+        cmd = getattr(self, "_shell_last_cmd", "") or ""
+        word = (cmd.strip().split() or [""])[0]
+        self._shell_explain_cmd = cmd
+        self._shell_explain_label = _SHELL_MEANING.get(word)
+        self._shell_explain_why = lesson.get("why", "")
+        self._shell_explain_on = True
+        self.query_one("#shell-explain", Static).update(self._shell_render_explain())
+        self.query_one("#shell-explain", Static).add_class("visible")
+
+    def _shell_render_explain(self):
+        t = Text()
+        cmd = getattr(self, "_shell_explain_cmd", "")
+        label = getattr(self, "_shell_explain_label", None)
+        why = getattr(self, "_shell_explain_why", "")
+        t.append("WHAT JUST HAPPENED", style="bold cyan")
+        t.append("\n\n")
+        t.append(cmd, style="bold #f0f0f5")
+        if label:
+            t.append("\n")
+            t.append("→ " + label, style="bold #22c55e")
+        t.append("\n\n")
+        for line in _wrap_words(why, self._shell_explain_width()):
+            t.append(line, style="#d5d5d5")
+            t.append("\n")
+        t.append("\n")
+        t.append("reading… then it moves on by itself", style="dim")
+        return t
+
+    def _shell_explain_width(self):
+        return max(24, min(64, (self.size.width or 120) - 20))
+
+    def _shell_explain_hide(self):
+        self._shell_explain_on = False
+        t = getattr(self, "_shell_explain_timer", None)
+        if t is not None:
+            t.stop(); self._shell_explain_timer = None
+        self.query_one("#shell-explain", Static).remove_class("visible")
+
+    def _shell_speak_explain_then_advance(self):
+        lesson = self._shell_lesson()
+        why = lesson.get("why", "")
+        self._shell_render()
+        t = getattr(self, "_shell_adv_timer", None)
+        if t is not None:
+            t.stop()
+        if self.voice_on:
+            # one sequential queue — the explanation fully finishes before the
+            # next cue, no more two voices talking over each other
+            speak_write(_pers(why), rate=4 / 7, main=True)
+            dur = self._estimate_dur(why) * 0.6   # ~1.75x faster than the base estimate
+        else:
+            dur = 0.0
+        # hold the screen long enough to actually READ the explanation — a real
+        # delay, so the learner can't skip past what the command just did
+        hold = max(2.6, min(6.0, dur))
+        self._shell_explain_timer = self.set_timer(hold, self._shell_explain_done)
+
+    def _shell_explain_done(self):
+        self._shell_explain_timer = None
+        self._shell_explain_hide()
+        self._shell_next()
+
 
     def _shell_advance(self):
         self._shell_render()
@@ -20336,6 +20417,7 @@ class TutorApp(App):
 
     def _shell_next(self):
         self._shell_adv_timer = None
+        self._shell_explain_hide()
         self._shell_idx += 1
         self._shell_msg = ""
         self._shell_msg_kind = ""
@@ -20362,20 +20444,21 @@ class TutorApp(App):
         self._shell_msg = "BUILD STUFF COMPLETE — you can make files and run them!"
         self._celebrate()
         if self.voice_on:
-            speak("Track complete! You can now make folders, write files, and run your own programs in the terminal.")
+            speak_write(_pers("Track complete! You can now make folders, write files, and run your own programs in the terminal."), rate=4 / 7, main=True)
         self._shell_render()
 
     def _shell_save_checkpoint(self):
         self.p["build_checkpoint"] = {"idx": self._shell_idx}
         save_progress(self.p)
         if self.voice_on:
-            speak("Checkpoint saved. You can pick up right here later.")
+            speak_write(_pers("Checkpoint saved. You can pick up right here later."), rate=4 / 7, main=True)
 
     def _shell_dismiss(self):
         self._shell_on = False
         self._shell_confirm = False
         self._shell_flash_stop()
         self._shell_ghost_stop_timers()
+        self._shell_explain_hide()
         self.query_one("#shell-help", Static).remove_class("visible")
         t = getattr(self, "_shell_adv_timer", None)
         if t is not None:
