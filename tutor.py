@@ -7018,6 +7018,10 @@ class ShellFS:
             return self._journalctl(args)
         if cmd == "ssh":
             return self._ssh(args)
+        if cmd == "ssh-keygen":
+            return self._ssh_keygen(args)
+        if cmd == "ssh-copy-id":
+            return self._ssh_copy_id(args)
         if cmd in ("exit", "logout"):
             return self._exit_ssh(args)
         if cmd in ("man", "help", "--help"):
@@ -7482,8 +7486,30 @@ class ShellFS:
 
     def _curl(self, args):
         """Simulated HTTP client (offline): localhost URLs return a running app's
-        response; any other URL returns a canned page. Teaches the browser ->
-        localhost:port loop without a real network."""
+        response; any other URL returns a canned page. `-o file` saves the
+        download (a .py URL gets a runnable bootstrap script). Teaches the
+        browser -> localhost:port loop and cloud-bootstrap download without a
+        real network."""
+        if "-o" in args or "--output" in args:
+            flag = "-o" if "-o" in args else "--output"
+            i = args.index(flag)
+            if i + 1 >= len(args):
+                return [], ["curl: option requires an argument -- 'o'"]
+            fname = args[i + 1]
+            url = next((a for a in args if not a.startswith("-") and a != fname), "")
+            p = self._resolve(fname)
+            if fname.endswith(".py"):
+                content = ("print('bootstrap complete: 3 packages installed, '\n"
+                           "      'web service configured')\n")
+            elif fname.endswith(".html"):
+                content = f"<!doctype html><title>{url or 'app'}</title>\n<h1>hello</h1>\n"
+            else:
+                content = f"# fetched from {url or 'remote'}\n"
+            self.files[p] = content
+            return [f"  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current",
+                    f"                                 Dload  Upload   Total   Spent    Left  Speed",
+                    f"100   512  100   512    0     0    512      0  0:00:01 --:--:--  0:00:01  1024",
+                    f"Saved to '{fname}'"], []
         url = next((a for a in args if not a.startswith("-")), "")
         if not url:
             return [], ["curl: try 'curl <url>'"]
@@ -7586,6 +7612,56 @@ class ShellFS:
             self.cwd = self._local_cwd
             self._local_cwd = None
         return ["Connection closed."], []
+
+    def _ssh_keygen(self, args):
+        """`ssh-keygen` — generate a (simulated) RSA keypair into ~/.ssh/. No
+        crypto: it writes placeholder key material, enough for the secure-login
+        flow to work deterministically (ssh-copy-id reads the .pub)."""
+        sshdir = self.home + "/.ssh"
+        self.dirs.add(sshdir)
+        priv = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABlwAAAAdzc2gtcn\n"
+                "NhAAAAAwEAAQAAAQEAyA9k7hHq3x9vK1mQwVnL8tR2oP5cS6eB4gYx0jZfHw==\n"
+                "-----END OPENSSH PRIVATE KEY-----\n")
+        pub = ("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDIkjfHw== you@box")
+        self.files[sshdir + "/id_rsa"] = priv
+        self.files[sshdir + "/id_rsa.pub"] = pub
+        return [f"Generating public/private rsa key pair.",
+                f"Your identification has been saved in {sshdir}/id_rsa",
+                f"Your public key has been saved in {sshdir}/id_rsa.pub",
+                f"The key fingerprint is:",
+                f"SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 you@box",
+                f"The key's randomart image is:",
+                f"+---[RSA 3072]----+",
+                f"|   .o++          |",
+                f"|  .oo+=          |",
+                f"| ...oo+o         |",
+                f"|  oo.++o         |",
+                f"| o..+=.oS        |",
+                f"|...o+=o          |",
+                f"| o.++.           |",
+                f"|..+o o           |",
+                f"+----[SHA256]-----+"], []
+
+    def _ssh_copy_id(self, args):
+        """`ssh-copy-id user@host` — copy the local pubkey to the remote's
+        authorized_keys (simulated). Requires ssh-keygen first."""
+        if not args:
+            return [], ["usage: ssh-copy-id user@host"]
+        target = args[0]
+        if "@" not in target:
+            return [], [f"ssh-copy-id: Could not resolve hostname '{target}'"]
+        user = target.split("@", 1)[0]
+        sshdir = self.home + "/.ssh"
+        pub = self.files.get(sshdir + "/id_rsa.pub")
+        if not pub:
+            return [], ["ssh-copy-id: No public key found — run `ssh-keygen` first"]
+        remote_ssh = f"/srv/{user}/.ssh"
+        self.dirs.add(remote_ssh)
+        self.files[remote_ssh + "/authorized_keys"] = pub + "\n"
+        return [f"/usr/bin/ssh-copy-id: INFO: attempting to log in with the new key(s)",
+                f"Number of key(s) added: 1",
+                f"Now try logging into the machine, with: \"ssh '{target}'\""], []
 
 
 # ============================================================================
@@ -10354,6 +10430,7 @@ _SHELL_MEANING = {
     "ps": "list running processes", "kill": "stop a process",
     "systemctl": "control a service", "journalctl": "read a service's logs",
     "ssh": "log into another machine", "exit": "leave the remote shell",
+    "ssh-keygen": "generate an SSH keypair", "ssh-copy-id": "copy your key to a server",
 }
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
@@ -16221,6 +16298,115 @@ def _rg_variant_drill(drill, recent):
             "_variant": names}
 
 
+# =========================================================================== #
+# MINI PROJECTS — build & deploy small real things in the simulation. Each is a
+# guided multi-step checklist (like LINUX MISSIONS) running against a CloudLab,
+# graded by OUTCOME, ending in a deploy/verify step. `setup(lab)` pre-seeds the
+# working files; `steps[].check(lab, out)` inspects CloudLab state or stdout.
+# =========================================================================== #
+
+PROJECTS = [
+    {"id": "fin-dashboard", "name": "Financial Dashboard",
+     "brief": "generate a simulated price series, chart it, and deploy it to localhost",
+     "setup": lambda lab: (
+         lab.fs.files.__setitem__(lab.fs._resolve("prices.py"),
+             "prices = [100, 102, 101, 105, 108, 107, 112, 115, 113, 118]\n"
+             "print('prices:', prices)\n"
+             "ma = sum(prices[-5:]) / 5\n"
+             "print('5-day moving average:', round(ma, 2))\n"
+             "print('sparkline:', ''.join('+' if prices[i] > prices[i-1] else '-' for i in range(1, len(prices))))\n"),
+         lab.fs.files.__setitem__(lab.fs._resolve("index.html"),
+             "<!doctype html><title>Financial Dashboard</title>\n"
+             "<h1>Financial Dashboard</h1><p>see the terminal for the sparkline</p>\n")),
+     "steps": [
+         {"prompt": "run the price generator to see the chart",
+          "hint": "python3 runs a .py script",
+          "idiom": "python3 prices.py",
+          "check": lambda lab, out: any("sparkline:" in l for l in out)},
+         {"prompt": "deploy the dashboard to localhost",
+          "hint": "serve <port> ships your site",
+          "idiom": "serve 8080",
+          "check": lambda lab, out: any("Serving http://localhost" in l for l in out)},
+     ]},
+    {"id": "server-bootstrap", "name": "Server Bootstrap",
+     "brief": "download a setup script, make it runnable, and run it",
+     "setup": None,
+     "steps": [
+         {"prompt": "download the bootstrap script",
+          "hint": "curl -o <file> <url> saves a download",
+          "idiom": "curl -o bootstrap.py https://setup.example/bootstrap.py",
+          "check": lambda lab, out: lab.fs._resolve("bootstrap.py") in lab.fs.files},
+         {"prompt": "make it executable",
+          "hint": "chmod +x marks a file runnable",
+          "idiom": "chmod +x bootstrap.py",
+          "check": lambda lab, out: lab.fs._resolve("bootstrap.py") in lab.fs.executable},
+         {"prompt": "run the bootstrap",
+          "hint": "./filename runs an executable in the current dir",
+          "idiom": "./bootstrap.py",
+          "check": lambda lab, out: any("bootstrap complete" in l for l in out)},
+     ]},
+    {"id": "secure-login", "name": "Secure Login",
+     "brief": "replace password logins with an SSH keypair",
+     "setup": None,
+     "steps": [
+         {"prompt": "generate an SSH keypair",
+          "hint": "ssh-keygen creates id_rsa + id_rsa.pub",
+          "idiom": "ssh-keygen",
+          "check": lambda lab, out: (lab.fs.home + "/.ssh/id_rsa.pub") in lab.fs.files},
+         {"prompt": "copy your public key to the server",
+          "hint": "ssh-copy-id user@host installs the key",
+          "idiom": "ssh-copy-id admin@server",
+          "check": lambda lab, out: "/srv/admin/.ssh/authorized_keys" in lab.fs.files},
+         {"prompt": "log in with your key",
+          "hint": "ssh user@host",
+          "idiom": "ssh admin@server",
+          "check": lambda lab, out: lab.fs.ssh_host == "admin@server"},
+     ]},
+    {"id": "log-stream", "name": "Log Stream Monitor",
+     "brief": "watch a live service log and surface only the errors",
+     "setup": lambda lab: lab.fs.services.__setitem__("web",
+         {"state": "running", "enabled": True,
+          "logs": ["web: listening on :8080",
+                   "web: 200 GET /index.html",
+                   "web: ERROR db connection refused",
+                   "web: 200 GET /about",
+                   "web: ERROR timeout on /api"]}),
+     "steps": [
+         {"prompt": "read the web service's full log",
+          "hint": "journalctl -u <service> reads one service's logs",
+          "idiom": "journalctl -u web",
+          "check": lambda lab, out: any("listening" in l for l in out)},
+         {"prompt": "filter the stream to only the errors",
+          "hint": "pipe into grep ERROR",
+          "idiom": "journalctl -u web | grep ERROR",
+          "check": lambda lab, out: any("ERROR" in l for l in out) and not any("200 GET" in l for l in out)},
+         {"prompt": "count the errors",
+          "hint": "pipe into wc -l",
+          "idiom": "journalctl -u web | grep ERROR | wc -l",
+          "check": lambda lab, out: any(l.strip() == "2" for l in out)},
+     ]},
+    {"id": "ansible-fleet", "name": "Ansible Fleet",
+     "brief": "configure a fleet of servers from one playbook",
+     "setup": lambda lab: (
+         lab.fs.files.__setitem__(lab.fs._resolve("hosts.ini"),
+             "[web]\nweb-1\nweb-2\n\n[db]\ndb-1\n"),
+         lab.fs.files.__setitem__(lab.fs._resolve("web.yml"),
+             "- name: Configure web fleet\n"
+             "  hosts: web\n"
+             "  tasks:\n"
+             "    - name: Install nginx\n"
+             "      apt:\n        name: nginx\n"
+             "    - name: Start nginx\n"
+             "      service:\n        name: nginx\n        state: started\n")),
+     "steps": [
+         {"prompt": "run the playbook against the fleet",
+          "hint": "ansible-playbook <playbook.yml>",
+          "idiom": "ansible-playbook web.yml",
+          "check": lambda lab, out: len(lab.ansible.hosts) >= 2 and any("PLAY RECAP" in l for l in out)},
+     ]},
+]
+
+
 def _net_pool_by_level(level: int) -> list:
     return [q for q in NET_QUESTIONS if q["level"] == level]
 
@@ -18297,6 +18483,18 @@ class RecallGymTrainer(Vertical):
         self.app._rg_on_key(event)
 
 
+class ProjectTrainer(Vertical):
+    """Full-screen MINI PROJECTS overlay: a guided multi-step build (a Python
+    data plot, a server bootstrap, a secure login, a log stream, an Ansible
+    fleet) running against a CloudLab, graded by OUTCOME, ending in a
+    deploy/verify step. Pipes keys to `app._pr_on_key`."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._pr_on_key(event)
+
+
 class CloudHelpIcon(Static):
     """The always-visible, clickable `?` in the dev top bar — opens the
     command manual. Mouse-click only (the trainer owns the keyboard)."""
@@ -18738,6 +18936,18 @@ class TutorApp(App):
     #rg-foot { width: 100%; height: auto; }
     #rg-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #rg-confirm.visible { display: block; }
+    #pr { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #pr.visible { display: block; }
+    #pr-topbar { width: 100%; height: auto; }
+    #pr-head { width: 1fr; height: auto; }
+    #pr-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #pr-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #pr-body { width: 100%; height: 1fr; }
+    #pr-goal { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
+    #pr-term { width: 100%; height: 1fr; padding: 1 2; background: #0a0a0f; border: solid #30363d; }
+    #pr-foot { width: 100%; height: auto; }
+    #pr-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #pr-confirm.visible { display: block; }
     #net { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #net.visible { display: block; }
     #net-topbar { width: 100%; height: auto; }
@@ -19166,6 +19376,21 @@ class TutorApp(App):
         self._rg_gen = 0
         self._rg_pause_action = None
         self._rg_confirm = False
+        self._pr_on = False           # MINI PROJECTS overlay open
+        self._pr_lab = CloudLab()     # CloudLab the project runs against
+        self._pr_sel = 0              # which project (index into PROJECTS)
+        self._pr_proj = None          # current project dict
+        self._pr_i = 0                # current step index
+        self._pr_attempts = 0
+        self._pr_cmd = ""
+        self._pr_history: list = []
+        self._pr_msg = ""
+        self._pr_msg_kind = ""
+        self._pr_done = False
+        self._pr_confirm = False
+        self._pr_adv_timer = None
+        self._pr_gen = 0
+        self._pr_pause_action = None
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -19468,6 +19693,15 @@ class TutorApp(App):
                 yield Static("", id="rg-term")
             yield Static("", id="rg-foot")
         yield Static("", id="rg-confirm")
+        with ProjectTrainer(id="pr"):
+            with Horizontal(id="pr-topbar"):
+                yield Static("", id="pr-head")
+                yield ExitIcon(" ✕ ", id="pr-exit")
+            with Vertical(id="pr-body"):
+                yield Static("", id="pr-goal")
+                yield Static("", id="pr-term")
+            yield Static("", id="pr-foot")
+        yield Static("", id="pr-confirm")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -20237,6 +20471,7 @@ class TutorApp(App):
         order.append(-7)              # INTERVIEW PREP
         order.append(-8)              # LINUX DRILLS
         order.append(-9)              # RECALL GYM
+        order.append(-10)             # MINI PROJECTS
         order.append(-6)              # PYTHON LAB
         order += list(range(len(GROUPS)))
         order.append(len(GROUPS))     # PYTHON REVIEW
@@ -20271,6 +20506,7 @@ class TutorApp(App):
             (-7, "INTERVIEW PREP", "#7dd3fc", "AWS · Azure · Linux · k8s · TF · Ansible — MC + flashcards", ""),
             (-8, "LINUX DRILLS", "#7ee787", "TTS drills: make this / what is this · missions · hints when stuck", ""),
             (-9, "RECALL GYM", "#c084fc", "cross-track recall — build it from scratch, fresh instance each time", ""),
+            (-10, "MINI PROJECTS", "#f9a8d4", "build & deploy: data plot · bootstrap · ssh login · stream · ansible", ""),
             (-6, "PYTHON LAB", "#a6e3a1", "playground — every example, edit & run", ""),
         ]
         for gi, g in enumerate(GROUPS):
@@ -20318,7 +20554,7 @@ class TutorApp(App):
             line_no += 1
             # a clean divider between the non-Python paths and the Python
             # course stack, and again before the review queue
-            if si == -9 or si == len(GROUPS) - 1:
+            if si == -10 or si == len(GROUPS) - 1:
                 t.append("─" * 46, style="#3a3a3a")
                 t.append("\n")
                 line_no += 1
@@ -20364,6 +20600,9 @@ class TutorApp(App):
             weak = len(_weak_concepts(self.p, 25))
             note = (f"recall gym — cross-track recall across all your skills · "
                     f"{due} due now" + (f", {weak} weak" if weak else ""))
+        elif self.series_sel == -10:
+            note = (f"mini projects — build & deploy {len(PROJECTS)} small things "
+                    f"end-to-end in the simulation")
         else:
             g = GROUPS[self.series_sel]
             note = f"{g['name']} — Enter to browse its challenges"
@@ -21006,6 +21245,8 @@ class TutorApp(App):
             return   # LINUX DRILLS overlay owns the keyboard; Esc there exits it
         if self._rg_on:
             return   # RECALL GYM overlay owns the keyboard; Esc there exits it
+        if self._pr_on:
+            return   # MINI PROJECTS overlay owns the keyboard; Esc there exits it
         if self._lab_menu_on:
             self._lab_menu_close()
             return
@@ -21037,7 +21278,7 @@ class TutorApp(App):
 
     def action_back(self):
         """The ← back button (top-left): the ONLY way to leave a challenge."""
-        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on or self._ld_on or self._rg_on:
+        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on or self._ld_on or self._rg_on or self._pr_on:
             return
         if self.mode == "challenge":
             self._stop_demo_timers()
@@ -21068,6 +21309,8 @@ class TutorApp(App):
             self._ld_exit()
         elif self._rg_on:
             self._rg_exit()
+        elif self._pr_on:
+            self._pr_exit()
 
     def _select_challenge(self):
         self.group_idx = self.series_sel
@@ -21289,6 +21532,8 @@ class TutorApp(App):
             return   # LINUX DRILLS overlay owns the keyboard
         if self._rg_on:
             return   # RECALL GYM overlay owns the keyboard
+        if self._pr_on:
+            return   # MINI PROJECTS overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -21329,6 +21574,9 @@ class TutorApp(App):
                     return
                 if self.series_sel == -9:
                     self._rg_begin()
+                    return
+                if self.series_sel == -10:
+                    self._pr_begin()
                     return
                 if self.series_sel == len(GROUPS):
                     self._start_py_review()
@@ -29065,6 +29313,257 @@ class TutorApp(App):
             t.append("graded by result, not exact wording", style="dim")
             t.append("   ·   each recall is a fresh instance", style="dim")
         self.query_one("#rg-foot", Static).update(t)
+
+    # -- MINI PROJECTS ------------------------------------------------------ #
+    def _pr_begin(self, proj=None):
+        """Open the MINI PROJECTS overlay: a guided multi-step build & deploy."""
+        self._pr_on = True
+        self._pr_proj = proj or self._pr_pick_proj()
+        self._pr_i = 0
+        self._pr_attempts = 0
+        self._pr_cmd = ""
+        self._pr_history = []
+        self._pr_msg = ""
+        self._pr_msg_kind = ""
+        self._pr_done = False
+        self._pr_confirm = False
+        self._pr_lab = CloudLab()
+        if self._pr_proj and self._pr_proj.get("setup"):
+            self._pr_proj["setup"](self._pr_lab)
+        self.query_one("#pr", ProjectTrainer).add_class("visible")
+        self.query_one("#pr", ProjectTrainer).focus()
+        self._pr_stop_pause()
+        self._stop_menu_anim()
+        self._pr_render()
+        self._pr_speak_prompt()
+
+    def _pr_pick_proj(self):
+        """Weakest-accuracy project first, cycling so 'next' moves down the list."""
+        order = sorted(range(len(PROJECTS)),
+                       key=lambda i: _concept_accuracy(self.p, "pr:" + PROJECTS[i]["id"]))
+        if not order:
+            return None
+        idx = self._pr_sel % len(order)
+        self._pr_sel += 1
+        return PROJECTS[order[idx]]
+
+    def _pr_current_step(self):
+        if self._pr_proj and 0 <= self._pr_i < len(self._pr_proj["steps"]):
+            return self._pr_proj["steps"][self._pr_i]
+        return None
+
+    def _pr_prompt(self):
+        fs = self._pr_lab.fs
+        if fs.ssh_host:
+            user, host = fs.ssh_host.split("@", 1)
+            return f"{user}@{host} ~ ❯ "
+        home = fs.cwd.replace("/home/you", "~", 1) if fs.cwd.startswith("/home/you") else fs.cwd
+        return f"you@cloud {home} ❯ "
+
+    def _pr_speak_prompt(self):
+        if not self.voice_on or not self._pr_proj:
+            return
+        if self._pr_i == 0:
+            speak(f"Project: {self._pr_proj['name']}. {self._pr_proj['brief']}. "
+                  f"First step: {self._pr_proj['steps'][0]['prompt']}")
+        else:
+            step = self._pr_current_step()
+            if step:
+                speak(step["prompt"])
+
+    def _pr_stop_pause(self):
+        t = getattr(self, "_pr_adv_timer", None)
+        if t is not None:
+            t.stop()
+            self._pr_adv_timer = None
+
+    def _pr_on_key(self, event):
+        k = event.key
+        if k == "escape":
+            self._pr_exit()
+            return
+        if self._pr_adv_timer is not None:
+            self._pr_stop_pause()
+            self._pr_next()
+            return
+        if self._pr_done:
+            if k == "enter":
+                self._pr_begin()
+            return
+        if self._pr_proj is None:
+            return
+        if k == "enter":
+            self._pr_submit()
+        elif k == "backspace":
+            self._pr_cmd = self._pr_cmd[:-1]
+            self._pr_render()
+        elif event.character and event.character.isprintable():
+            self._pr_cmd += event.character
+            self._pr_render()
+
+    def _pr_submit(self):
+        cmd = self._pr_cmd.strip()
+        if not cmd:
+            return
+        self._pr_cmd = ""
+        lab = self._pr_lab
+        out, err = lab.run(cmd)
+        self._pr_history.append(("cmd", self._pr_prompt() + cmd))
+        for l in out:
+            self._pr_history.append(("out", l))
+        for l in err:
+            self._pr_history.append(("err", l))
+        step = self._pr_current_step()
+        if step is None:
+            self._pr_render()
+            return
+        if step["check"](lab, out):
+            if self._pr_attempts == 0:
+                _record_concept(self.p, "pr:" + self._pr_proj["id"], True)
+            self._pr_msg = f"✓ done — {step.get('idiom', '')}"
+            self._pr_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(f"Nice. {step.get('idiom', '')}")
+            self._pr_schedule(1.5, "next")
+            self._pr_render()
+            return
+        # fail → escalating hints, never block
+        self._pr_attempts += 1
+        if self._pr_attempts == 1:
+            _record_concept(self.p, "pr:" + self._pr_proj["id"], False)
+            self._pr_msg = f"not yet — hint: {step['hint']}"
+            self._pr_msg_kind = "hint"
+            if self.voice_on:
+                speak(f"Not quite. {step['hint']}")
+        elif self._pr_attempts == 2:
+            idiom = step.get("idiom", "")
+            toks = idiom.split()
+            masked = (toks[0] + " " + " ".join("_" * len(w) for w in toks[1:])) if toks else idiom
+            self._pr_msg = f"the command starts with: {masked}"
+            self._pr_msg_kind = "hint"
+            if self.voice_on:
+                speak(f"Here's how it starts: {toks[0] if toks else ''}")
+        else:
+            self._pr_msg = f"the answer is: {step.get('idiom', '')}"
+            self._pr_msg_kind = "answer"
+            if self.voice_on:
+                speak(f"The command is {step.get('idiom', '')}")
+            self._pr_schedule(2.2, "next")
+        self._pr_render()
+
+    def _pr_schedule(self, delay, action):
+        self._pr_stop_pause()
+        self._pr_pause_action = action
+        self._pr_gen += 1
+        gen = self._pr_gen
+        self._pr_adv_timer = self.set_timer(delay, lambda: self._pr_pause_done(gen))
+
+    def _pr_pause_done(self, gen):
+        if gen != self._pr_gen or not self._pr_on:
+            return
+        self._pr_adv_timer = None
+        self._pr_pause_action = None
+        self._pr_next()
+
+    def _pr_next(self):
+        self._pr_stop_pause()
+        self._pr_i += 1
+        if self._pr_i >= len(self._pr_proj["steps"]):
+            self._pr_done = True
+            _record_concept(self.p, "pr:" + self._pr_proj["id"], True)
+            save_progress(self.p)
+            self._celebrate()
+        self._pr_attempts = 0
+        self._pr_cmd = ""
+        self._pr_render()
+        self._pr_speak_prompt()
+
+    def _pr_exit(self):
+        self._pr_stop_pause()
+        save_progress(self.p)
+        self._pr_on = False
+        self._pr_done = False
+        self._pr_confirm = False
+        self.query_one("#pr", ProjectTrainer).remove_class("visible")
+        self._show_menu()
+        self.series_sel = -10
+        self.menu_level = "series"
+        self._render_menu()
+
+    def _pr_render(self):
+        self._pr_render_head()
+        self._pr_render_goal()
+        self._pr_render_term()
+        self._pr_render_foot()
+
+    def _pr_render_head(self):
+        t = Text()
+        t.append(" MINI PROJECTS ", style="bold #11111b on #f9a8d4")
+        if self._pr_proj:
+            t.append(f"  {self._pr_proj['name']} ", style="bold #f9a8d4")
+            t.append(f"·  step {min(self._pr_i + 1, len(self._pr_proj['steps']))}/{len(self._pr_proj['steps'])} ", style="#d5d5d5")
+        self.query_one("#pr-head", Static).update(t)
+
+    def _pr_render_goal(self):
+        t = Text()
+        if self._pr_done:
+            t.append(f"PROJECT COMPLETE — {self._pr_proj['name']} ✓\n\n", style="bold #22c55e")
+            t.append("You took it from scratch to deployed.\n", style="#f0f0f5")
+            t.append("\nEnter — next project   ·   Esc — menu", style="dim")
+            self.query_one("#pr-goal", Static).update(t)
+            return
+        if self._pr_proj is None:
+            self.query_one("#pr-goal", Static).update("")
+            return
+        t.append(f"GOAL: {self._pr_proj['brief']}\n\n", style="#f0f0f5")
+        total = len(self._pr_proj["steps"])
+        for i in range(total):
+            mark = "✓" if i < self._pr_i else ("▸" if i == self._pr_i else "·")
+            st = ("bold #22c55e" if i < self._pr_i
+                  else ("bold #f9a8d4" if i == self._pr_i else "dim"))
+            t.append(f"{mark} ", style=st)
+        t.append(f"  ({self._pr_i + 1}/{total})\n\n", style="dim")
+        step = self._pr_current_step()
+        if step:
+            t.append("DO THIS:\n\n", style="bold #ffa657")
+            t.append(step["prompt"], style="bold #f0f0f5")
+        if self._pr_msg:
+            style = ("bold #22c55e" if self._pr_msg_kind == "win"
+                     else ("bold #fbbf24" if self._pr_msg_kind == "hint"
+                           else "bold #ffa657"))
+            t.append("\n\n")
+            t.append(self._pr_msg, style=style)
+        self.query_one("#pr-goal", Static).update(t)
+
+    def _pr_render_term(self):
+        t = Text()
+        if self._pr_done:
+            self.query_one("#pr-term", Static).update(t)
+            return
+        for style, text in self._pr_history[-14:]:
+            if style == "cmd":
+                t.append(text, style="bold #f0f0f5")
+            elif style == "err":
+                t.append(text, style="#f87171")
+            else:
+                t.append(text, style="#c9cdd6")
+            t.append("\n")
+        t.append(self._pr_prompt(), style="bold #f9a8d4")
+        t.append(self._pr_cmd, style="bold #f0f0f5")
+        t.append("█", style="bold #f9a8d4")
+        self.query_one("#pr-term", Static).update(t)
+
+    def _pr_render_foot(self):
+        t = Text()
+        if self._pr_done:
+            t.append("Enter — next project   ·   Esc — menu", style="dim")
+        else:
+            t.append("type the command, Enter runs it", style="bold #7dd3fc")
+            t.append("   ·   ", style="dim")
+            t.append("graded by result, not exact wording", style="dim")
+        self.query_one("#pr-foot", Static).update(t)
 
     def action_demo(self):
         """F3 — open/close the worked-example demo. The demo shows in the
