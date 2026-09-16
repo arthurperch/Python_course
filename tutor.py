@@ -5457,6 +5457,8 @@ def load_progress() -> dict:
             p.setdefault("failed", [])   # flat indices of challenges to re-practice
             p.setdefault("structure_taught", False)
             p.setdefault("topics_taught", [])
+            p.setdefault("mastery", {})
+            _migrate_mastery(p)
             # voice/sfx faders are NOT setdefault'd here — a legacy `volume`/`muted`
             # value is honoured as the fallback in TutorApp.__init__ until the user
             # moves a fader (which then writes the new per-channel keys).
@@ -5465,7 +5467,7 @@ def load_progress() -> dict:
             pass
     return {"xp": 0, "done": 0, "streak": 0, "best_streak": 0,
             "topics": [], "stats": {}, "last": "", "ghosted": [], "failed": [],
-            "structure_taught": False, "topics_taught": [],
+            "structure_taught": False, "topics_taught": [], "mastery": {},
             "voice_volume": 1.0, "voice_muted": False,
             "sfx_volume": 1.0, "sfx_muted": False}
 
@@ -5473,6 +5475,114 @@ def load_progress() -> dict:
 def challenge_stat(p: dict, title: str) -> dict:
     """Per-challenge right/wrong counters, keyed by title."""
     return p["stats"].setdefault(title, {"right": 0, "wrong": 0})
+
+
+# --------------------------------------------------------------------------- #
+# Cross-track mastery — ONE store every track feeds, so the tutor can focus on
+# what the learner actually gets wrong (and celebrate what they've mastered).
+# `p["mastery"]` = {concept: {right, wrong, interval, due, last}}.
+# --------------------------------------------------------------------------- #
+
+def _record_concept(p: dict, concept: str, ok: bool) -> None:
+    """Record one answer for a concept. Right answers push the concept's review
+    due-date into the future (SM-2-ish interval growth); wrong answers pull it
+    due immediately. This is the single source of truth for every track."""
+    m = p.setdefault("mastery", {})
+    e = m.setdefault(concept, {"right": 0, "wrong": 0, "interval": 0,
+                               "due": "", "last": ""})
+    today = date.today().isoformat()
+    e["last"] = today
+    if ok:
+        e["right"] += 1
+        e["interval"] = e.get("interval", 0) + 1
+        e["due"] = (date.today() + timedelta(days=e["interval"])).isoformat()
+    else:
+        e["wrong"] += 1
+        e["interval"] = 0
+        e["due"] = today
+    m[concept] = e
+
+
+def _concept_accuracy(p: dict, concept: str) -> float:
+    e = p.get("mastery", {}).get(concept)
+    if not e:
+        return 0.0
+    tot = e["right"] + e["wrong"]
+    return (e["right"] / tot) if tot else 0.0
+
+
+def _weak_concepts(p: dict, n: int) -> list:
+    """Lowest-accuracy concepts first (ties: oldest last-seen first)."""
+    m = p.get("mastery", {})
+    scored = [(c, _concept_accuracy(p, c), e.get("last", ""))
+              for c, e in m.items()
+              if isinstance(e, dict) and (e["right"] + e["wrong"]) > 0]
+    scored.sort(key=lambda t: (t[1], t[2]))
+    return [c for c, _, _ in scored[:n]]
+
+
+def _strong_concepts(p: dict, n: int) -> list:
+    """Highest-accuracy concepts with at least 2 answers AND >=60% accuracy (so
+    'definitely good' means proven AND correct, not lucky or still-struggling)."""
+    m = p.get("mastery", {})
+    scored = [(c, _concept_accuracy(p, c), e.get("right", 0))
+              for c, e in m.items()
+              if isinstance(e, dict)
+              and (e["right"] + e["wrong"]) >= 2 and _concept_accuracy(p, c) >= 0.6]
+    scored.sort(key=lambda t: (-t[1], -t[2]))
+    return [c for c, _, _ in scored[:n]]
+
+
+def _due_concepts(p: dict, today: str = "") -> list:
+    """Concepts whose spaced-repetition due-date has arrived (weak first)."""
+    today = today or date.today().isoformat()
+    m = p.get("mastery", {})
+    due = [c for c, e in m.items()
+           if isinstance(e, dict) and e.get("due", "") and e["due"] <= today]
+    due.sort(key=lambda c: (not m.get(c, {}).get("weak", False), m[c]["due"]))
+    return due
+
+
+def _skill_label(concept: str) -> str:
+    """Strip the track namespace prefix for display ('iv:k8s-pod' → 'k8s-pod')."""
+    return concept.split(":", 1)[1] if ":" in concept else concept
+
+
+def _migrate_mastery(p: dict) -> None:
+    """One-time fold of the legacy per-track stores into `mastery` (called once
+    on load, before any track records). Keeps the old keys readable; after this
+    only `mastery` is the cross-track truth."""
+    m = p.setdefault("mastery", {})
+    if p.get("mastery_migrated"):
+        return
+    today = date.today().isoformat()
+    for c, s in p.get("net_skills", {}).items():
+        e = m.setdefault(c, {"right": 0, "wrong": 0, "interval": 0, "due": "", "last": ""})
+        e["right"] += s.get("right", 0)
+        e["wrong"] += s.get("wrong", 0)
+        if s.get("weak"):
+            e["due"] = today
+    for c, w in p.get("iv_weak", {}).items():
+        e = m.setdefault(c, {"right": 0, "wrong": 0, "interval": 0, "due": "", "last": ""})
+        e["wrong"] += w
+        e["due"] = today
+    for c, s in p.get("py_sched", {}).items():
+        e = m.setdefault(c, {"right": 0, "wrong": 0, "interval": 0, "due": "", "last": ""})
+        if isinstance(s, dict):
+            e["interval"] = max(e["interval"], s.get("int", 0))
+            if s.get("due"):
+                e["due"] = s["due"]
+    for c, s in p.get("net_sched", {}).items():
+        e = m.setdefault(c, {"right": 0, "wrong": 0, "interval": 0, "due": "", "last": ""})
+        if isinstance(s, dict):
+            e["interval"] = max(e["interval"], s.get("int", 0))
+            if s.get("due"):
+                e["due"] = s["due"]
+    p["mastery_migrated"] = True
+    p["mastery"] = m
+
+
+
 
 
 def save_progress(p: dict) -> None:
@@ -18439,6 +18549,20 @@ class TutorApp(App):
         if note:
             t.append(note, style="bold yellow")
             t.append("\n")
+        # "your skills" — what you're struggling with vs solid on (from mastery)
+        weak = _weak_concepts(self.p, 3)
+        strong = _strong_concepts(self.p, 3)
+        if weak or strong:
+            t.append("\n")
+            if weak:
+                t.append("struggling with: ", style="bold #f87171")
+                t.append(", ".join(_skill_label(c) for c in weak), style="#fca5a5")
+            if strong:
+                if weak:
+                    t.append("   ·   ", style="dim")
+                t.append("solid on: ", style="bold #22c55e")
+                t.append(", ".join(_skill_label(c) for c in strong), style="#86efac")
+            t.append("\n")
         t.append("\nEnter — open a series   ·   j/k — move   ·   g — map   ·   q — quit",
                  style="dim")
         self.query_one("#menu-list-inner", Static).update(t)
@@ -25144,6 +25268,7 @@ class TutorApp(App):
             s["int"] = 1
             s["ease"] = max(1.3, s["ease"] - 0.2)
         s["due"] = (date.today() + timedelta(days=s["int"])).isoformat()
+        _record_concept(self.p, "net:" + concept, ok)
 
     def _net_due_concepts(self) -> list:
         """Concepts whose spaced-repetition review is due (or overdue).
@@ -26031,12 +26156,14 @@ class TutorApp(App):
             if k == "enter" or k == "space":
                 self._iv_n += 1
                 self._iv_right += 1
+                _record_concept(self.p, "iv:" + q["concept"], True)
                 self._iv_msg = "✓ nice — you knew it"
                 self._iv_msg_kind = "win"
                 self._iv_schedule(1.2, "next")
                 self._iv_render()
             elif k in ("w", "n"):
                 self._iv_n += 1
+                _record_concept(self.p, "iv:" + q["concept"], False)
                 self._iv_wrong.append(q["concept"])
                 self._iv_review.append(q)
                 self._iv_msg = "flagged for re-ask — no worries, it'll come back"
@@ -26071,6 +26198,7 @@ class TutorApp(App):
             return
         self._iv_pick = idx
         self._iv_n += 1
+        _record_concept(self.p, "iv:" + q["concept"], idx == q["ans"])
         if idx == q["ans"]:
             self._iv_right += 1
             self._iv_msg = f"✓ correct — {q['why']}"
@@ -26861,6 +26989,7 @@ class TutorApp(App):
             s["int"] = 1
             s["ease"] = max(1.3, s["ease"] - 0.2)
         s["due"] = (date.today() + timedelta(days=s["int"])).isoformat()
+        _record_concept(self.p, "py:" + topic, ok)
 
     def _py_due_topics(self):
         """Topics due today, weakest (lowest ease) first, then oldest due."""
