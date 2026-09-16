@@ -20247,7 +20247,6 @@ class TutorApp(App):
                 yield Button("run", id="task-run", variant="default")
                 yield Button("submit", id="task-check", variant="primary")
                 yield Button("step", id="task-step", variant="default")
-                yield Static("", id="tmux-hint")
                 yield Button("next", id="task-continue", variant="success", classes="hidden")
                 yield Static("", id="wildmenu")
                 yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
@@ -22895,8 +22894,6 @@ class TutorApp(App):
         keys = "ctrl+t toggle · ctrl+h/l move"
         try:
             self.query_one("#lab-tabs-hint", Static).update(
-                Text.from_markup(f"[dim]{keys}[/]"))
-            self.query_one("#tmux-hint", Static).update(
                 Text.from_markup(f"[dim]{keys}[/]"))
         except Exception:
             pass
