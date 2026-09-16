@@ -34,6 +34,7 @@ import re
 import sys
 import random
 import shlex
+import textwrap
 import shutil
 import struct
 import subprocess
@@ -14042,6 +14043,377 @@ def _gen_net_questions3() -> list:
 NET_QUESTIONS += _gen_net_questions3()
 
 
+# =========================================================================== #
+# INTERVIEW PREP — senior/junior cloud & DevOps interview questions, as
+# multiple-choice AND flashcards. Each concept has 2 wordings (variants); the
+# trainer picks one at random so re-asks are never identical. Same _Q schema as
+# NETWORK+, so levels/variants/re-asks compose. `why` = the correct answer the
+# TTS explains, `say` = the memory hook.
+# =========================================================================== #
+
+INTERVIEW_QUESTIONS = [
+    # ---- AWS core ---------------------------------------------------------- #
+    _Q("Which AWS service stores files as objects in buckets?",
+       ["S3", "EC2", "RDS", "Lambda"], 0, "aws-s3", 0,
+       "S3 is object storage — files as objects in buckets, over HTTP.",
+       "S3 = Simple Storage Service. Simple → files, not servers.",
+       "S3 holds any file ('object') in a flat bucket, addressable by a URL. It's not a filesystem you mount — you PUT and GET objects, and it stores them redundantly across a region."),
+    _Q("A team needs to store images and logs, served over the web. Which service fits?",
+       ["S3", "DynamoDB", "EC2", "SQS"], 0, "aws-s3", 0,
+       "S3 — object storage for any file, served over HTTP.",
+       "Files you fetch by URL → S3. 'Storage' in the name gives it away.",
+       "Anything you'd upload and download as a file — images, logs, static sites, backups — is S3's job. It's the default 'file cabinet in the cloud'."),
+
+    _Q("What is an EC2 instance?",
+       ["a virtual server in the cloud", "a managed database", "a serverless function", "a file store"], 0, "aws-ec2", 0,
+       "EC2 is a virtual server you rent in the cloud.",
+       "EC2 = Elastic Compute Cloud. 'Compute' → it runs your code on a server.",
+       "EC2 is the primitive building block: a virtual machine with CPU, RAM and disk that you pick the size of and pay for by the hour. It's 'your server, but someone else's datacenter'."),
+    _Q("You need a Linux machine you can SSH into to run an app. Which service?",
+       ["EC2", "S3", "Lambda", "CloudFront"], 0, "aws-ec2", 0,
+       "EC2 — a full virtual server you can SSH into.",
+       "Anything with SSH and a shell → EC2. 'Compute' = a machine.",
+       "If it has a hostname you SSH into, it's a server — that's EC2. Serverless (Lambda) has no server to log into, which is the key tell."),
+
+    _Q("Which AWS service runs code without you managing any server?",
+       ["Lambda", "EC2", "RDS", "VPC"], 0, "aws-lambda", 0,
+       "Lambda is serverless — code runs on demand, no server to manage.",
+       "Lambda = 'no server, just code'. You pay per millisecond of run time.",
+       "Lambda is event-driven and serverless: you upload a function, and AWS runs it when triggered, then scales it to zero. There is literally no machine you provision or patch."),
+    _Q("An app needs a function that runs only when a file is uploaded. Best choice?",
+       ["Lambda", "EC2", "S3", "ELB"], 0, "aws-lambda", 0,
+       "Lambda — an event-driven, pay-per-run function.",
+       "Runs only when triggered → Lambda. It's the 'on demand' compute.",
+       "Lambda shines for event-driven jobs: an upload, a schedule, a request. It spins up, runs for milliseconds, and shuts down — you never pay for an idle server."),
+
+    _Q("Which service controls who can do what in your AWS account?",
+       ["IAM", "VPC", "CloudWatch", "S3"], 0, "aws-iam", 0,
+       "IAM manages users, roles and permissions.",
+       "IAM = Identity and Access Management. 'Access' → who is allowed to do what.",
+       "IAM is the permission layer: users, roles, policies. Every service call is checked against it. Least privilege — grant only what a job needs — is its core rule."),
+    _Q("You need to give a Lambda function permission to read one bucket, and nothing else. Which service?",
+       ["IAM", "S3", "EC2", "SQS"], 0, "aws-iam", 0,
+       "IAM — attach a scoped role/policy to the function.",
+       "Permissions = IAM, every time. Scope it to the one bucket.",
+       "You attach an IAM role to the function with a policy that allows only that bucket. This is least privilege applied: the function can read one bucket and touch nothing else."),
+
+    _Q("Which service is a managed relational database?",
+       ["RDS", "DynamoDB", "S3", "SQS"], 0, "aws-rds", 0,
+       "RDS is a managed SQL database (Postgres, MySQL, etc.).",
+       "RDS = Relational Database Service. 'Relational' → SQL tables.",
+       "RDS runs your SQL engine (Postgres, MySQL, Oracle…) with backups, patching and replication handled for you. Use it when data is structured and queried with SQL."),
+    _Q("You need a Postgres database with backups, patching and replication handled for you. Which service?",
+       ["RDS", "DynamoDB", "S3", "Lambda"], 0, "aws-rds", 0,
+       "RDS — a managed relational engine with backups/patching/replication built in.",
+       "Managed SQL with backups → RDS. 'Relational' in the name.",
+       "RDS wraps a real SQL engine and does the undifferentiated work — backups, patching, multi-AZ replication — so you just connect and query."),
+    _Q("Which service is a managed NoSQL key-value database?",
+       ["DynamoDB", "RDS", "EC2", "Redshift"], 0, "aws-dynamo", 0,
+       "DynamoDB is a managed NoSQL key-value store.",
+       "DynamoDB = 'Dynamo' (Amazon's NoSQL) — key-value, single-digit-ms.",
+       "DynamoDB is schemaless key-value: you PUT an item by key and GET it in single-digit milliseconds at any scale. No SQL joins — it's for lookups, not relationships."),
+    _Q("You need a schemaless key-value store with single-digit-millisecond lookups at any scale. Which service?",
+       ["DynamoDB", "RDS", "EC2", "Redshift"], 0, "aws-dynamo", 0,
+       "DynamoDB — a schemaless key-value store with single-digit-ms reads at any scale.",
+       "Key-value, no schema, any scale → DynamoDB. 'Dynamo' = speed.",
+       "DynamoDB scales reads/writes horizontally and answers a key lookup in single-digit milliseconds regardless of table size — but it has no joins, so it's for lookups, not relations."),
+
+    _Q("Which service isolates your resources into a private network?",
+       ["VPC", "S3", "CloudFront", "IAM"], 0, "aws-vpc", 0,
+       "VPC is your private, isolated network in the cloud.",
+       "VPC = Virtual Private Cloud. 'Private' → your own slice of the network.",
+       "A VPC is a logically isolated network: your own IP range, subnets, route tables and gateways. Resources inside talk privately; you choose what's reachable from the internet."),
+    _Q("Where do you define subnets and security groups?",
+       ["VPC", "IAM", "S3", "RDS"], 0, "aws-vpc", 0,
+       "In the VPC — it owns subnets, routing and security groups.",
+       "Networking config lives in the VPC. Subnets + firewalls = VPC.",
+       "Subnets split your VPC's IP space; security groups are the per-resource firewalls. This is the 'network layer' everything else plugs into."),
+
+    _Q("Which service lets two services hand off work without talking directly?",
+       ["SQS", "SNS", "S3", "EC2"], 0, "aws-sqs", 0,
+       "SQS is a message queue that decouples producers from consumers.",
+       "SQS = Simple Queue Service. A 'queue' → one in, one out, later.",
+       "SQS buffers messages: a producer sends, a consumer pulls when ready. They never run at the same time — that decoupling is what makes systems resilient to spikes."),
+    _Q("A producer and a consumer must not run at the same time — work needs to be buffered between them. Which service?",
+       ["SQS", "SNS", "S3", "Lambda"], 0, "aws-sqs", 0,
+       "SQS — a queue that buffers messages between a producer and a consumer.",
+       "Buffer between two sides → SQS (a queue). One sends, one pulls later.",
+       "SQS holds messages until a consumer is ready, so the two sides are fully decoupled — neither has to be up at the same time, and spikes just pile up in the queue."),
+    _Q("Which service broadcasts one message to many subscribers?",
+       ["SNS", "SQS", "S3", "Lambda"], 0, "aws-sns", 0,
+       "SNS is pub/sub — one message fans out to many subscribers.",
+       "SNS = Simple Notification Service. 'Notification' → tell everyone.",
+       "SNS is a topic: publish once, every subscriber (email, SMS, Lambda, SQS) gets a copy. SQS is a queue (one consumer); SNS is a broadcast (many)."),
+    _Q("One event must fan out to email, SMS, and a Lambda at the same time. Which service?",
+       ["SNS", "SQS", "S3", "EC2"], 0, "aws-sns", 0,
+       "SNS — pub/sub, one publish fans out to every subscriber.",
+       "One message to MANY subscribers → SNS. (SQS is one consumer per message.)",
+       "SNS topics deliver each published message to all subscribers at once. That fan-out is the difference from SQS, where a message is pulled by a single consumer."),
+
+    # ---- Docker ------------------------------------------------------------ #
+    _Q("What is the difference between a Docker image and a container?",
+       ["an image is a template; a container is a running instance of it", "they are the same thing", "an image runs; a container is the file", "a container is bigger than an image"], 0, "docker-img-ctr", 0,
+       "An image is a read-only template; a container is a running instance of that image.",
+       "Image = the recipe (class). Container = the running dish (instance).",
+       "The image is the immutable blueprint (like a class); the container is one live, running process built from it (like an object). Many containers can run from one image."),
+    _Q("You run the same image three times. How many containers do you have?",
+       ["three — one container per run", "one, they share", "one image and one container", "zero — images don't run"], 0, "docker-img-ctr", 0,
+       "Three — each `run` spins up a separate container from the same image.",
+       "One image, many containers. Run it N times → N containers.",
+       "The image is reusable; each run instantiates a fresh container with its own writable layer on top of the shared image. This is why images are cheap to scale."),
+
+    _Q("Why do Docker images use layers?",
+       ["so unchanged layers are cached and reused between builds", "so images are encrypted", "to run faster in production", "layers are optional decoration"], 0, "docker-layers", 0,
+       "Layers cache unchanged steps so rebuilds only redo what changed.",
+       "Layers = caching. Change one line, rebuild only from there down.",
+       "Each instruction (FROM, COPY, RUN) becomes a layer. If a layer hasn't changed, Docker reuses the cached version — which is why you put the rarely-changing base first and the fast-changing code last."),
+    _Q("A Dockerfile rebuild is slow. What ordering trick speeds it up?",
+       ["put the rarely-changing instructions first, so their layers cache", "put everything in one RUN line", "remove all layers", "add more COPY steps"], 0, "docker-layers", 0,
+       "Order instructions least-frequently-changed first so their layers cache.",
+       "Least-changing first = more cache hits = faster builds.",
+       "Docker invalidates a layer and everything after it when an instruction changes. Base image first, dependencies second, source code last means editing code only rebuilds the last layer."),
+
+    # ---- Kubernetes -------------------------------------------------------- #
+    _Q("What is the smallest deployable unit in Kubernetes?",
+       ["a pod", "a container", "a node", "a deployment"], 0, "k8s-pod", 0,
+       "A pod — the smallest unit Kubernetes schedules and manages.",
+       "Pod = the smallest unit. (A container goes INSIDE a pod.)",
+       "A pod wraps one or more tightly-coupled containers with shared network and storage. You never schedule a bare container in k8s — always a pod (usually one container per pod)."),
+    _Q("Two containers must share a network namespace and a volume. How do you group them?",
+       ["put them in the same pod", "put them in the same deployment", "put them in the same node", "put them in the same service"], 0, "k8s-pod", 0,
+       "Same pod — containers in a pod share network and storage.",
+       "Share network/storage → same pod. That's what a pod is FOR.",
+       "Containers in one pod share localhost and can share volumes. If they need that tight coupling, same pod; otherwise separate pods and talk over a service."),
+
+    _Q("What does a Kubernetes Deployment manage?",
+       ["replicas, rolling updates, and rollbacks of pods", "DNS records", "persistent storage", "node scheduling"], 0, "k8s-deploy", 0,
+       "A Deployment manages the desired replica count and rolling updates.",
+       "Deployment = 'keep N pods running, and roll out changes safely'.",
+       "A Deployment is a controller: you declare '3 replicas of image v2', and it creates/updates pods to match, doing rolling updates and supporting rollback. It's the thing you `kubectl rollout undo`."),
+    _Q("Your app has a bug; you need to go back to the previous version. What do you use?",
+       ["kubectl rollout undo on the deployment", "delete the cluster", "restart the pod manually", "edit the image in place"], 0, "k8s-deploy", 0,
+       "Roll back the Deployment with `kubectl rollout undo`.",
+       "Rollback = rollout undo, because the Deployment kept the history.",
+       "Deployments keep a revision history, so `kubectl rollout undo deployment/web` returns you to the last good revision. This is the 'instant undo' of a bad deploy."),
+
+    _Q("What does a Kubernetes Service provide?",
+       ["a stable endpoint that routes to pods, even as pods come and go", "a database", "a deployment", "a container registry"], 0, "k8s-svc", 0,
+       "A Service gives a stable IP/DNS that load-balances to a set of pods.",
+       "Service = stable front door. Pods die and get new IPs; the service doesn't.",
+       "Pods are ephemeral — their IPs change on every restart. A Service fronts a set of pods (by selector) with a stable ClusterIP/DNS and load-balances traffic, so callers never chase moving IPs."),
+    _Q("Pods keep getting new IPs when they restart. What solves reaching them reliably?",
+       ["a Service", "a pod", "a node", "a volume"], 0, "k8s-svc", 0,
+       "A Service — a stable endpoint that load-balances across pods.",
+       "Stable address that survives pod churn → Service.",
+       "The Service abstracts the moving IPs behind one stable address. Callers hit the service; it routes to whatever pods currently match the selector."),
+
+    # ---- Terraform --------------------------------------------------------- #
+    _Q("Why does Terraform keep a state file?",
+       ["to track what it already built so it can compute the diff", "to store your source code", "to hold secrets", "state is optional"], 0, "tf-state", 0,
+       "State records what Terraform built, so it can plan changes against reality.",
+       "State = Terraform's memory of what exists. No state → no diff.",
+       "State maps your config to real resource IDs. Without it, Terraform can't know what to create vs change vs destroy. It's why state is stored carefully (often remotely, and locked)."),
+    _Q("Two people run `terraform apply` at once. What prevents corruption?",
+       ["state locking in a remote backend", "nothing — it's safe", "git prevents it", "Terraform is read-only"], 0, "tf-state", 0,
+       "A remote backend locks the state so only one apply runs at a time.",
+       "Shared state → lock it. Remote backend (S3 + DynamoDB) = the lock.",
+       "Concurrent applies would corrupt state. A remote backend (S3) with locking (DynamoDB) serializes them: one apply holds the lock, the other waits."),
+
+    _Q("What is the difference between `terraform plan` and `terraform apply`?",
+       ["plan is a dry-run preview; apply makes the changes real", "they are identical", "plan deletes; apply creates", "plan is only for errors"], 0, "tf-plan-apply", 0,
+       "Plan previews changes; apply executes them.",
+       "Plan = dry run (what WOULD change). Apply = actually do it.",
+       "Plan computes the diff between config and state and prints it without touching anything. Apply then makes those changes. Always plan before apply — it's the 'look before you leap' of IaC."),
+    _Q("You want to see what a change will do BEFORE it touches anything. Which command?",
+       ["terraform plan", "terraform apply", "terraform destroy", "terraform init"], 0, "tf-plan-apply", 0,
+       "terraform plan — the preview, no changes made.",
+       "Preview before changes → plan. 'Plan' literally means 'show me the plan'.",
+       "Plan is the safety net: it lists every add/change/destroy without executing. Review it, then apply."),
+
+    # ---- Ansible ----------------------------------------------------------- #
+    _Q("Why is Ansible idempotent, and why does it matter?",
+       ["re-running a play makes no extra changes if the state already matches", "it runs faster each time", "it only works once", "idempotency is a bug"], 0, "ansible-idem", 0,
+       "Idempotent = running it again is a no-op when the desired state is already reached.",
+       "Idempotent = 'safe to run twice'. Re-run → no harm, no duplicate work.",
+       "Ansible modules check the current state first: if nginx is already installed, it reports 'ok' instead of reinstalling. This means playbooks are safe to run repeatedly — the core of declarative config."),
+    _Q("You run the same playbook twice in a row. What should the second run do?",
+       ["report 'ok' and change nothing, because the state already matches", "reinstall everything", "fail", "double everything"], 0, "ansible-idem", 0,
+       "The second run reports 'ok' — no changes, because it's already in the desired state.",
+       "Second run = no-op. That's idempotency doing its job.",
+       "The module sees the package is already installed and skips it. Idempotency is what makes 'just run the playbook again' a safe, routine operation."),
+
+    _Q("What is an Ansible playbook?",
+       ["a YAML file describing the desired end-state of your servers", "a compiled binary", "a shell script", "a database"], 0, "ansible-play", 0,
+       "A playbook is YAML that declares the desired state of hosts.",
+       "Playbook = 'the YAML that says how servers should look'.",
+       "A playbook lists plays: which hosts, and what tasks (install this, copy that, restart the service). You describe the END STATE; Ansible figures out the steps to get there."),
+    _Q("Which file describes which servers Ansible manages?",
+       ["the inventory (hosts.ini)", "the playbook", "the Dockerfile", "the state file"], 0, "ansible-play", 0,
+       "The inventory lists your hosts (and groups them).",
+       "Inventory = the roster of servers. Playbooks run against it.",
+       "The inventory (often hosts.ini) names your servers and groups them (web, db). The playbook's `hosts:` line selects which group each play targets."),
+
+    # ---- Git --------------------------------------------------------------- #
+    _Q("What is the difference between `git merge` and `git rebase`?",
+       ["merge keeps two branches' history joined; rebase replays your commits on top for a linear history", "they are identical", "rebase deletes commits", "merge only works locally"], 0, "git-rebase", 0,
+       "Merge joins histories with a merge commit; rebase replays commits for a linear history.",
+       "Merge = a join (keeps the branch). Rebase = a replay (flattens it).",
+       "Merge preserves the true branch structure and adds a merge commit. Rebase moves your commits to sit on top of the target, producing one straight line. Merge is safe for shared branches; rebase is for cleaning up your own unpushed work."),
+    _Q("Your feature branch has diverged and you want a clean, linear history before the PR. Which do you use?",
+       ["git rebase", "git merge", "git reset", "git stash"], 0, "git-rebase", 0,
+       "Rebase — replay your commits on top to make the history linear.",
+       "Clean linear history → rebase (only on your own branch).",
+       "Rebasing your feature branch onto main makes it look like you started from the latest main — one straight line, no merge commits. Never rebase a branch others are working on."),
+
+    _Q("Which file tells git to ignore certain files and never track them?",
+       [".gitignore", "Dockerfile", "README.md", "config.yml"], 0, "git-ignore", 0,
+       ".gitignore lists files/paths git should ignore.",
+       ".gitignore = 'never commit these' (builds, secrets, node_modules).",
+       "The .gitignore file lists patterns git skips — build artifacts, dependencies, local config, and critically, secret files. A good .gitignore is a security control."),
+    _Q("You accidentally commit a password. Which file should have prevented it?",
+       [".gitignore", "Dockerfile", ".dockerignore", "Makefile"], 0, "git-ignore", 0,
+       ".gitignore — secrets should be listed there (and never committed).",
+       "Secrets go in .gitignore (and a vault), never in git history.",
+       "List .env and secret files in .gitignore so they can't be committed. But once a secret is committed, removing it isn't enough — it's in history forever; you must rotate it."),
+
+    # ---- CI/CD ------------------------------------------------------------- #
+    _Q("What is the difference between Continuous Integration and Continuous Delivery/Deployment?",
+       ["CI auto-tests every commit; CD auto-ships it (delivery = manual approve, deployment = fully auto)", "they are the same", "CI deploys, CD tests", "CI is only for large teams"], 0, "cicd", 0,
+       "CI builds+tests every commit; CD delivers it — automatically or with a manual gate.",
+       "CI = 'did the commit break anything?' CD = 'ship it automatically'.",
+       "CI runs build and tests on every push so breakage is caught fast. CD takes the verified build and moves it toward production — continuous DELIVERY keeps a human approval; continuous DEPLOYMENT goes straight to prod with no gate."),
+    _Q("Every commit should be automatically built and tested. Which practice is that?",
+       ["Continuous Integration", "manual QA", "waterfall", "ad-hoc testing"], 0, "cicd", 0,
+       "Continuous Integration — build and test every commit automatically.",
+       "Auto build+test on every commit → CI. 'Integration' = merge often.",
+       "CI is the discipline of merging small changes often and running the build + test suite automatically each time, so problems surface in minutes, not at release day."),
+
+    # ---- Linux ------------------------------------------------------------- #
+    _Q("What does the permission `755` on a file mean?",
+       ["owner rwx, group r-x, others r-x", "owner r--, group rw-, others ---", "everyone rwx", "no permissions"], 0, "linux-perm", 0,
+       "755 = owner read/write/execute (7), group and others read/execute (5).",
+       "7=rwx, 5=r-x. 755 = 'you can edit+run it, everyone else can read+run'.",
+       "Each digit is octal for three bits — read(4) write(2) execute(1). 7 = 4+2+1 (rwx); 5 = 4+1 (r-x). So 755 is the classic 'script I can edit and anyone can run'."),
+    _Q("A script works for you but 'permission denied' for others. What mode fixes it?",
+       ["chmod 755 script.sh (adds read+execute for others)", "chmod 700", "chmod 000", "delete the file"], 0, "linux-perm", 0,
+       "chmod 755 — adds read+execute for group and others.",
+       "Need others to run it → give them the execute bit (the 5 in 755).",
+       "The 'permission denied' means others lack the execute bit. 755 grants owner rwx and group/others r-x, so the script runs for everyone while only you can edit it."),
+
+    _Q("What is systemd?",
+       ["the init system that starts and supervises services", "a filesystem", "a text editor", "a web server"], 0, "linux-systemd", 0,
+       "systemd is the init system — it starts, stops and supervises services (PID 1).",
+       "systemd = the boss process (PID 1) that runs your services.",
+       "systemd is PID 1 on most Linux: it boots the system, starts services in order, restarts them when they crash, and logs them. `systemctl start/stop/status` is how you talk to it."),
+    _Q("How do you make a service start automatically at boot?",
+       ["systemctl enable <service>", "systemctl start <service>", "reboot the machine", "touch a file"], 0, "linux-systemd", 0,
+       "systemctl enable registers it to start at boot.",
+       "enable = auto-start at boot. start = run it right now, once.",
+       "`start` runs it now; `enable` wires it into the boot sequence (creates the symlink in the unit's target). You usually do both: enable for persistence, start for now."),
+
+    _Q("What is the difference between a symlink and a hard link?",
+       ["a symlink points to a path; a hard link points to the same inode", "they are identical", "a hard link points to a path", "symlinks can't break"], 0, "linux-link", 0,
+       "A symlink references a path (can break); a hard link references the same inode (same file).",
+       "Symlink = path pointer (breaks if target moves). Hard link = same file, two names.",
+       "A symlink is a tiny file holding a path — move the target and it dangles. A hard link is a second name for the SAME inode (data); delete one name and the file survives via the other."),
+    _Q("You delete a file but another hard link to it still exists. What happens to the data?",
+       ["the data survives, reachable via the other link", "it's gone", "it's corrupted", "the link breaks"], 0, "linux-link", 0,
+       "The data survives — the other hard link still names the same inode.",
+       "Hard link = same inode. Delete one name, the data lives on.",
+       "The file's data is freed only when its last name (link count 0) is removed. A hard link keeps the inode alive, so the data remains fully intact."),
+
+    # ---- Azure ------------------------------------------------------------- #
+    _Q("Which Azure service is object storage, like S3?",
+       ["Blob Storage", "Azure Functions", "Azure VM", "Cosmos DB"], 0, "azure-blob", 0,
+       "Azure Blob Storage is object storage — files as blobs in containers.",
+       "Azure's S3 = Blob Storage. 'Blob' = a file/object.",
+       "Blob Storage holds unstructured data (images, logs, backups) as blobs in containers, addressable over HTTP. It's Azure's answer to S3."),
+    _Q("You need to store videos and serve them over the web on Azure. Which service?",
+       ["Blob Storage", "Azure SQL", "Azure Functions", "Virtual Network"], 0, "azure-blob", 0,
+       "Blob Storage — object storage for large files, served over HTTP.",
+       "Big files over the web on Azure → Blob Storage.",
+       "Blobs are ideal for media and static content: cheap, massively scalable, and directly URL-addressable (often behind a CDN)."),
+
+    _Q("What is an Azure Resource Group?",
+       ["a logical container that groups related resources for management", "a VM", "a database", "a network"], 0, "azure-rg", 0,
+       "A resource group is a logical grouping of resources sharing a lifecycle.",
+       "Resource group = 'a folder for your Azure stuff, deleted together'.",
+       "Every Azure resource lives in exactly one resource group. It's the unit for organization, permissions, and cleanup — delete the group and everything in it goes."),
+    _Q("You want to delete an entire app's resources at once on Azure. What do you delete?",
+       ["the resource group", "each resource individually", "the subscription", "the region"], 0, "azure-rg", 0,
+       "The resource group — deleting it removes everything inside.",
+       "Delete the group = delete everything in it. That's the cleanup unit.",
+       "Because resources share a resource group's lifecycle, deleting the group is the one-click teardown. It's the tidy way to remove a whole environment."),
+
+    # ---- Networking & security -------------------------------------------- #
+    _Q("What does DNS do?",
+       ["translates domain names to IP addresses", "assigns IPs to devices", "encrypts traffic", "routes packets"], 0, "net-dns", 0,
+       "DNS resolves names to IP addresses.",
+       "DNS = the phone book. Name in, IP out.",
+       "You type example.com; DNS looks it up (resolver → root → TLD → authoritative) and returns the IP your machine actually connects to."),
+    _Q("You type a domain name and your machine needs the IP behind it. Which system resolves it?",
+       ["DNS", "DHCP", "TLS", "NAT"], 0, "net-dns", 0,
+       "DNS — it maps the domain name to its IP address.",
+       "Name → IP is DNS, every time. It's the internet's phone book.",
+       "DNS resolution walks from your resolver to the root, the TLD, then the authoritative server, caching each step, to hand back the IP your browser dials."),
+    _Q("What does TLS (HTTPS) provide?",
+       ["encryption, integrity, and server authentication in transit", "faster downloads", "DNS lookups", "file storage"], 0, "net-tls", 0,
+       "TLS encrypts traffic, guarantees integrity, and authenticates the server.",
+       "TLS = the padlock. Encrypts + verifies who you're talking to.",
+       "TLS (the S in HTTPS) encrypts the connection so eavesdroppers see ciphertext, and uses certificates so you know the server is who it claims to be."),
+    _Q("Why is HTTPS (TLS) important for any public site?",
+       ["it encrypts data in transit and verifies the server, preventing eavesdropping and spoofing", "it makes pages load faster", "it reduces storage", "it's only for banks"], 0, "net-tls", 0,
+       "HTTPS encrypts traffic and authenticates the server — non-negotiable for anything public.",
+       "No padlock = anyone on the wire reads it. TLS is the baseline.",
+       "Without TLS, passwords and data cross the internet in plaintext and an attacker can impersonate your site. TLS is now the default for any responsible service."),
+
+    # ---- DevOps principles ------------------------------------------------- #
+    _Q("What is the principle of least privilege?",
+       ["grant only the minimum permissions a job needs, nothing more", "give everyone admin", "grant everything, revoke later", "hide permissions"], 0, "dev-leastpriv", 0,
+       "Least privilege = grant the minimum access needed for a task.",
+       "Least privilege = 'just enough, never more'. Scope every key.",
+       "Every user, role and token gets exactly the permissions its job requires — no broad admin keys. A leaked scoped token is one bucket; a leaked admin token is the whole account."),
+    _Q("A service only needs to read one bucket. What permission should it get?",
+       ["read access to only that bucket", "full admin", "read access to everything", "write access to all buckets"], 0, "dev-leastpriv", 0,
+       "Read access to only that one bucket — nothing else.",
+       "Scope it to the one bucket. That's least privilege applied.",
+       "The correct grant is the narrowest one: read on that bucket. Anything broader is attack surface with no benefit."),
+
+    _Q("Where should a database password live in a deployed app?",
+       ["in a secrets manager, fetched at runtime", "hardcoded in the code", "in a public repo", "in a log message"], 0, "dev-secrets", 0,
+       "In a secrets manager (vault), fetched at runtime — never in code.",
+       "Secrets go in a vault, fetched on demand. Code + repo = no secrets.",
+       "A password in code is a password in git history forever. Store it in a vault (AWS Secrets Manager, Vault) and have the app retrieve it only when it needs to connect."),
+    _Q("You committed a secret to git. What MUST you do?",
+       ["rotate the secret immediately — it's in history forever", "just delete the line", "ignore it", "rebase to hide it"], 0, "dev-secrets", 0,
+       "Rotate it — a committed secret is compromised permanently.",
+       "Committed = burned. Rotate it; deleting the line isn't enough.",
+       "Git history is append-only and public to whoever has the repo. Deleting the line doesn't remove it from history. The only fix is to rotate (invalidate) the secret."),
+
+    _Q("What is Infrastructure as Code?",
+       ["describing infrastructure in versioned files, applied by tools like Terraform", "manually clicking in a console", "writing docs", "a database"], 0, "dev-iac", 0,
+       "IaC = infrastructure described in versioned files, applied by a tool.",
+       "IaC = 'your cloud is a text file'. Reviewable, repeatable, rebuildable.",
+       "Instead of clicking in a console, you declare resources in files (Terraform HCL, etc.), version them in git, and the tool makes reality match. The same files rebuild the stack identically anywhere."),
+    _Q("What's the key benefit of infrastructure-as-code over clicking in a console?",
+       ["reproducible, reviewable, and rebuildable from a single source of truth", "it's faster to click", "no benefits", "it needs no version control"], 0, "dev-iac", 0,
+       "IaC is reproducible and reviewable — the files are the source of truth.",
+       "Files in git = every change is reviewed, and rebuildable anywhere.",
+       "The same config builds the same stack every time, changes go through code review, and disaster recovery is 're-run the file'. Clicking can't give you any of that."),
+
+    _Q("What does a load balancer do?",
+       ["distributes traffic across multiple servers", "stores files", "encrypts data", "runs functions"], 0, "dev-lb", 0,
+       "A load balancer spreads incoming traffic across many backend servers.",
+       "LB = traffic cop. Spreads load, survives a server dying.",
+       "The balancer sits in front of your servers and routes each request to a healthy one, so no single server is overwhelmed and the app stays up if one fails."),
+    _Q("One server is overwhelmed while others sit idle. What fixes it?",
+       ["put a load balancer in front to spread the traffic", "add more RAM only", "restart the server", "nothing"], 0, "dev-lb", 0,
+       "A load balancer distributes traffic so no single server is the bottleneck.",
+       "Uneven load → a balancer spreads it. That's its whole job.",
+       "The balancer distributes requests across all servers, so load evens out and adding servers behind it scales the app horizontally."),
+    ]
+
+
 def _net_pool_by_level(level: int) -> list:
     return [q for q in NET_QUESTIONS if q["level"] == level]
 
@@ -16080,6 +16452,17 @@ class NetTrainer(Vertical):
         self.app._net_on_key(event)
 
 
+class InterviewTrainer(Vertical):
+    """Full-screen INTERVIEW PREP overlay: interview questions as multiple
+    choice OR flashcards. The app owns all state; this widget holds focus and
+    pipes every keystroke to `app._iv_on_key`."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._iv_on_key(event)
+
+
 class CloudHelpIcon(Static):
     """The always-visible, clickable `?` in the dev top bar — opens the
     command manual. Mouse-click only (the trainer owns the keyboard)."""
@@ -16484,6 +16867,19 @@ class TutorApp(App):
     #vim-confirm.visible { display: block; }
     #net-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #net-confirm.visible { display: block; }
+    #iv { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #iv.visible { display: block; }
+    #iv-topbar { width: 100%; height: auto; }
+    #iv-head { width: 1fr; height: auto; }
+    #iv-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #iv-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #iv-body { width: 100%; height: 1fr; padding: 1 1; }
+    #iv-question { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
+    #iv-options { width: 100%; height: auto; padding: 1 2; }
+    #iv-explain { width: 100%; height: auto; padding: 1 2; border: round #3f4756; background: #0d1117; }
+    #iv-foot { width: 100%; height: auto; }
+    #iv-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #iv-confirm.visible { display: block; }
     #net { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #net.visible { display: block; }
     #net-topbar { width: 100%; height: auto; }
@@ -16853,6 +17249,23 @@ class TutorApp(App):
         self._net_drill_weak = set()  # concepts marked weak this session
         self._net_adv_timer = None    # brief feedback pause before the next q
         self._net_pause_action = None  # "next" or ("reask", step)
+        self._iv_on = False           # INTERVIEW PREP overlay open
+        self._iv_mode = "mc"          # "mc" (multiple choice) | "card" (flashcard)
+        self._iv_pool: list = []      # questions for the current round
+        self._iv_i = 0                # index into _iv_pool
+        self._iv_pick = None          # mc: the option the learner has selected
+        self._iv_flipped = False      # card: whether the answer is revealed
+        self._iv_review: list = []    # wrong answers, re-asked at round end
+        self._iv_wrong: list = []     # concepts answered wrong this session
+        self._iv_n = 0                # questions answered
+        self._iv_right = 0
+        self._iv_done = False         # session finished (review cleared)
+        self._iv_adv_timer = None     # brief pause after an answer
+        self._iv_confirm = False      # "save checkpoint? Y/N" popup
+        self._iv_gen = 0              # timer generation counter
+        self._iv_pause_action = None  # what the answer pause fires
+        self._iv_msg = ""             # last feedback line
+        self._iv_msg_kind = ""        # "win" | "retrain"
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -17127,6 +17540,16 @@ class TutorApp(App):
                     yield Static("", id="net-side-body")
             yield Static("", id="net-foot")
         yield Static("", id="net-confirm")
+        with InterviewTrainer(id="iv"):
+            with Horizontal(id="iv-topbar"):
+                yield Static("", id="iv-head")
+                yield ExitIcon(" ✕ ", id="iv-exit")
+            with Vertical(id="iv-body"):
+                yield Static("", id="iv-question")
+                yield Static("", id="iv-options")
+                yield Static("", id="iv-explain")
+            yield Static("", id="iv-foot")
+        yield Static("", id="iv-confirm")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -17893,6 +18316,7 @@ class TutorApp(App):
         if self._failed_entries():
             order.append(-5)          # FIX THESE (only when there are misses)
         order += [-4, -3, -2, -1]     # NETWORK+, CLOUD, BUILD, VIM
+        order.append(-7)              # INTERVIEW PREP
         order.append(-6)              # PYTHON LAB
         order += list(range(len(GROUPS)))
         order.append(len(GROUPS))     # PYTHON REVIEW
@@ -17924,6 +18348,7 @@ class TutorApp(App):
             (-2, "BUILD STUFF", "#7ee787", "bash → your programs",
              "✓ done" if build_done else ""),
             (-1, "VIM / NEOVIM", "#d8b4fe", "keyboard dojo", ""),
+            (-7, "INTERVIEW PREP", "#7dd3fc", "AWS · Azure · Linux · k8s · TF · Ansible — MC + flashcards", ""),
             (-6, "PYTHON LAB", "#a6e3a1", "playground — every example, edit & run", ""),
         ]
         for gi, g in enumerate(GROUPS):
@@ -17971,7 +18396,7 @@ class TutorApp(App):
             line_no += 1
             # a clean divider between the non-Python paths and the Python
             # course stack, and again before the review queue
-            if si == -1 or si == len(GROUPS) - 1:
+            if si == -7 or si == len(GROUPS) - 1:
                 t.append("─" * 46, style="#3a3a3a")
                 t.append("\n")
                 line_no += 1
@@ -18002,6 +18427,12 @@ class TutorApp(App):
                     if n else "all caught up — nothing due today")
         elif self.series_sel == -6:
             note = "playground — every example in the course, edit & run · Enter to open"
+        elif self.series_sel == -7:
+            n = len(INTERVIEW_QUESTIONS)
+            weak = len(self.p.get("iv_weak", {}))
+            note = (f"interview questions — {n} questions (2 wordings each), "
+                    f"multiple choice + flashcards"
+                    + (f" · {weak} weak concepts to revisit" if weak else ""))
         else:
             g = GROUPS[self.series_sel]
             note = f"{g['name']} — Enter to browse its challenges"
@@ -18061,7 +18492,7 @@ class TutorApp(App):
         self._snap_menu_scroll(sel_line)
 
     def _preview_challenge(self):
-        if self.series_sel in (-1, -2, -3, -4) or self.series_sel == len(GROUPS):
+        if self.series_sel in (-1, -2, -3, -4, -7) or self.series_sel == len(GROUPS):
             return None   # courses / the review queue — handled separately
         if self.menu_level == "series":
             g = GROUPS[self.series_sel]
@@ -18099,6 +18530,23 @@ class TutorApp(App):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\nEnter to open the Lab", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
+        if self.series_sel == -7:
+            self.query_one("#menu-preview-title", Static).update(
+                "INTERVIEW PREP")
+            t = Text()
+            t.append("Interview questions across the cloud & DevOps stack.\n\n",
+                     style="#f0f0f5")
+            for line in ("AWS · Azure · Linux · Docker · Kubernetes · Terraform · Ansible · Git · CI/CD",
+                         "multiple choice — 4 distinct answers, 1-4 to pick",
+                         "flashcards — press f, flip with Space, self-grade",
+                         "wrong answers are re-asked (re-worded) at the end",
+                         "every answer is explained aloud, with a memory hook"):
+                t.append("• ", style="dim")
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\nEnter to start the questions", style="dim")
             self.query_one("#menu-preview-inner", Static).update(t)
             return
         if self.series_sel == len(GROUPS):
@@ -18591,6 +19039,8 @@ class TutorApp(App):
             return   # CLOUD & DEVOPS overlay owns the keyboard; Esc there exits it
         if self._net_on:
             return   # NETWORK+ overlay owns the keyboard; Esc there exits it
+        if self._iv_on:
+            return   # INTERVIEW PREP overlay owns the keyboard; Esc there exits it
         if self._lab_menu_on:
             self._lab_menu_close()
             return
@@ -18622,7 +19072,7 @@ class TutorApp(App):
 
     def action_back(self):
         """The ← back button (top-left): the ONLY way to leave a challenge."""
-        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on:
+        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on:
             return
         if self.mode == "challenge":
             self._stop_demo_timers()
@@ -18647,6 +19097,8 @@ class TutorApp(App):
             self._vim_render()
         elif self._net_on:
             self._net_exit()
+        elif self._iv_on:
+            self._iv_exit()
 
     def _select_challenge(self):
         self.group_idx = self.series_sel
@@ -18862,6 +19314,8 @@ class TutorApp(App):
             return   # CLOUD & DEVOPS overlay owns the keyboard
         if self._net_on:
             return   # NETWORK+ overlay owns the keyboard
+        if self._iv_on:
+            return   # INTERVIEW PREP overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -18893,6 +19347,9 @@ class TutorApp(App):
                     return
                 if self.series_sel == -6:
                     self._lab_menu_open()
+                    return
+                if self.series_sel == -7:
+                    self._iv_begin()
                     return
                 if self.series_sel == len(GROUPS):
                     self._start_py_review()
@@ -25482,6 +25939,348 @@ class TutorApp(App):
             t.append("   ·   ")
             t.append("Esc — save & exit", style="dim")
         self.query_one("#net-foot", Static).update(t)
+
+    # -- INTERVIEW PREP ---------------------------------------------------- #
+    def _iv_begin(self, mode=None):
+        """Open the INTERVIEW PREP overlay. `mode` = "mc" (multiple choice) or
+        "card" (flashcards); None keeps the current mode."""
+        if mode in ("mc", "card"):
+            self._iv_mode = mode
+        self._iv_on = True
+        self._iv_pool = self._iv_build_pool()
+        self._iv_i = 0
+        self._iv_pick = None
+        self._iv_flipped = False
+        self._iv_review = []
+        self._iv_wrong = []
+        self._iv_n = 0
+        self._iv_right = 0
+        self._iv_done = False
+        self._iv_confirm = False
+        self._iv_msg = ""
+        self._iv_msg_kind = ""
+        self.query_one("#iv", InterviewTrainer).add_class("visible")
+        self.query_one("#iv", InterviewTrainer).focus()
+        self._iv_stop_pause()
+        self._stop_menu_anim()
+        self._iv_speak_current()
+        self._iv_render()
+
+    def _iv_build_pool(self):
+        """One randomly-picked variant per concept (the '2 wordings' mechanic),
+        shuffled. Weak concepts (missed in past sessions) are asked first."""
+        by_concept = {}
+        for q in INTERVIEW_QUESTIONS:
+            by_concept.setdefault(q["concept"], []).append(q)
+        weak = set(self.p.get("iv_weak", {}).keys())
+        pool_weak, pool_rest = [], []
+        for concept, qs in by_concept.items():
+            q = random.choice(qs)   # one of the 2 variants, chosen at random
+            (pool_weak if concept in weak else pool_rest).append(q)
+        random.shuffle(pool_weak)
+        random.shuffle(pool_rest)
+        return pool_weak + pool_rest
+
+    def _iv_cur(self):
+        if not self._iv_pool:
+            return None
+        i = min(self._iv_i, len(self._iv_pool) - 1)
+        return self._iv_pool[i]
+
+    def _iv_speak_current(self):
+        if not self.voice_on:
+            return
+        q = self._iv_cur()
+        if q is None:
+            return
+        if self._iv_mode == "mc":
+            opts = "; ".join(f"{i+1}: {q['choices'][i]}" for i in range(4))
+            speak(f"{q['q']} Is it {opts}?")
+        else:
+            speak(f"Flashcard. {q['q']}")
+
+    def _iv_stop_pause(self):
+        t = getattr(self, "_iv_adv_timer", None)
+        if t is not None:
+            t.stop()
+            self._iv_adv_timer = None
+
+    def _iv_on_key(self, event):
+        k = event.key
+        if k == "escape":
+            self._iv_exit()
+            return
+        # any key during the answer pause skips straight to the next question
+        if self._iv_adv_timer is not None:
+            self._iv_stop_pause()
+            self._iv_next()
+            return
+        if self._iv_done:
+            if k == "enter":
+                self._iv_begin()      # start a fresh round
+            return
+        q = self._iv_cur()
+        if q is None:
+            return
+        if self._iv_mode == "card":
+            if not self._iv_flipped:
+                if k in ("enter", "space"):
+                    self._iv_flip()
+                return
+            # flipped — mark it, then move on
+            if k == "enter" or k == "space":
+                self._iv_n += 1
+                self._iv_right += 1
+                self._iv_msg = "✓ nice — you knew it"
+                self._iv_msg_kind = "win"
+                self._iv_schedule(1.2, "next")
+                self._iv_render()
+            elif k in ("w", "n"):
+                self._iv_n += 1
+                self._iv_wrong.append(q["concept"])
+                self._iv_review.append(q)
+                self._iv_msg = "flagged for re-ask — no worries, it'll come back"
+                self._iv_msg_kind = "retrain"
+                self._iv_schedule(1.2, "next")
+                self._iv_render()
+            return
+        # multiple choice
+        if self._iv_pick is None and k in ("1", "2", "3", "4"):
+            self._iv_answer(int(k) - 1)
+        elif self._iv_pick is None and k in ("a", "b", "c", "d"):
+            self._iv_answer("abcd".index(k))
+        elif self._iv_pick is None and k == "f":
+            self._iv_mode = "card"
+            self._iv_flipped = False
+            self._iv_render()
+            self._iv_speak_current()
+
+    def _iv_flip(self):
+        q = self._iv_cur()
+        if q is None:
+            return
+        self._iv_flipped = True
+        if self.voice_on:
+            speak(f"The answer is {q['choices'][q['ans']]}. {q['why']} "
+                  f"And here's the best way to remember it: {q['say']}")
+        self._iv_render()
+
+    def _iv_answer(self, idx):
+        q = self._iv_cur()
+        if q is None or self._iv_pick is not None:
+            return
+        self._iv_pick = idx
+        self._iv_n += 1
+        if idx == q["ans"]:
+            self._iv_right += 1
+            self._iv_msg = f"✓ correct — {q['why']}"
+            self._iv_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(f"Correct. {q['why']} And the best way to remember it: "
+                      f"{q['say']}")
+        else:
+            self._iv_wrong.append(q["concept"])
+            self._iv_review.append(q)
+            self._iv_msg = (f"✗ the answer is {q['choices'][q['ans']]} — "
+                            f"{q['why']}")
+            self._iv_msg_kind = "retrain"
+            _, fail = self._sounds_for("netplus")
+            play_file(fail, self._fx_volume())
+            if self.voice_on:
+                speak(f"Incorrect. The answer is {q['choices'][q['ans']]}. "
+                      f"{q['why']} And the best way to remember it: {q['say']}")
+            weak = self.p.setdefault("iv_weak", {})
+            weak[q["concept"]] = weak.get(q["concept"], 0) + 1
+        self._iv_schedule(2.2, "next")
+        self._iv_render()
+
+    def _iv_schedule(self, delay, action):
+        self._iv_stop_pause()
+        self._iv_pause_action = action
+        self._iv_gen += 1
+        gen = self._iv_gen
+        self._iv_adv_timer = self.set_timer(
+            delay, lambda: self._iv_pause_done(gen))
+
+    def _iv_pause_done(self, gen):
+        if gen != self._iv_gen or not self._iv_on:
+            return
+        self._iv_adv_timer = None
+        self._iv_pause_action = None
+        self._iv_next()
+
+    def _iv_next(self):
+        self._iv_stop_pause()
+        self._iv_i += 1
+        if self._iv_i >= len(self._iv_pool):
+            if self._iv_review:
+                # re-ask the wrong ones — but re-worded (the other variant)
+                reworded = [self._iv_other_variant(q) for q in self._iv_review]
+                random.shuffle(reworded)
+                self._iv_pool = reworded
+                self._iv_review = []
+                self._iv_i = 0
+            else:
+                self._iv_done = True
+                save_progress(self.p)
+        self._iv_pick = None
+        self._iv_flipped = False
+        self._iv_render()
+        self._iv_speak_current()
+
+    def _iv_other_variant(self, q):
+        others = [x for x in INTERVIEW_QUESTIONS
+                  if x["concept"] == q["concept"] and x["q"] != q["q"]]
+        return random.choice(others) if others else q
+
+    def _iv_exit(self):
+        self._iv_stop_pause()
+        save_progress(self.p)
+        self._iv_on = False
+        self._iv_done = False
+        self._iv_confirm = False
+        self.query_one("#iv", InterviewTrainer).remove_class("visible")
+        self._show_menu()
+        self.series_sel = -7
+        self.menu_level = "series"
+        self._render_menu()
+
+    def _iv_render(self):
+        self._iv_render_head()
+        self._iv_render_question()
+        self._iv_render_options()
+        self._iv_render_explain()
+        self._iv_render_foot()
+
+    def _iv_render_head(self):
+        t = Text()
+        t.append(" INTERVIEW PREP ", style="bold #11111b on #7dd3fc")
+        mode = "multiple choice" if self._iv_mode == "mc" else "flashcards"
+        t.append(f"  {mode} ", style="bold #7dd3fc")
+        t.append(f"·  {self._iv_right}/{self._iv_n} right ", style="#d5d5d5")
+        if self._iv_done:
+            pct = (100 * self._iv_right // self._iv_n) if self._iv_n else 0
+            t.append(f"·  {pct}% ", style="bold #22c55e")
+        elif self._iv_review:
+            t.append(f"·  {len(self._iv_review)} to re-ask ", style="bold #fbbf24")
+        self.query_one("#iv-head", Static).update(t)
+
+    def _iv_render_question(self):
+        q = self._iv_cur()
+        t = Text()
+        if self._iv_done:
+            n = self._iv_n
+            pct = (100 * self._iv_right // n) if n else 0
+            t.append("Session complete. ", style="bold #22c55e")
+            t.append(f"{self._iv_right}/{n} correct ({pct}%).\n\n", style="#f0f0f5")
+            if self._iv_wrong:
+                uniq = sorted(set(self._iv_wrong))
+                t.append("Revisit these:", style="bold #fbbf24")
+                t.append("\n")
+                for c in uniq:
+                    t.append(f"  · {c}\n", style="#d5d5d5")
+                t.append("\nThey're saved as weak — next session asks them first.",
+                         style="dim")
+            else:
+                t.append("Perfect run — every answer right.", style="#d5d5d5")
+            t.append("\n\nEnter — start a fresh round   ·   Esc — menu", style="dim")
+            self.query_one("#iv-question", Static).update(t)
+            return
+        if q is None:
+            self.query_one("#iv-question", Static).update("")
+            return
+        topic = q["concept"]
+        t.append(f"[{topic}]  ", style="bold #7dd3fc")
+        if self._iv_mode == "card" and not self._iv_flipped:
+            t.append("FLASHCARD\n\n", style="bold #ffa657")
+            t.append("Question (try to answer it yourself first):\n\n", style="dim")
+            t.append(q["q"], style="bold #f0f0f5")
+            t.append("\n\n")
+            t.append("Space / Enter — flip and reveal the answer", style="dim")
+        else:
+            t.append("QUESTION\n\n", style="bold #ffa657")
+            t.append(q["q"], style="bold #f0f0f5")
+        self.query_one("#iv-question", Static).update(t)
+
+    def _iv_render_options(self):
+        q = self._iv_cur()
+        t = Text()
+        if self._iv_done or q is None or (self._iv_mode == "card" and not self._iv_flipped):
+            self.query_one("#iv-options", Static).update(t)
+            return
+        if self._iv_mode == "card" and self._iv_flipped:
+            t.append("Answer: ", style="bold #22c55e")
+            t.append(q["choices"][q["ans"]], style="bold #22c55e")
+            self.query_one("#iv-options", Static).update(t)
+            return
+        letters = "ABCD"
+        for i, opt in enumerate(q["choices"]):
+            letter = letters[i]
+            if self._iv_pick is None:
+                st = f"  {i+1}  {opt}"
+                style = "#f0f0f5"
+                mark = "   "
+            elif i == q["ans"]:
+                mark = " ✓ "
+                st = f"  {i+1}  {opt}"
+                style = "bold #22c55e"
+            elif i == self._iv_pick:
+                mark = " ✗ "
+                st = f"  {i+1}  {opt}"
+                style = "bold #ff5555"
+            else:
+                mark = "   "
+                st = f"  {i+1}  {opt}"
+                style = "#5a5a5a"
+            t.append(f"{mark}{letter}. ", style=style)
+            t.append(opt, style=style)
+            t.append("\n")
+        if self._iv_pick is None:
+            t.append("\n")
+            t.append("press 1-4 (or a-d) to answer", style="dim")
+        self.query_one("#iv-options", Static).update(t)
+
+    def _iv_render_explain(self):
+        q = self._iv_cur()
+        t = Text()
+        if self._iv_done or q is None:
+            self.query_one("#iv-explain", Static).update(t)
+            return
+        show = False
+        if self._iv_mode == "card":
+            show = self._iv_flipped
+        else:
+            show = self._iv_pick is not None
+        if not show:
+            self.query_one("#iv-explain", Static).update(t)
+            return
+        t.append("why: ", style="bold #fbbf24")
+        t.append(q["why"], style="#f0f0f5")
+        t.append("\n\n")
+        t.append("remember: ", style="bold #fbbf24")
+        t.append(q["say"], style="#d5d5d5")
+        self.query_one("#iv-explain", Static).update(t)
+
+    def _iv_render_foot(self):
+        t = Text()
+        if self._iv_done:
+            t.append("Enter — new round   ·   Esc — menu", style="dim")
+        elif self._iv_mode == "card":
+            if self._iv_flipped:
+                t.append("Enter/Space — got it   ·   w — re-ask me later   ·   Esc — menu",
+                         style="bold #22c55e")
+            else:
+                t.append("Space/Enter — flip   ·   Esc — menu", style="bold #7dd3fc")
+        else:
+            if self._iv_pick is None:
+                t.append("1-4 — answer   ·   f — flashcards   ·   Esc — menu",
+                         style="bold #7dd3fc")
+            else:
+                t.append("next question in a moment — any key to skip", style="bold #22c55e")
+        t.append("   ·   answers are explained aloud", style="dim")
+        self.query_one("#iv-foot", Static).update(t)
 
     def action_demo(self):
         """F3 — open/close the worked-example demo. The demo shows in the
