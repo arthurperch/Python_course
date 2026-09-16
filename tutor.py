@@ -21653,14 +21653,17 @@ class TutorApp(App):
         tutor_h = len(_TUTOR_ART)
         tutor_w = len(_TUTOR_ART[0])
         right = []
-        # row 0: little pacman pellets, spaced out, each a random color
+        # the skull (yellow) sits at the top of the right block
+        for ln in _BASH_ART:
+            right.append(Text(ln, style="#fbbf24"))
+        # gap, then the pacman pellets + title near the bottom of the frame
+        right.append(Text(""))
         pm = Text()
         for i in range(5):
             if i:
                 pm.append("  ", style="")
             pm.append("●", style="bold " + random.choice(_TUTOR_COLORS))
         right.append(pm)
-        # row 1: the title
         title = Text()
         title.append("Cracked Programmer", style="bold #f9a8d4")
         name = self.p.get("name", "")
@@ -21668,10 +21671,6 @@ class TutorApp(App):
             title.append("  ·  ", style="dim")
             title.append(f"welcome back, {name}", style="bold #ff9d00")
         right.append(title)
-        right.append(Text(""))
-        # rows 3+: the compact skull (yellow)
-        for ln in _BASH_ART:
-            right.append(Text(ln, style="#fbbf24"))
         h = max(tutor_h, len(right))
         top = (h - tutor_h) // 2
         for row in range(h):
