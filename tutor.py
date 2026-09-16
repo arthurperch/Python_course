@@ -10432,6 +10432,328 @@ _SHELL_MEANING = {
     "ssh": "log into another machine", "exit": "leave the remote shell",
     "ssh-keygen": "generate an SSH keypair", "ssh-copy-id": "copy your key to a server",
 }
+
+
+# =========================================================================== #
+# COMMAND EXPLAINER — breaks any taught command into color-coded tokens with a
+# summary + per-token legend. `CMD_EXPLAIN` is the curated knowledge base
+# (program -> summary + verbs + flags); tokens not listed fall back to a
+# generic explanation by shape, so EVERY command still breaks down.
+# Entry values are (brief, detail) — detail may be "" and a generic is derived.
+# =========================================================================== #
+
+_EXPLAIN_COLORS = {"program": "#f87171", "verb": "#86efac", "flag": "#7dd3fc",
+                   "value": "#fbbf24"}
+_EXPLAIN_KIND_LABEL = {"program": "the program", "verb": "the action",
+                       "flag": "a flag / option", "value": "a value / argument"}
+
+CMD_EXPLAIN = {
+    "docker": {
+        "summary": "Docker builds, ships, and runs apps inside isolated containers.",
+        "verbs": {
+            "build": ("Bake a Dockerfile into an image", "Reads the Dockerfile in the build context and produces a portable image you can run anywhere."),
+            "run": ("Start a container from an image", "Creates and starts a container, then runs its default command."),
+            "ps": ("List running containers", "Shows id, image, status, and ports for containers that are up."),
+            "images": ("List images stored locally", "Shows every image you've built or pulled, with tag and size."),
+            "exec": ("Run a command inside a live container", "Drops a one-off command into an already-running container."),
+            "stop": ("Stop a running container", "Sends a stop signal so the container shuts down cleanly."),
+            "logs": ("Read a container's output", "Prints everything the container wrote to stdout/stderr."),
+            "pull": ("Download an image", "Fetches an image from a registry (Docker Hub by default)."),
+        },
+        "flags": {
+            "-t": ("Tag the image name:tag", "Names the image so you can run it later by name instead of a random id."),
+            "-d": ("Run detached (background)", "The container keeps running while you get your prompt back."),
+            "-p": ("Publish a port host:container", "Maps a port on your machine to a port inside the container."),
+            "--name": ("Name the container", "Gives the container a friendly name for later docker commands."),
+            "-e": ("Set an environment variable", "Passes a variable into the container's environment."),
+            "-v": ("Mount a volume host:container", "Links a folder on your machine to one inside the container."),
+            "-f": ("Pick a specific Dockerfile", "Uses a named file instead of the default 'Dockerfile'."),
+            "--rm": ("Auto-remove on exit", "Deletes the container automatically once it stops."),
+        },
+    },
+    "aws": {
+        "summary": "The AWS CLI controls cloud resources (buckets, servers, databases, …) from the terminal.",
+        "verbs": {
+            "s3": ("Work with S3 buckets & files", "Simple Storage Service — object storage for files."),
+            "ec2": ("Work with virtual servers", "Elastic Compute Cloud — launch/stop/configure VMs."),
+            "iam": ("Manage users, roles, permissions", "Identity & Access Management — who can do what."),
+            "lambda": ("Manage serverless functions", "Run code without provisioning a server."),
+            "rds": ("Manage managed databases", "Relational Database Service — SQL databases in the cloud."),
+            "dynamodb": ("Manage NoSQL tables", "A managed key-value / document database."),
+            "secretsmanager": ("Store & rotate secrets", "Keeps passwords/API keys encrypted, out of code."),
+            "kms": ("Manage encryption keys", "Key Management Service — keys for at-rest encryption."),
+            "cloudwatch": ("Metrics, logs, alarms", "Observe your resources and alert on thresholds."),
+            "sns": ("Send notifications", "Simple Notification Service — push a message to subscribers."),
+            "sqs": ("Queue messages", "Simple Queue Service — decouple senders from workers."),
+        },
+        "verbs_verb": {
+            "mb": ("Make bucket", "Create a new S3 bucket."),
+            "ls": ("List", "List buckets or the objects inside one."),
+            "cp": ("Copy", "Upload a file to S3, or download from it."),
+            "run-instances": ("Launch a server", "Start one or more EC2 instances."),
+            "create-key": ("Create a KMS key", "Generate a new encryption key."),
+            "create-secret": ("Store a secret", "Save a secret value under a name."),
+        },
+        "flags": {
+            "--image-id": ("Which OS image", "The AMI (machine image) to boot the instance from."),
+            "--instance-type": ("How big the server is", "CPU/RAM size, e.g. t3.micro."),
+            "--region": ("Which region", "The geographic AWS region to act in."),
+            "--name": ("The resource's name", "Names the thing you're creating."),
+        },
+    },
+    "az": {
+        "summary": "The Azure CLI controls Azure cloud resources from the terminal.",
+        "verbs": {
+            "group": ("Manage resource groups", "A container that holds related Azure resources."),
+            "vm": ("Manage virtual machines", "Launch/stop/configure VMs."),
+            "storage": ("Manage storage accounts", "Object/blob storage and file shares."),
+            "network": ("Manage networking", "VNets, subnets, NSGs, route tables."),
+            "aks": ("Manage Kubernetes clusters", "Azure Kubernetes Service — managed k8s."),
+            "webapp": ("Manage web apps", "Host a website without managing a server."),
+        },
+        "verbs_verb": {
+            "create": ("Create a resource", "Provision a new resource."),
+            "list": ("List resources", "Show what exists."),
+            "show": ("Describe one resource", "Show details for a single resource."),
+        },
+        "flags": {
+            "--name": ("The resource's name", "Names the thing you're creating or acting on."),
+            "--location": ("Which region", "The Azure region, e.g. eastus."),
+            "--resource-group": ("Which group", "The resource group the resource lives in."),
+        },
+    },
+    "kubectl": {
+        "summary": "kubectl controls a Kubernetes cluster — it tells the cluster what to run.",
+        "verbs": {
+            "get": ("Read resources", "List pods, services, deployments, etc."),
+            "create": ("Create a resource", "Make a deployment, service, etc. imperatively."),
+            "apply": ("Apply a manifest", "Reconcile the cluster to a YAML file's desired state."),
+            "describe": ("Inspect a resource", "Detailed info + recent events for one object."),
+            "scale": ("Change replica count", "Grow or shrink how many copies run."),
+            "delete": ("Remove a resource", "Delete a pod, deployment, service, etc."),
+            "logs": ("Read a pod's output", "Print a container's stdout."),
+            "auth": ("Check permissions", "e.g. 'can-i' — can this user do that action?"),
+        },
+        "flags": {
+            "--image": ("Which container image", "The image the container should run."),
+            "--replicas": ("How many copies", "Number of identical pods to run."),
+            "-f": ("A manifest file", "The YAML file describing the desired state."),
+            "-n": ("A namespace", "The namespace to act in."),
+        },
+    },
+    "terraform": {
+        "summary": "Terraform declares infrastructure as code and manages its lifecycle.",
+        "verbs": {
+            "init": ("Prepare the working dir", "Downloads providers and sets up state."),
+            "plan": ("Preview changes", "Shows what will be created/changed/destroyed without doing it."),
+            "apply": ("Make the changes", "Applies the plan so real resources match the config."),
+            "destroy": ("Tear everything down", "Removes all resources managed by this config."),
+            "fmt": ("Reformat config files", "Normalizes indentation/alignment of .tf files."),
+            "validate": ("Check config syntax", "Verifies the config is valid without applying."),
+        },
+        "flags": {
+            "-auto-approve": ("Skip the yes/no prompt", "Applies/destroys without asking for confirmation."),
+            "-state": ("A specific state file", "Use a state file other than the default."),
+        },
+    },
+    "ansible-playbook": {
+        "summary": "ansible-playbook runs a playbook: a YAML recipe that configures servers.",
+        "verbs": {},
+        "flags": {
+            "-i": ("The inventory file", "Which hosts to run against (hosts.ini)."),
+            "--tags": ("Only run tagged tasks", "Run a subset of tasks by tag name."),
+            "-v": ("Verbose output", "More detail (add more v's for more)."),
+            "--limit": ("A subset of hosts", "Run only against these hosts from the inventory."),
+        },
+    },
+    "git": {
+        "summary": "git tracks versions of your files so you can see, undo, and share changes.",
+        "verbs": {
+            "init": ("Start a repo", "Creates the .git folder that tracks this directory."),
+            "add": ("Stage a file", "Mark a change to be included in the next commit."),
+            "commit": ("Save a snapshot", "Records the staged changes with a message."),
+            "push": ("Upload commits", "Sends local commits to a remote (GitHub)."),
+            "status": ("Show what changed", "Lists modified/untracked files."),
+            "log": ("Show history", "Lists past commits, newest first."),
+            "branch": ("List / create branches", "Work on parallel lines of changes."),
+            "clone": ("Copy a repo", "Download a remote repo to your machine."),
+        },
+        "flags": {
+            "-m": ("The commit message", "A short note describing what changed."),
+            "-a": ("Commit all changes", "Stage and commit modified files in one step."),
+            "-b": ("Create a branch", "Make a new branch and switch to it."),
+        },
+    },
+    "helm": {
+        "summary": "helm packages Kubernetes apps into charts and manages their releases.",
+        "verbs": {
+            "install": ("Deploy a chart", "Installs an app (chart) into the cluster as a release."),
+            "upgrade": ("Update a release", "Apply a new chart version or values."),
+            "list": ("List releases", "Show installed releases in a namespace."),
+            "uninstall": ("Remove a release", "Deletes the release and its resources."),
+        },
+        "flags": {},
+    },
+    "systemctl": {
+        "summary": "systemctl controls services (the system's init manager).",
+        "verbs": {
+            "start": ("Start a service", "Launches it now."),
+            "stop": ("Stop a service", "Stops it now."),
+            "restart": ("Restart a service", "Stops then starts it."),
+            "status": ("Check a service", "Is it running? Enabled? Recent logs?"),
+            "enable": ("Start on boot", "Runs it automatically at startup."),
+            "disable": ("Don't start on boot", "Removes it from auto-start."),
+        },
+        "flags": {},
+    },
+    "journalctl": {
+        "summary": "journalctl reads a service's logs (the systemd journal).",
+        "verbs": {},
+        "flags": {
+            "-u": ("Which service", "Show logs for one service, e.g. -u web."),
+            "-f": ("Follow live", "Keep printing new log lines as they arrive."),
+            "--since": ("From a time", "Only logs after a given time."),
+        },
+    },
+    "ssh": {
+        "summary": "ssh logs into another machine over an encrypted connection.",
+        "verbs": {},
+        "flags": {
+            "-p": ("Port number", "Connect on a non-default port."),
+            "-i": ("Private key file", "Use a specific key to authenticate."),
+            "-L": ("Local port forward", "Tunnel a local port to a remote one."),
+        },
+    },
+    "curl": {
+        "summary": "curl transfers data from/to a URL — the command-line web client.",
+        "verbs": {},
+        "flags": {
+            "-o": ("Save to a file", "Write the download to a file instead of the screen."),
+            "-L": ("Follow redirects", "Keep going when the server redirects."),
+            "-X": ("HTTP method", "Use GET, POST, PUT, etc. explicitly."),
+            "-H": ("Add a header", "Send an extra HTTP header."),
+            "-s": ("Silent", "Hide the progress meter."),
+        },
+    },
+    "python3": {
+        "summary": "python3 runs Python code — a script file, or an inline -c expression.",
+        "verbs": {},
+        "flags": {
+            "-c": ("Run inline code", "Execute a Python expression passed on the command line."),
+            "-m": ("Run a module", "Run a module by name (e.g. -m http.server)."),
+            "-u": ("Unbuffered output", "Print immediately, don't buffer."),
+        },
+    },
+    # ---- shell basics (shared with the BUILD STUFF course) ---------------- #
+    "ls": {"summary": "ls lists the files and folders in a directory.", "verbs": {},
+        "flags": {"-l": ("Long format", "One line per file with size, perms, date."),
+                  "-a": ("Show hidden files", "Include dotfiles."),
+                  "-h": ("Human sizes", "Show 4.0K instead of 4096.")}},
+    "cd": {"summary": "cd changes the current directory.", "verbs": {}, "flags": {}},
+    "mkdir": {"summary": "mkdir makes a new directory.", "verbs": {},
+        "flags": {"-p": ("Make parents too", "Create nested folders in one shot (mkdir -p a/b).")}},
+    "touch": {"summary": "touch creates an empty file (or updates its timestamp).", "verbs": {}, "flags": {}},
+    "cat": {"summary": "cat prints a file's contents.", "verbs": {},
+        "flags": {"-n": ("Number the lines", "Prefix each line with its line number.")}},
+    "echo": {"summary": "echo prints text back to the screen.", "verbs": {},
+        "flags": {"-n": ("No newline", "Don't add a line break at the end."),
+                  "-e": ("Interpret escapes", "Honor \\n, \\t, etc.")}},
+    "head": {"summary": "head shows the first lines of a file.", "verbs": {},
+        "flags": {"-n": ("How many lines", "e.g. -n 5 for the first five.")}},
+    "tail": {"summary": "tail shows the last lines of a file.", "verbs": {},
+        "flags": {"-n": ("How many lines", "e.g. -n 10 for the last ten."),
+                  "-f": ("Follow live", "Keep printing new lines as the file grows.")}},
+    "grep": {"summary": "grep searches for a pattern in text.", "verbs": {},
+        "flags": {"-i": ("Ignore case", "Match regardless of upper/lower."),
+                  "-r": ("Recursive", "Search through folders too."),
+                  "-n": ("Line numbers", "Show the line number of each match."),
+                  "-E": ("Extended regex", "Use full regex syntax."),
+                  "-v": ("Invert match", "Show lines that DON'T match.")}},
+    "chmod": {"summary": "chmod changes a file's permissions.", "verbs": {},
+        "flags": {"-R": ("Recursive", "Apply to a folder and everything inside.")}},
+    "chown": {"summary": "chown changes a file's owner.", "verbs": {}, "flags": {}},
+    "cp": {"summary": "cp copies files or folders.", "verbs": {},
+        "flags": {"-r": ("Recursive", "Copy a folder and its contents.")}},
+    "mv": {"summary": "mv moves or renames files.", "verbs": {}, "flags": {}},
+    "rm": {"summary": "rm deletes files or folders.", "verbs": {},
+        "flags": {"-r": ("Recursive", "Delete a folder and its contents."),
+                  "-f": ("Force", "Never prompt, don't error on missing files.")}},
+    "find": {"summary": "find searches the file tree.", "verbs": {},
+        "flags": {"-name": ("Match by name", "e.g. -name '*.py'."),
+                  "-type": ("Match by type", "f = file, d = directory.")}},
+    "tar": {"summary": "tar bundles files into one archive.", "verbs": {},
+        "flags": {"-c": ("Create", "Build an archive."),
+                  "-x": ("Extract", "Unpack an archive."),
+                  "-z": ("Gzip", "Compress with gzip."),
+                  "-f": ("The file", "The archive filename."),
+                  "-v": ("Verbose", "List each file as it's processed.")}},
+    "ps": {"summary": "ps lists running processes.", "verbs": {},
+        "flags": {"-ef": ("Every process, full", "All processes with full detail.")}},
+    "kill": {"summary": "kill stops a process.", "verbs": {},
+        "flags": {"-9": ("Force kill", "Immediately terminate — no graceful shutdown.")}},
+}
+
+
+def _explain_tokens(cmdline):
+    """Split a command line into classified, explained tokens.
+
+    Returns a list of dicts: {token, kind, brief, detail, color}. `kind` is
+    program|verb|flag|value. Curated explanations come from CMD_EXPLAIN; the
+    rest get a generic explanation by shape so nothing is left unexplained.
+    """
+    try:
+        import shlex
+        parts = shlex.split(cmdline)
+    except Exception:
+        parts = cmdline.split()
+    if not parts:
+        return []
+    prog = parts[0]
+    entry = CMD_EXPLAIN.get(prog, {})
+    tokens = []
+    for i, tok in enumerate(parts):
+        if i == 0:
+            kind = "program"
+        elif tok.startswith("--") or (tok.startswith("-") and len(tok) > 1):
+            kind = "flag"
+        elif i == 1 and tok in entry.get("verbs", {}):
+            # the immediate subcommand (docker build, git commit, aws s3)
+            kind = "verb"
+        elif tok in entry.get("verbs_verb", {}):
+            # a nested action (aws s3 mb, az vm create)
+            kind = "verb"
+        else:
+            kind = "value"
+        brief, detail = _explain_entry(prog, entry, tok, kind, i)
+        tokens.append({"token": tok, "kind": kind, "brief": brief,
+                       "detail": detail, "color": _EXPLAIN_COLORS[kind]})
+    return tokens
+
+
+def _explain_entry(prog, entry, tok, kind, i):
+    """Resolve (brief, detail) for one token — curated first, generic fallback."""
+    if kind == "program":
+        brief = entry.get("summary", f"{prog} is a command-line tool.")
+        return brief, brief
+    if kind == "flag":
+        f = entry.get("flags", {}).get(tok)
+        if f:
+            return f if isinstance(f, tuple) else (f, "")
+        brief = f"{tok} — a flag that changes how {prog} behaves."
+        return brief, f"Flags are options you add to tweak what {prog} does. This one is specific to {prog}."
+    if kind == "verb":
+        v = entry.get("verbs", {}).get(tok) or entry.get("verbs_verb", {}).get(tok)
+        if v:
+            return v if isinstance(v, tuple) else (v, "")
+        brief = f"{tok} — an action {prog} can perform."
+        return brief, f"{tok} is the operation: it tells {prog} what to do."
+    # value
+    brief = f"{tok} — the thing {prog} acts on."
+    detail = (f"This is an argument {prog} uses — a name, path, or value. "
+              f"What it means depends on the {prog} command you ran.")
+    return brief, detail
+
+
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
     {"title": "where am I?", "stage": 0, "expect": ["pwd"], "cmd_hint": "pwd",
@@ -18504,6 +18826,21 @@ class CloudHelpIcon(Static):
         self.app._dev_toggle_help()
 
 
+class TokenChip(Static):
+    """A single clickable command token in the explainer — clicking it opens the
+    detail manual for that token. Mouse-click only (the trainer owns the
+    keyboard)."""
+
+    def __init__(self, label: str = "", token_i: int = 0, color: str = "#f0f0f5", **kw):
+        super().__init__(label, **kw)
+        self.token_i = token_i
+        self._tok_color = color
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._dev_open_token(self.token_i)
+
+
 class VolumeBar(Static):
     """Docked bottom volume faders: two rows — VOICE (TTS) and SFX (keyboard /
     win-fail sounds) — each with its own mute toggle and clickable level meter.
@@ -18971,6 +19308,15 @@ class TutorApp(App):
     #dev-foot { width: 100%; height: auto; margin-top: 1; }
     #dev-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #dev-help.visible { display: block; }
+    #dev-explain { width: 100%; height: auto; border: solid #30363d; background: #0d1117; padding: 1 2; display: none; }
+    #dev-explain.visible { display: block; }
+    #dev-explain-summary { width: 100%; height: auto; }
+    #dev-explain-cmd { width: 100%; height: auto; }
+    #dev-explain-legend { width: 100%; height: auto; }
+    TokenChip { height: 1; padding: 0 1; }
+    TokenChip:hover { background: $surface; }
+    #dev-expl-detail { layer: overlay; width: 60%; height: auto; max-height: 72%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
+    #dev-expl-detail.visible { display: block; }
     #cheat { width: 100%; height: auto; max-height: 24; border: tall $warning; padding: 1 2; display: none; }
     #cheat.visible { display: block; }
     #side-examples { width: 100%; height: auto; max-height: 14; border: tall $warning; padding: 0; }
@@ -19288,6 +19634,10 @@ class TutorApp(App):
         self._dev_flash_timer = None  # interval that advances + fades the flashes
         self._dev_adv_timer = None
         self._dev_auto_timer = None   # smooth auto-advance after a command win
+        self._dev_explain_tokens = [] # explainer: tokenized current command
+        self._dev_explain_cmd = ""    # explainer: the command being explained
+        self._dev_explain_open = False  # detail overlay open
+        self._dev_explain_tok = 0     # which token's detail is open
         self._net_on = False          # NETWORK+ overlay open
         self._net_module = 0          # current module idx (0-3)
         self._net_queue: list = []    # pending steps for this module
@@ -19643,6 +19993,12 @@ class TutorApp(App):
                 yield CloudHelpIcon(" ? ", id="dev-help-icon")
                 yield ExitIcon(" ✕ ", id="dev-exit")
             yield Static("", id="dev-ghost")
+            with Vertical(id="dev-explain"):
+                yield Static("", id="dev-explain-summary")
+                with Horizontal(id="dev-explain-cmd"):
+                    for _i in range(16):
+                        yield TokenChip("", token_i=_i, id=f"dev-tok-{_i}")
+                yield Static("", id="dev-explain-legend")
             with Horizontal(id="dev-body"):
                 with Vertical(id="dev-term"):
                     yield Static("", id="dev-output")
@@ -19651,6 +20007,7 @@ class TutorApp(App):
                     yield Static("", id="dev-state-tree")
             yield Static("", id="dev-foot")
         yield Static("", id="dev-help")
+        yield Static("", id="dev-expl-detail")
         yield Static("", id="dev-confirm")
         yield Static("", id="dev-load")
         with NetTrainer(id="net"):
@@ -25438,6 +25795,11 @@ class TutorApp(App):
         if self._dev_idx >= len(DEV_LESSONS):
             self._dev_phase = "run"
             return
+        # close any open explainer detail + reset so the new lesson re-renders
+        if getattr(self, "_dev_explain_open", False):
+            self._dev_close_token()
+        self._dev_explain_cmd = ""
+        self._dev_explain_tokens = []
         lesson = self._dev_lesson()
         self._dev_chal_done = set()   # reset challenge toolbox progress
         self._dev_explained_tokens = set()   # re-explain command pieces each lesson
@@ -26203,6 +26565,10 @@ class TutorApp(App):
             if key == "escape":
                 self._dev_toggle_help()
             return
+        if self._dev_explain_open:
+            if key == "escape":
+                self._dev_close_token()
+            return
         # the centered 'save progress?' card owns the keys first (even over vim)
         if self._dev_confirm:
             ch = (event.character or "").lower()
@@ -26380,6 +26746,102 @@ class TutorApp(App):
             t.append("\n")
         return t
 
+    # -- command explainer (color-coded breakdown + clickable tokens) -------- #
+
+    def _dev_render_explain(self):
+        """Populate the command explainer panel — a summary, the command
+        colorized by token type, and a per-token legend. Hidden for info/
+        challenge/vim lessons (nothing to type)."""
+        panel = self.query_one("#dev-explain", Vertical)
+        cmd = ""
+        if 0 <= self._dev_idx < len(DEV_LESSONS):
+            lesson = self._dev_lesson()
+            if lesson["kind"] == "run":
+                cmd = lesson.get("cmd_hint", "")
+            elif lesson["kind"] == "write" and getattr(self, "_dev_write_stage", "touch") != "vim":
+                stage = getattr(self, "_dev_write_stage", "touch")
+                f = lesson.get("file", "")
+                if stage == "touch" and f:
+                    cmd = f"touch {f}"
+                elif stage == "nvim" and f:
+                    cmd = f"nvim {f}"
+        if not cmd:
+            panel.remove_class("visible")
+            self._dev_explain_tokens = []
+            self._dev_explain_cmd = ""
+            return
+        if cmd == self._dev_explain_cmd and self._dev_explain_tokens:
+            return  # already rendered for this command
+        self._dev_explain_cmd = cmd
+        self._dev_explain_tokens = _explain_tokens(cmd)
+        tokens = self._dev_explain_tokens
+        prog = tokens[0]["token"] if tokens else ""
+        entry = CMD_EXPLAIN.get(prog, {})
+        # summary: what the tool is, then the specific action
+        tsum = Text()
+        tsum.append("what this does:  ", style="bold #fbbf24")
+        tsum.append(entry.get("summary", f"{prog} runs a command."), style="#d5d5d5")
+        verbs = [x for x in tokens if x["kind"] == "verb"]
+        if verbs:
+            tsum.append("  →  ", style="#6b7280")
+            tsum.append(verbs[0]["brief"], style="bold #86efac")
+        self.query_one("#dev-explain-summary", Static).update(tsum)
+        # colorized, clickable tokens
+        for i in range(16):
+            chip = self.query_one(f"#dev-tok-{i}", TokenChip)
+            if i < len(tokens):
+                tok = tokens[i]
+                chip.token_i = i
+                chip.update(Text(tok["token"], style="bold " + tok["color"]))
+            else:
+                chip.token_i = -1
+                chip.update("")
+        # legend: colored token → brief
+        tleg = Text()
+        for tok in tokens:
+            tleg.append("  ", style="")
+            tleg.append(tok["token"], style="bold " + tok["color"])
+            tleg.append("  —  ", style="#6b7280")
+            tleg.append(tok["brief"], style="#d5d5d5")
+            tleg.append("\n")
+        tleg.append("click a token for more detail", style="dim")
+        self.query_one("#dev-explain-legend", Static).update(tleg)
+        panel.add_class("visible")
+
+    def _dev_open_token(self, i):
+        tokens = self._dev_explain_tokens
+        if not tokens or not (0 <= i < len(tokens)):
+            return
+        self._dev_explain_tok = i
+        self._dev_explain_open = True
+        d = self.query_one("#dev-expl-detail", Static)
+        d.update(self._dev_render_token_detail())
+        d.add_class("visible")
+
+    def _dev_close_token(self):
+        self._dev_explain_open = False
+        self.query_one("#dev-expl-detail", Static).remove_class("visible")
+        self.query_one("#dev", CloudTrainer).focus()
+
+    def _dev_render_token_detail(self):
+        tokens = self._dev_explain_tokens
+        i = self._dev_explain_tok
+        if not tokens or not (0 <= i < len(tokens)):
+            return Text()
+        tok = tokens[i]
+        t = Text()
+        t.append("COMMAND BREAKDOWN", style="bold cyan")
+        t.append("   Esc to close\n\n", style="dim")
+        t.append(tok["token"], style="bold " + tok["color"])
+        t.append(f"   ({_EXPLAIN_KIND_LABEL[tok['kind']]})\n\n", style="#8b949e")
+        t.append(tok["brief"], style="bold #f0f0f5")
+        t.append("\n\n")
+        t.append(tok["detail"] or tok["brief"], style="#d5d5d5")
+        t.append("\n\n")
+        t.append("in:  ", style="dim")
+        t.append(self._dev_explain_cmd, style="#8b949e")
+        return t
+
     # -- animated command ghost (run lessons) ------------------------------- #
 
     def _dev_ghost_start(self):
@@ -26452,6 +26914,7 @@ class TutorApp(App):
     def _dev_render(self):
         self.query_one("#dev-head", Static).update(self._dev_render_head())
         self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
+        self._dev_render_explain()
         self.query_one("#dev-output", Static).update(self._dev_render_output())
         self.query_one("#dev-state-tree", Static).update(self._dev_render_state())
         self.query_one("#dev-foot", Static).update(self._dev_render_foot())
