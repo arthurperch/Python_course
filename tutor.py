@@ -5488,8 +5488,12 @@ def _record_concept(p: dict, concept: str, ok: bool) -> None:
     due-date into the future (SM-2-ish interval growth); wrong answers pull it
     due immediately. This is the single source of truth for every track."""
     m = p.setdefault("mastery", {})
-    e = m.setdefault(concept, {"right": 0, "wrong": 0, "interval": 0,
-                               "due": "", "last": ""})
+    e = m.setdefault(concept, {})
+    e.setdefault("right", 0)
+    e.setdefault("wrong", 0)
+    e.setdefault("interval", 0)
+    e.setdefault("due", "")
+    e.setdefault("last", "")
     today = date.today().isoformat()
     e["last"] = today
     if ok:
@@ -16039,6 +16043,184 @@ LINUX_MISSIONS = [
 ]
 
 
+# =========================================================================== #
+# RECALL DRILLS — the "architect from scratch" recall pool. Each is a DO task
+# (TTS says "build X") graded against a CloudLab by OUTCOME. `check(lab, out)`
+# takes the whole CloudLab, so one trainer recalls bash, aws, az, kubectl,
+# terraform, git, systemctl, ssh. Variant drills carry `template`/`idiom_t`/
+# `variants`/`check_f` so a re-ask is a DIFFERENT instance (fresh names), never
+# the identical task.
+# =========================================================================== #
+
+RECALL_DRILLS = [
+    # -- bash -------------------------------------------------------------- #
+    {"id": "rd-mkdir", "concept": "ld:mkdir",
+     "prompt": "make three folders called src, tests, and docs",
+     "hint": "one command makes all three",
+     "idiom": "mkdir src tests docs",
+     "template": "make three folders called {0}, {1}, and {2}",
+     "idiom_t": "mkdir {0} {1} {2}",
+     "variants": [("src", "tests", "docs"), ("web", "api", "cache"),
+                  ("lib", "bin", "etc"), ("app", "static", "media")],
+     "check_f": lambda names: (lambda lab, out: all(lab.fs._resolve(n) in lab.fs.dirs for n in names)),
+     "check": lambda lab, out: all(lab.fs._resolve(n) in lab.fs.dirs for n in ("src", "tests", "docs"))},
+    {"id": "rd-touch", "concept": "ld:touch",
+     "prompt": "create an empty file called notes.txt",
+     "hint": "touch makes a file",
+     "idiom": "touch notes.txt",
+     "template": "create an empty file called {0}",
+     "idiom_t": "touch {0}",
+     "variants": [("notes.txt",), ("todo.txt",), ("log.txt",), ("readme.md",)],
+     "check_f": lambda names: (lambda lab, out: lab.fs._resolve(names[0]) in lab.fs.files),
+     "check": lambda lab, out: lab.fs._resolve("notes.txt") in lab.fs.files},
+
+    # -- aws --------------------------------------------------------------- #
+    {"id": "rd-s3", "concept": "rd:aws-s3",
+     "prompt": "create an S3 bucket called my-assets",
+     "hint": "aws s3 mb makes a bucket",
+     "idiom": "aws s3 mb s3://my-assets",
+     "template": "create an S3 bucket called {0}",
+     "idiom_t": "aws s3 mb s3://{0}",
+     "variants": [("my-assets",), ("my-logs",), ("my-backups",), ("my-media",)],
+     "check_f": lambda names: (lambda lab, out: names[0] in lab.aws.buckets),
+     "check": lambda lab, out: "my-assets" in lab.aws.buckets},
+    {"id": "rd-ec2", "concept": "rd:aws-ec2",
+     "prompt": "launch an EC2 instance",
+     "hint": "aws ec2 run-instances",
+     "idiom": "aws ec2 run-instances --image-id ami-123 --instance-type t3.micro",
+     "check": lambda lab, out: len(lab.aws.instances) >= 1},
+    {"id": "rd-secret", "concept": "rd:aws-secrets",
+     "prompt": "store a secret called db-password",
+     "hint": "aws secretsmanager create-secret",
+     "idiom": "aws secretsmanager create-secret --name db-password --secret-string s3cr3t",
+     "check": lambda lab, out: "db-password" in lab.aws.secrets},
+    {"id": "rd-sg", "concept": "rd:aws-sg",
+     "prompt": "create a security group called web-sg",
+     "hint": "aws ec2 create-security-group",
+     "idiom": "aws ec2 create-security-group --group-name web-sg --description web",
+     "check": lambda lab, out: "web-sg" in lab.aws.security_groups},
+    {"id": "rd-sg-allow", "concept": "rd:aws-sg-allow",
+     "prompt": "open port 22 on the web-sg security group",
+     "hint": "authorize-security-group-ingress opens a port",
+     "idiom": "aws ec2 authorize-security-group-ingress --group-name web-sg --protocol tcp --port 22 --cidr 0.0.0.0/0",
+     "setup": lambda lab: lab.run("aws ec2 create-security-group --group-name web-sg --description web"),
+     "check": lambda lab, out: any(r[1] == "22" for r in lab.aws.security_groups.get("web-sg", {}).get("ingress", []))},
+    {"id": "rd-rds", "concept": "rd:aws-rds",
+     "prompt": "create a database called prod-db",
+     "hint": "aws rds create-db-instance",
+     "idiom": "aws rds create-db-instance --db-instance-identifier prod-db --engine postgres",
+     "check": lambda lab, out: "prod-db" in lab.aws.rds_instances},
+    {"id": "rd-snapshot", "concept": "rd:aws-rds-snapshot",
+     "prompt": "snapshot prod-db as snap1",
+     "hint": "aws rds create-db-snapshot",
+     "idiom": "aws rds create-db-snapshot --db-snapshot-identifier snap1 --db-instance-identifier prod-db",
+     "setup": lambda lab: lab.run("aws rds create-db-instance --db-instance-identifier prod-db --engine postgres"),
+     "check": lambda lab, out: "snap1" in lab.aws.db_snapshots},
+    {"id": "rd-kms", "concept": "rd:aws-kms",
+     "prompt": "create a KMS key for at-rest encryption",
+     "hint": "aws kms create-key",
+     "idiom": "aws kms create-key",
+     "check": lambda lab, out: len(lab.aws.kms_keys) >= 1},
+
+    # -- az ---------------------------------------------------------------- #
+    {"id": "rd-az-group", "concept": "rd:az-group",
+     "prompt": "create an Azure resource group called prod",
+     "hint": "az group create",
+     "idiom": "az group create --name prod --location eastus",
+     "template": "create an Azure resource group called {0}",
+     "idiom_t": "az group create --name {0} --location eastus",
+     "variants": [("prod",), ("staging",), ("dev",), ("shared",)],
+     "check_f": lambda names: (lambda lab, out: names[0] in lab.az.resource_groups),
+     "check": lambda lab, out: "prod" in lab.az.resource_groups},
+    {"id": "rd-az-vm", "concept": "rd:az-vm",
+     "prompt": "create an Azure VM called web",
+     "hint": "az vm create",
+     "idiom": "az vm create --name web --resource-group prod",
+     "check": lambda lab, out: "web" in lab.az.vms},
+    {"id": "rd-az-vnet", "concept": "rd:az-vnet",
+     "prompt": "create an Azure VNet called vnet1",
+     "hint": "az network vnet create",
+     "idiom": "az network vnet create --name vnet1 --resource-group prod",
+     "check": lambda lab, out: "vnet1" in lab.az.vnets},
+    {"id": "rd-az-subnet", "concept": "rd:az-subnet",
+     "prompt": "create a subnet called app inside vnet1",
+     "hint": "az network vnet subnet create",
+     "idiom": "az network vnet subnet create --name app --vnet-name vnet1",
+     "setup": lambda lab: lab.run("az network vnet create --name vnet1 --resource-group prod"),
+     "check": lambda lab, out: "app" in lab.az.vnets.get("vnet1", {}).get("subnets", {})},
+
+    # -- kubernetes --------------------------------------------------------- #
+    {"id": "rd-kubectl-deploy", "concept": "rd:k8s-deploy",
+     "prompt": "create a deployment called web with the nginx image",
+     "hint": "kubectl create deployment",
+     "idiom": "kubectl create deployment web --image=nginx",
+     "check": lambda lab, out: "web" in lab.k8s.deployments},
+    {"id": "rd-kubectl-scale", "concept": "rd:k8s-scale",
+     "prompt": "scale the web deployment to 3 replicas",
+     "hint": "kubectl scale deployment",
+     "idiom": "kubectl scale deployment web --replicas=3",
+     "setup": lambda lab: lab.run("kubectl create deployment web --image=nginx"),
+     "check": lambda lab, out: lab.k8s.deployments.get("web", {}).get("replicas") == 3},
+
+    # -- terraform / git / systemd / ssh ------------------------------------ #
+    {"id": "rd-terraform", "concept": "rd:terraform",
+     "prompt": "apply the prepared Terraform config (init + plan are already done)",
+     "hint": "terraform apply creates the planned resources",
+     "idiom": "terraform apply",
+     "setup": lambda lab: (
+         lab.fs.files.__setitem__(lab.fs._resolve("main.tf"),
+                                  'resource "aws_s3_bucket" "b" {\n  bucket = "my-bucket"\n}\n'),
+         lab.run("terraform init"), lab.run("terraform plan")),
+     "check": lambda lab, out: len(lab.tf.resources) >= 1},
+    {"id": "rd-git-init", "concept": "rd:git-init",
+     "prompt": "initialize a git repository",
+     "hint": "git init",
+     "idiom": "git init",
+     "check": lambda lab, out: lab.git.inited},
+    {"id": "rd-git-commit", "concept": "rd:git-commit",
+     "prompt": "make one commit (files are already staged)",
+     "hint": "git commit -m",
+     "idiom": "git commit -m 'init'",
+     "setup": lambda lab: (lab.run("git init"),
+                           lab.fs.files.__setitem__(lab.fs._resolve("app.py"), 'print("hi")\n'),
+                           lab.run("git add .")),
+     "check": lambda lab, out: len(lab.git.commits) >= 1},
+    {"id": "rd-systemctl", "concept": "ld:systemctl",
+     "prompt": "restart the web service",
+     "hint": "systemctl controls services",
+     "idiom": "systemctl restart web",
+     "check": lambda lab, out: lab.fs.services["web"]["state"] == "running"},
+    {"id": "rd-journalctl", "concept": "ld:journalctl",
+     "prompt": "read the web service's logs",
+     "hint": "journalctl -u reads one service's logs",
+     "idiom": "journalctl -u web",
+     "check": lambda lab, out: any("listening" in l for l in out)},
+    {"id": "rd-ssh", "concept": "ld:ssh",
+     "prompt": "ssh into the server as admin",
+     "hint": "ssh user@host",
+     "idiom": "ssh admin@prod-server",
+     "check": lambda lab, out: lab.fs.ssh_host == "admin@prod-server"},
+]
+
+
+def _rg_variant_drill(drill, recent):
+    """Return a variant instance of a DO drill (different names than the last
+    2), or the drill itself when it has no variants."""
+    variants = drill.get("variants")
+    if not variants:
+        return drill
+    # pick a variant tuple not in recent (last-2 ids); fall back to any
+    choices = [v for v in variants if v not in recent]
+    if not choices:
+        choices = list(variants)
+    names = random.choice(choices)
+    return {**drill,
+            "prompt": drill["template"].format(*names),
+            "idiom": drill["idiom_t"].format(*names),
+            "check": drill["check_f"](names),
+            "_variant": names}
+
+
 def _net_pool_by_level(level: int) -> list:
     return [q for q in NET_QUESTIONS if q["level"] == level]
 
@@ -18101,6 +18283,20 @@ class LinuxDrillTrainer(Vertical):
         self.app._ld_on_key(event)
 
 
+class RecallGymTrainer(Vertical):
+    """Full-screen RECALL GYM overlay: the cross-track recall surface. Pulls
+    due/weak concepts from `p["mastery"]` across every track and serves each as
+    a VARIANT drill (a fresh instance — different name/task, same concept) so
+    the learner recalls-to-build, not parrots. DO drills run against a CloudLab
+    and are graded by outcome; WHAT drills are multiple choice. Pipes keys to
+    `app._rg_on_key`."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._rg_on_key(event)
+
+
 class CloudHelpIcon(Static):
     """The always-visible, clickable `?` in the dev top bar — opens the
     command manual. Mouse-click only (the trainer owns the keyboard)."""
@@ -18530,6 +18726,18 @@ class TutorApp(App):
     #ld-foot { width: 100%; height: auto; }
     #ld-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #ld-confirm.visible { display: block; }
+    #rg { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #rg.visible { display: block; }
+    #rg-topbar { width: 100%; height: auto; }
+    #rg-head { width: 1fr; height: auto; }
+    #rg-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #rg-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #rg-body { width: 100%; height: 1fr; }
+    #rg-goal { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
+    #rg-term { width: 100%; height: 1fr; padding: 1 2; background: #0a0a0f; border: solid #30363d; }
+    #rg-foot { width: 100%; height: auto; }
+    #rg-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #rg-confirm.visible { display: block; }
     #net { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #net.visible { display: block; }
     #net-topbar { width: 100%; height: auto; }
@@ -18939,6 +19147,25 @@ class TutorApp(App):
         self._ld_gen = 0
         self._ld_pause_action = None
         self._ld_confirm = False
+        self._rg_on = False           # RECALL GYM overlay open
+        self._rg_lab = CloudLab()     # CloudLab the drills run against
+        self._rg_pool: list = []      # drills for this session
+        self._rg_i = 0
+        self._rg_drill = None         # current drill dict
+        self._rg_cmd = ""             # command being typed
+        self._rg_history: list = []   # (style, text) terminal scrollback
+        self._rg_attempts = 0
+        self._rg_msg = ""
+        self._rg_msg_kind = ""
+        self._rg_done = False
+        self._rg_n = 0
+        self._rg_right = 0
+        self._rg_review: list = []    # drills answered wrong, re-asked at end
+        self._rg_pick = None          # WHAT drill: chosen option
+        self._rg_adv_timer = None
+        self._rg_gen = 0
+        self._rg_pause_action = None
+        self._rg_confirm = False
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -19232,6 +19459,15 @@ class TutorApp(App):
                 yield Static("", id="ld-term")
             yield Static("", id="ld-foot")
         yield Static("", id="ld-confirm")
+        with RecallGymTrainer(id="rg"):
+            with Horizontal(id="rg-topbar"):
+                yield Static("", id="rg-head")
+                yield ExitIcon(" ✕ ", id="rg-exit")
+            with Vertical(id="rg-body"):
+                yield Static("", id="rg-goal")
+                yield Static("", id="rg-term")
+            yield Static("", id="rg-foot")
+        yield Static("", id="rg-confirm")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -20000,6 +20236,7 @@ class TutorApp(App):
         order += [-4, -3, -2, -1]     # NETWORK+, CLOUD, BUILD, VIM
         order.append(-7)              # INTERVIEW PREP
         order.append(-8)              # LINUX DRILLS
+        order.append(-9)              # RECALL GYM
         order.append(-6)              # PYTHON LAB
         order += list(range(len(GROUPS)))
         order.append(len(GROUPS))     # PYTHON REVIEW
@@ -20033,6 +20270,7 @@ class TutorApp(App):
             (-1, "VIM / NEOVIM", "#d8b4fe", "keyboard dojo", ""),
             (-7, "INTERVIEW PREP", "#7dd3fc", "AWS · Azure · Linux · k8s · TF · Ansible — MC + flashcards", ""),
             (-8, "LINUX DRILLS", "#7ee787", "TTS drills: make this / what is this · missions · hints when stuck", ""),
+            (-9, "RECALL GYM", "#c084fc", "cross-track recall — build it from scratch, fresh instance each time", ""),
             (-6, "PYTHON LAB", "#a6e3a1", "playground — every example, edit & run", ""),
         ]
         for gi, g in enumerate(GROUPS):
@@ -20080,7 +20318,7 @@ class TutorApp(App):
             line_no += 1
             # a clean divider between the non-Python paths and the Python
             # course stack, and again before the review queue
-            if si == -8 or si == len(GROUPS) - 1:
+            if si == -9 or si == len(GROUPS) - 1:
                 t.append("─" * 46, style="#3a3a3a")
                 t.append("\n")
                 line_no += 1
@@ -20121,6 +20359,11 @@ class TutorApp(App):
             n = len(LINUX_DRILLS)
             note = (f"linux drills — {n} quick bash tasks + {len(LINUX_MISSIONS)} "
                     f"missions · graded by result, hints when stuck")
+        elif self.series_sel == -9:
+            due = len(_due_concepts(self.p))
+            weak = len(_weak_concepts(self.p, 25))
+            note = (f"recall gym — cross-track recall across all your skills · "
+                    f"{due} due now" + (f", {weak} weak" if weak else ""))
         else:
             g = GROUPS[self.series_sel]
             note = f"{g['name']} — Enter to browse its challenges"
@@ -20761,6 +21004,8 @@ class TutorApp(App):
             return   # INTERVIEW PREP overlay owns the keyboard; Esc there exits it
         if self._ld_on:
             return   # LINUX DRILLS overlay owns the keyboard; Esc there exits it
+        if self._rg_on:
+            return   # RECALL GYM overlay owns the keyboard; Esc there exits it
         if self._lab_menu_on:
             self._lab_menu_close()
             return
@@ -20792,7 +21037,7 @@ class TutorApp(App):
 
     def action_back(self):
         """The ← back button (top-left): the ONLY way to leave a challenge."""
-        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on or self._ld_on:
+        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on or self._ld_on or self._rg_on:
             return
         if self.mode == "challenge":
             self._stop_demo_timers()
@@ -20821,6 +21066,8 @@ class TutorApp(App):
             self._iv_exit()
         elif self._ld_on:
             self._ld_exit()
+        elif self._rg_on:
+            self._rg_exit()
 
     def _select_challenge(self):
         self.group_idx = self.series_sel
@@ -21040,6 +21287,8 @@ class TutorApp(App):
             return   # INTERVIEW PREP overlay owns the keyboard
         if self._ld_on:
             return   # LINUX DRILLS overlay owns the keyboard
+        if self._rg_on:
+            return   # RECALL GYM overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -21077,6 +21326,9 @@ class TutorApp(App):
                     return
                 if self.series_sel == -8:
                     self._ld_begin()
+                    return
+                if self.series_sel == -9:
+                    self._rg_begin()
                     return
                 if self.series_sel == len(GROUPS):
                     self._start_py_review()
@@ -28434,6 +28686,385 @@ class TutorApp(App):
             if self._ld_mode == "drill":
                 t.append("   ·   m — missions", style="dim")
         self.query_one("#ld-foot", Static).update(t)
+
+    # -- RECALL GYM -------------------------------------------------------- #
+    def _rg_begin(self):
+        """Open the RECALL GYM overlay: the cross-track recall surface. Pulls
+        due/weak concepts from mastery across every track and serves each as a
+        VARIANT drill (fresh name/task, same concept)."""
+        self._rg_on = True
+        self._rg_lab = CloudLab()
+        self._rg_pool = self._rg_build_pool()
+        self._rg_i = 0
+        self._rg_review = []
+        self._rg_n = 0
+        self._rg_right = 0
+        self._rg_done = False
+        self._rg_confirm = False
+        self._rg_history = []
+        self._rg_attempts = 0
+        self._rg_pick = None
+        self._rg_cmd = ""
+        self._rg_msg = ""
+        self._rg_msg_kind = ""
+        self.query_one("#rg", RecallGymTrainer).add_class("visible")
+        self.query_one("#rg", RecallGymTrainer).focus()
+        self._rg_stop_pause()
+        self._stop_menu_anim()
+        self._rg_setup_current()
+        self._rg_render()
+        self._rg_speak_prompt()
+
+    def _rg_build_pool(self):
+        """Due/weak concepts from mastery (cross-track) first, then the recall
+        drills (weak-first). Dedup by concept so a drill appears once."""
+        drills = []
+        seen = set()
+
+        def add(d):
+            if d is None:
+                return
+            c = d["concept"]
+            if c in seen:
+                return
+            seen.add(c)
+            drills.append(d)
+
+        for concept in (_due_concepts(self.p) + _weak_concepts(self.p, 25))[:30]:
+            add(self._rg_resolve(concept))
+        for rd in sorted(RECALL_DRILLS,
+                         key=lambda d: _concept_accuracy(self.p, d["concept"])):
+            add(self._rg_variant(rd))
+        return drills
+
+    def _rg_resolve(self, concept):
+        """Map a namespaced mastery concept to a recall drill."""
+        for rd in RECALL_DRILLS:
+            if rd["concept"] == concept:
+                return self._rg_variant(rd)
+        if concept.startswith("ld:"):
+            c = concept[3:]
+            for d in LINUX_DRILLS:
+                if d["concept"] == c:
+                    if d.get("kind") == "what":
+                        return {**d, "concept": concept}
+                    return {**d, "concept": concept,
+                            "check": (lambda _c: (lambda lab, out: _c(lab.fs, out)))(d["check"])}
+        for prefix, bank in (("iv:", INTERVIEW_QUESTIONS), ("net:", NET_QUESTIONS)):
+            if concept.startswith(prefix):
+                c = concept[len(prefix):]
+                qs = [q for q in bank if q["concept"] == c]
+                if qs:
+                    q = random.choice(qs)
+                    return {"kind": "what", "concept": concept, "q": q["q"],
+                            "choices": q["choices"], "ans": q["ans"],
+                            "why": q["why"], "say": q["say"]}
+        return None
+
+    def _rg_variant(self, drill):
+        recent = self.p.get("mastery", {}).get(drill["concept"], {}).get("recent_variants", [])
+        return _rg_variant_drill(drill, recent)
+
+    def _rg_current(self):
+        if 0 <= self._rg_i < len(self._rg_pool):
+            return self._rg_pool[self._rg_i]
+        return None
+
+    def _rg_setup_current(self):
+        """Fresh CloudLab for each DO drill; run the drill's setup if present.
+        Track the served variant so the next re-ask is different."""
+        task = self._rg_current()
+        if task is None or task.get("kind") == "what":
+            return
+        self._rg_lab = CloudLab()
+        if task.get("setup"):
+            task["setup"](self._rg_lab)
+        v = task.get("_variant")
+        if v is not None:
+            m = self.p.setdefault("mastery", {})
+            e = m.setdefault(task["concept"], {})
+            e.setdefault("right", 0)
+            e.setdefault("wrong", 0)
+            e.setdefault("interval", 0)
+            e.setdefault("due", "")
+            e.setdefault("last", "")
+            e["recent_variants"] = (e.get("recent_variants", []) + [v])[-2:]
+
+    def _rg_speak_prompt(self):
+        if not self.voice_on:
+            return
+        task = self._rg_current()
+        if task is None:
+            return
+        if task.get("kind") == "what":
+            opts = "; ".join(f"{i+1}: {task['choices'][i]}" for i in range(4))
+            speak(f"{task['q']} Is it {opts}?")
+        else:
+            speak(task["prompt"])
+
+    def _rg_prompt(self):
+        fs = self._rg_lab.fs
+        if fs.ssh_host:
+            user, host = fs.ssh_host.split("@", 1)
+            return f"{user}@{host} ~ ❯ "
+        home = fs.cwd.replace("/home/you", "~", 1) if fs.cwd.startswith("/home/you") else fs.cwd
+        return f"you@cloud {home} ❯ "
+
+    def _rg_stop_pause(self):
+        t = getattr(self, "_rg_adv_timer", None)
+        if t is not None:
+            t.stop()
+            self._rg_adv_timer = None
+
+    def _rg_on_key(self, event):
+        k = event.key
+        if k == "escape":
+            self._rg_exit()
+            return
+        if self._rg_adv_timer is not None:
+            self._rg_stop_pause()
+            self._rg_next()
+            return
+        if self._rg_done:
+            if k == "enter":
+                self._rg_begin()
+            return
+        task = self._rg_current()
+        if task is None:
+            return
+        if task.get("kind") == "what":
+            if self._rg_pick is None and k in ("1", "2", "3", "4"):
+                self._rg_answer(int(k) - 1)
+            elif self._rg_pick is None and k in ("a", "b", "c", "d"):
+                self._rg_answer("abcd".index(k))
+            return
+        if k == "enter":
+            self._rg_submit()
+        elif k == "backspace":
+            self._rg_cmd = self._rg_cmd[:-1]
+            self._rg_render()
+        elif event.character and event.character.isprintable():
+            self._rg_cmd += event.character
+            self._rg_render()
+
+    def _rg_submit(self):
+        cmd = self._rg_cmd.strip()
+        if not cmd:
+            return
+        self._rg_cmd = ""
+        lab = self._rg_lab
+        out, err = lab.run(cmd)
+        self._rg_history.append(("cmd", self._rg_prompt() + cmd))
+        for l in out:
+            self._rg_history.append(("out", l))
+        for l in err:
+            self._rg_history.append(("err", l))
+        task = self._rg_current()
+        if task is None or task.get("kind") == "what":
+            self._rg_render()
+            return
+        if task["check"](lab, out):
+            if self._rg_attempts == 0:
+                _record_concept(self.p, task["concept"], True)
+            self._rg_n += 1
+            self._rg_right += 1
+            self._rg_msg = f"✓ done — {task.get('idiom', '')}"
+            self._rg_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(f"Nice. {task.get('idiom', '')}")
+            self._rg_schedule(1.6, "next")
+            self._rg_render()
+            return
+        # fail → escalating hints, never block
+        self._rg_attempts += 1
+        if self._rg_attempts == 1:
+            _record_concept(self.p, task["concept"], False)
+            self._rg_msg = f"not yet — hint: {task['hint']}"
+            self._rg_msg_kind = "hint"
+            if self.voice_on:
+                speak(f"Not quite. {task['hint']}")
+        elif self._rg_attempts == 2:
+            idiom = task.get("idiom", "")
+            toks = idiom.split()
+            masked = (toks[0] + " " + " ".join("_" * len(w) for w in toks[1:])) if toks else idiom
+            self._rg_msg = f"the command starts with: {masked}"
+            self._rg_msg_kind = "hint"
+            if self.voice_on:
+                speak(f"Here's how it starts: {toks[0] if toks else ''}")
+        else:
+            self._rg_msg = f"the answer is: {task.get('idiom', '')}"
+            self._rg_msg_kind = "answer"
+            self._rg_review.append(task)
+            self._rg_n += 1
+            if self.voice_on:
+                speak(f"The command is {task.get('idiom', '')}")
+            self._rg_schedule(2.4, "next")
+        self._rg_render()
+
+    def _rg_answer(self, idx):
+        task = self._rg_current()
+        if task is None or task.get("kind") != "what" or self._rg_pick is not None:
+            return
+        self._rg_pick = idx
+        self._rg_n += 1
+        if idx == task["ans"]:
+            self._rg_right += 1
+            _record_concept(self.p, task["concept"], True)
+            self._rg_msg = f"✓ correct — {task['why']}"
+            self._rg_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(f"Correct. {task['why']} And to remember it: {task['say']}")
+        else:
+            _record_concept(self.p, task["concept"], False)
+            self._rg_review.append(task)
+            self._rg_msg = f"✗ the answer is {task['choices'][task['ans']]} — {task['why']}"
+            self._rg_msg_kind = "answer"
+            _, fail = self._sounds_for("netplus")
+            play_file(fail, self._fx_volume())
+            if self.voice_on:
+                speak(f"Incorrect. The answer is {task['choices'][task['ans']]}. "
+                      f"{task['why']} And to remember it: {task['say']}")
+        self._rg_schedule(2.2, "next")
+        self._rg_render()
+
+    def _rg_schedule(self, delay, action):
+        self._rg_stop_pause()
+        self._rg_pause_action = action
+        self._rg_gen += 1
+        gen = self._rg_gen
+        self._rg_adv_timer = self.set_timer(
+            delay, lambda: self._rg_pause_done(gen))
+
+    def _rg_pause_done(self, gen):
+        if gen != self._rg_gen or not self._rg_on:
+            return
+        self._rg_adv_timer = None
+        self._rg_pause_action = None
+        self._rg_next()
+
+    def _rg_next(self):
+        self._rg_stop_pause()
+        self._rg_i += 1
+        if self._rg_i >= len(self._rg_pool):
+            if self._rg_review:
+                self._rg_pool = list(self._rg_review)
+                self._rg_review = []
+                self._rg_i = 0
+            else:
+                self._rg_done = True
+                save_progress(self.p)
+        self._rg_attempts = 0
+        self._rg_pick = None
+        self._rg_setup_current()
+        self._rg_render()
+        self._rg_speak_prompt()
+
+    def _rg_exit(self):
+        self._rg_stop_pause()
+        save_progress(self.p)
+        self._rg_on = False
+        self._rg_done = False
+        self._rg_confirm = False
+        self.query_one("#rg", RecallGymTrainer).remove_class("visible")
+        self._show_menu()
+        self.series_sel = -9
+        self.menu_level = "series"
+        self._render_menu()
+
+    def _rg_render(self):
+        self._rg_render_head()
+        self._rg_render_goal()
+        self._rg_render_term()
+        self._rg_render_foot()
+
+    def _rg_render_head(self):
+        t = Text()
+        t.append(" RECALL GYM ", style="bold #11111b on #c084fc")
+        t.append(f"·  {self._rg_right}/{self._rg_n} ", style="#d5d5d5")
+        if self._rg_review:
+            t.append(f"·  {len(self._rg_review)} to re-ask ", style="bold #fbbf24")
+        self.query_one("#rg-head", Static).update(t)
+
+    def _rg_render_goal(self):
+        t = Text()
+        if self._rg_done:
+            t.append("Recall complete. ", style="bold #22c55e")
+            t.append(f"{self._rg_right}/{self._rg_n} right.\n", style="#f0f0f5")
+            t.append("\nEnter — new round   ·   Esc — menu", style="dim")
+            self.query_one("#rg-goal", Static).update(t)
+            return
+        task = self._rg_current()
+        if task is None:
+            self.query_one("#rg-goal", Static).update("")
+            return
+        if task.get("kind") == "what":
+            t.append("RECALL — WHAT IS IT?\n\n", style="bold #ffa657")
+            t.append(task["q"], style="bold #f0f0f5")
+        else:
+            t.append("RECALL — BUILD IT FROM SCRATCH:\n\n", style="bold #ffa657")
+            t.append(task["prompt"], style="bold #f0f0f5")
+        if self._rg_msg:
+            style = ("bold #22c55e" if self._rg_msg_kind == "win"
+                     else ("bold #fbbf24" if self._rg_msg_kind == "hint"
+                           else "bold #ffa657"))
+            t.append("\n\n")
+            t.append(self._rg_msg, style=style)
+        self.query_one("#rg-goal", Static).update(t)
+
+    def _rg_render_term(self):
+        t = Text()
+        if self._rg_done:
+            self.query_one("#rg-term", Static).update(t)
+            return
+        task = self._rg_current()
+        if task is not None and task.get("kind") == "what":
+            for i, opt in enumerate(task["choices"]):
+                style = "#f0f0f5"
+                if self._rg_pick is not None:
+                    if i == task["ans"]:
+                        style = "bold #22c55e"
+                    elif i == self._rg_pick:
+                        style = "bold #ff5555"
+                    else:
+                        style = "#5a5a5a"
+                t.append(f"  {i+1}. {opt}\n", style=style)
+            if self._rg_pick is None:
+                t.append("\npress 1-4 to answer", style="dim")
+            self.query_one("#rg-term", Static).update(t)
+            return
+        for style, text in self._rg_history[-14:]:
+            if style == "cmd":
+                t.append(text, style="bold #f0f0f5")
+            elif style == "err":
+                t.append(text, style="#f87171")
+            else:
+                t.append(text, style="#c9cdd6")
+            t.append("\n")
+        t.append(self._rg_prompt(), style="bold #c084fc")
+        t.append(self._rg_cmd, style="bold #f0f0f5")
+        t.append("█", style="bold #c084fc")
+        self.query_one("#rg-term", Static).update(t)
+
+    def _rg_render_foot(self):
+        t = Text()
+        if self._rg_done:
+            t.append("Enter — new round   ·   Esc — menu", style="dim")
+            self.query_one("#rg-foot", Static).update(t)
+            return
+        task = self._rg_current()
+        if task is not None and task.get("kind") == "what":
+            t.append("1-4 — answer", style="bold #7dd3fc")
+            t.append("   ·   Esc — menu", style="dim")
+        else:
+            t.append("type the command, Enter runs it", style="bold #7dd3fc")
+            t.append("   ·   ", style="dim")
+            t.append("graded by result, not exact wording", style="dim")
+            t.append("   ·   each recall is a fresh instance", style="dim")
+        self.query_one("#rg-foot", Static).update(t)
 
     def action_demo(self):
         """F3 — open/close the worked-example demo. The demo shows in the
