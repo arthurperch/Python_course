@@ -6809,6 +6809,13 @@ class ShellFS:
                     "PATH": "/usr/local/bin:/usr/bin:/bin"}
         self.archives = {}   # archive name -> {entry: content} for tar
         self.processes = {1: "init", 42: "bash", 201: "python3 app.py"}   # pid -> cmd
+        self.services = {"web": {"state": "running", "enabled": True,
+                                 "logs": ["web: listening on :8080",
+                                          "web: 200 GET /index.html"]},
+                         "db": {"state": "running", "enabled": True,
+                                "logs": ["db: accepting connections"]}}
+        self.ssh_host = None   # None = local; a string like "user@server" = remote
+        self._local_cwd = None  # remembers the cwd across an ssh session
 
     # -- path helpers ------------------------------------------------------ #
     def _resolve(self, path: str) -> str:
@@ -7001,10 +7008,19 @@ class ShellFS:
             return self._kill(args)
         if cmd == "curl":
             return self._curl(args)
+        if cmd == "systemctl":
+            return self._systemctl(args)
+        if cmd == "journalctl":
+            return self._journalctl(args)
+        if cmd == "ssh":
+            return self._ssh(args)
+        if cmd in ("exit", "logout"):
+            return self._exit_ssh(args)
         if cmd in ("man", "help", "--help"):
             return ["commands:  pwd  ls  mkdir  cd  touch  cat  echo  head  tail  wc  grep  sed  "
                     "awk  find  tar  export  env  ps  kill  curl  python3  mv  cp  rm  chmod  "
-                    "whoami  clear  history  (also:  cmd1 && cmd2   and   cmd1 ; cmd2)"], []
+                    "systemctl  journalctl  ssh  whoami  clear  history  "
+                    "(also:  cmd1 && cmd2   and   cmd1 ; cmd2)"], []
         if cmd.startswith("./") or cmd.startswith("/"):
             return self._run_executable(cmd)
         return [], [f"{cmd}: command not found"]
@@ -7472,6 +7488,100 @@ class ShellFS:
                     "<h1>hello</h1>", "<p>your app is running</p>"], []
         return [f"HTTP/1.1 200 OK", f"Content-Type: text/html", "",
                 f"<!doctype html><title>{url}</title>"], []
+
+    # -- services / ssh (Linux-internals drills) ----------------------------- #
+    def _systemctl(self, args):
+        """A tiny systemd: start/stop/restart/status/enable/disable a fake
+        service. `systemctl` alone lists them. Teaches the init layer without a
+        real init system."""
+        if not args:
+            return [], [f"systemctl: try 'systemctl status', or "
+                        "start/stop/restart/enable/disable <service>"]
+        action = args[0]
+        names = [a for a in args[1:] if not a.startswith("-")]
+        if action in ("list-units", "list", "status") and not names:
+            out = ["UNIT                 LOAD   ACTIVE   SUB"]
+            for n, s in sorted(self.services.items()):
+                out.append(f"{n}.service  loaded  "
+                           f"{s['state']:>8}  {'enabled' if s['enabled'] else 'disabled'}")
+            return out, []
+        if not names:
+            return [], [f"systemctl {action}: missing unit name "
+                        "(try 'systemctl {action} web')"]
+        out = []
+        for n in names:
+            base = n[:-8] if n.endswith(".service") else n
+            svc = self.services.get(base)
+            if svc is None:
+                out.append(f"Failed to {action} {n}: Unit not found.")
+                continue
+            if action == "start":
+                svc["state"] = "running"
+                out.append(f"Started {base}.service.")
+            elif action == "stop":
+                svc["state"] = "stopped"
+                out.append(f"Stopped {base}.service.")
+            elif action == "restart":
+                svc["state"] = "running"
+                out.append(f"Restarted {base}.service.")
+            elif action == "enable":
+                svc["enabled"] = True
+                out.append(f"Created symlink — {base}.service now starts at boot.")
+            elif action == "disable":
+                svc["enabled"] = False
+                out.append(f"Removed symlink — {base}.service no longer starts at boot.")
+            elif action == "status":
+                run = "active (running)" if svc["state"] == "running" else "inactive (dead)"
+                out.append(f"● {base}.service")
+                out.append(f"   Active: {run}")
+                out.append(f"   Enabled: {'yes' if svc['enabled'] else 'no'}")
+            else:
+                return [], [f"systemctl: unknown action '{action}'"]
+        return out, []
+
+    def _journalctl(self, args):
+        """`journalctl -u <service>` prints a service's fake logs; bare
+        `journalctl` prints them all."""
+        name = None
+        for i, a in enumerate(args):
+            if a == "-u" and i + 1 < len(args):
+                name = args[i + 1].rstrip(".service")
+            elif a.startswith("-u"):
+                name = a[2:].rstrip(".service")
+        if name and name in self.services:
+            return [f"Sep 07 09:00:01 host {l}" for l in self.services[name]["logs"]], []
+        if name:
+            return [f"-- No entries -- (no journal for '{name}')"], []
+        out = []
+        for n, s in sorted(self.services.items()):
+            for l in s["logs"]:
+                out.append(f"Sep 07 09:00:01 host {n}: {l}")
+        return out, []
+
+    def _ssh(self, args):
+        """`ssh user@host` — a fake remote login. Changes the prompt to the
+        remote host and drops you in a fresh home dir; `exit` returns."""
+        if not args:
+            return [], ["usage: ssh user@host"]
+        target = args[0]
+        if "@" not in target:
+            return [], [f"ssh: Could not resolve hostname '{target}'"]
+        user, host = target.split("@", 1)
+        self.ssh_host = target
+        self._local_cwd = self.cwd
+        self.cwd = f"/srv/{user}"
+        self.dirs.add(self.cwd)
+        return [f"Welcome to {host}. Type `exit` to log out."], []
+
+    def _exit_ssh(self, args):
+        """`exit` while ssh'd returns to the local shell; otherwise a no-op."""
+        if self.ssh_host is None:
+            return [], []
+        self.ssh_host = None
+        if self._local_cwd:
+            self.cwd = self._local_cwd
+            self._local_cwd = None
+        return ["Connection closed."], []
 
 
 # ============================================================================
@@ -9621,6 +9731,8 @@ _SHELL_MEANING = {
     "find": "search the file tree", "tar": "bundle files together",
     "export": "set a variable", "env": "show all variables",
     "ps": "list running processes", "kill": "stop a process",
+    "systemctl": "control a service", "journalctl": "read a service's logs",
+    "ssh": "log into another machine", "exit": "leave the remote shell",
 }
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
@@ -14524,6 +14636,181 @@ INTERVIEW_QUESTIONS = [
     ]
 
 
+# =========================================================================== #
+# LINUX DRILLS — quick TTS-driven bash drills ("make this" / "what is this"),
+# verified by OUTCOME not command string. `check(fs, out)` inspects ShellFS
+# state or the command's stdout; a learner can pass with any wording that
+# produces the result. `kind` = "do" (produce a state) or "what" (comprehend).
+# =========================================================================== #
+
+def _ld_in(fs, *paths):
+    """True if every path resolves to a dir/file in the fs."""
+    return all(fs._resolve(p) in fs.dirs or fs._resolve(p) in fs.files for p in paths)
+
+
+def _ld_dirs(fs, *paths):
+    return all(fs._resolve(p) in fs.dirs for p in paths)
+
+
+def _ld_file_has(fs, path, text):
+    p = fs._resolve(path)
+    return p in fs.files and text in fs.files[p]
+
+
+LINUX_DRILLS = [
+    # ---- DO: make a state ------------------------------------------------- #
+    {"kind": "do", "id": "mkdir-3", "concept": "mkdir",
+     "prompt": "make three folders called src, tests, and docs — all in one command",
+     "hint": "one command can make all three at once",
+     "idiom": "mkdir src tests docs",
+     "check": lambda fs, out: _ld_dirs(fs, "src", "tests", "docs")},
+    {"kind": "do", "id": "mkdir-nested", "concept": "mkdir -p",
+     "prompt": "make a folder called app, and inside it a folder called logs — even though app doesn't exist yet",
+     "hint": "the -p flag creates the whole path at once",
+     "idiom": "mkdir -p app/logs",
+     "check": lambda fs, out: fs._resolve("app/logs") in fs.dirs},
+    {"kind": "do", "id": "touch", "concept": "touch",
+     "prompt": "create an empty file called notes.txt",
+     "hint": "touch makes a file if it doesn't exist",
+     "idiom": "touch notes.txt",
+     "check": lambda fs, out: _ld_in(fs, "notes.txt")},
+    {"kind": "do", "id": "echo-write", "concept": "redirect",
+     "prompt": "write the word hello into a file called greeting.txt",
+     "hint": "echo prints text — the > sends it into a file instead",
+     "idiom": "echo hello > greeting.txt",
+     "check": lambda fs, out: _ld_file_has(fs, "greeting.txt", "hello")},
+    {"kind": "do", "id": "cd", "concept": "cd",
+     "prompt": "move into the projects folder",
+     "hint": "cd changes directory",
+     "idiom": "cd projects",
+     "setup": lambda fs: fs.dirs.add("/home/you/projects"),
+     "check": lambda fs, out: fs.cwd == "/home/you/projects"},
+    {"kind": "do", "id": "grep", "concept": "grep",
+     "prompt": "find every line containing the word error in app.log",
+     "hint": "grep searches inside a file",
+     "idiom": "grep error app.log",
+     "setup": lambda fs: fs.files.__setitem__(fs._resolve("app.log"),
+                                               "all good\nerror: disk full\nall good\n"),
+     "check": lambda fs, out: any("error: disk full" in l for l in out)},
+    {"kind": "do", "id": "pipe-count", "concept": "pipe",
+     "prompt": "count how many files are in this folder — using a pipe",
+     "hint": "list the files, then pipe them into a counter",
+     "idiom": "ls | wc -l",
+     "setup": lambda fs: [fs.files.__setitem__(fs._resolve(n), "")
+                          for n in ("a.txt", "b.txt", "c.txt")],
+     "check": lambda fs, out: bool(out) and out[0].strip() == "3"},
+    {"kind": "do", "id": "chmod-x", "concept": "chmod",
+     "prompt": "make run.sh runnable",
+     "hint": "chmod with +x adds the execute permission",
+     "idiom": "chmod +x run.sh",
+     "setup": lambda fs: fs.files.__setitem__(fs._resolve("run.sh"), "echo hi\n"),
+     "check": lambda fs, out: fs._resolve("run.sh") in fs.executable},
+    {"kind": "do", "id": "systemctl-restart", "concept": "systemctl",
+     "prompt": "restart the web service",
+     "hint": "systemctl controls services",
+     "idiom": "systemctl restart web",
+     "check": lambda fs, out: fs.services["web"]["state"] == "running"},
+    {"kind": "do", "id": "journalctl", "concept": "journalctl",
+     "prompt": "read the web service's logs",
+     "hint": "journalctl reads service logs — the -u flag picks one",
+     "idiom": "journalctl -u web",
+     "check": lambda fs, out: any("listening" in l for l in out)},
+
+    # ---- WHAT: comprehend ------------------------------------------------- #
+    {"kind": "what", "id": "what-ps", "concept": "ps",
+     "q": "What does `ps aux` show you?",
+     "choices": ["every running process", "disk usage", "file permissions", "open network ports"], "ans": 0,
+     "why": "ps lists running processes; the aux flags mean 'all users, with extra detail'.",
+     "say": "ps = process snapshot."},
+    {"kind": "what", "id": "what-chmod", "concept": "chmod",
+     "q": "What does `chmod 755 file` do?",
+     "choices": ["owner can read/write/run, others can read/run", "deletes the file", "everyone can edit it", "hides the file"], "ans": 0,
+     "why": "755 = owner rwx (7), group and others r-x (5). You can edit and run it; everyone else can read and run.",
+     "say": "7 = rwx, 5 = r-x."},
+    {"kind": "what", "id": "what-enable", "concept": "systemctl",
+     "q": "What's the difference between `systemctl start` and `systemctl enable`?",
+     "choices": ["start runs it now; enable makes it start at boot", "they are the same", "enable runs it now", "start schedules it for boot"], "ans": 0,
+     "why": "start runs the service immediately; enable registers it to start automatically at boot. You usually do both.",
+     "say": "enable = at boot. start = right now."},
+    {"kind": "what", "id": "what-pipe", "concept": "pipe",
+     "q": "What does `ls | wc -l` do?",
+     "choices": ["counts the files, feeding ls's output into wc", "lists files sorted", "deletes the files", "counts the words in one file"], "ans": 0,
+     "why": "The pipe feeds ls's output into wc -l, which counts the lines — so it tells you how many entries there are.",
+     "say": "| = 'feed the output into'."},
+    {"kind": "what", "id": "what-grep", "concept": "grep",
+     "q": "What does `grep error app.log` do?",
+     "choices": ["prints every line in app.log containing 'error'", "deletes errors", "counts all lines", "sorts the file"], "ans": 0,
+     "why": "grep searches for a pattern and prints matching lines — it's the find-in-text tool.",
+     "say": "grep = search inside files."},
+    {"kind": "what", "id": "what-ssh", "concept": "ssh",
+     "q": "What does `ssh user@server` do?",
+     "choices": ["opens a remote shell on that server as that user", "copies files", "starts a web server", "lists remote files"], "ans": 0,
+     "why": "ssh opens an encrypted remote login to the server. You type on your machine, commands run on theirs.",
+     "say": "ssh = secure shell, 'drive another machine from here'."},
+    {"kind": "what", "id": "what-tar", "concept": "tar",
+     "q": "What is `tar` used for?",
+     "choices": ["bundling many files into one archive", "editing text", "compiling code", "listing processes"], "ans": 0,
+     "why": "tar bundles files and folders into a single archive (often .tar.gz). It's the 'zip' of the Linux world.",
+     "say": "tar = tape archive, 'bundle it up'."},
+    {"kind": "what", "id": "what-redirect", "concept": "redirect",
+     "q": "What does the `>` in `echo hi > file.txt` do?",
+     "choices": ["writes the output into the file, replacing its contents", "appends to the file", "reads the file", "compares two files"], "ans": 0,
+     "why": "> redirects a command's output into a file, overwriting it. >> appends instead.",
+     "say": "> writes (overwrite). >> appends."},
+]
+
+
+def _ld_setup_drill(fs, drill):
+    """Fresh ShellFS per drill, then any drill-specific setup."""
+    if drill.get("setup"):
+        drill["setup"](fs)
+
+
+# =========================================================================== #
+# LINUX MISSIONS — longer multi-step "do a real job" drills. One ShellFS shared
+# across the steps (a to-do checklist); failing a step hints, never blocks.
+# =========================================================================== #
+
+LINUX_MISSIONS = [
+    {"id": "remote-setup", "name": "Remote Setup",
+     "intro": "You're the new sysadmin. SSH into the server, get a folder set up, and make sure the web service is back up.",
+     "setup": lambda fs: fs.services.__getitem__("web").__setitem__("state", "stopped"),
+     "steps": [
+         {"prompt": "ssh into the server as admin", "hint": "ssh user@host",
+          "idiom": "ssh admin@prod-server",
+          "check": lambda fs, out: fs.ssh_host == "admin@prod-server"},
+         {"prompt": "make a folder called projects", "hint": "mkdir makes a directory",
+          "idiom": "mkdir projects",
+          "check": lambda fs, out: fs._resolve("projects") in fs.dirs},
+         {"prompt": "restart the web service", "hint": "systemctl controls services",
+          "idiom": "systemctl restart web",
+          "check": lambda fs, out: fs.services["web"]["state"] == "running"},
+         {"prompt": "check the web service logs to confirm it's listening",
+          "hint": "journalctl -u reads one service's logs",
+          "idiom": "journalctl -u web",
+          "check": lambda fs, out: any("listening" in l for l in out)},
+     ]},
+    {"id": "ship-a-site", "name": "Ship a Static Site",
+     "intro": "Build and inspect a tiny website from the shell, end to end.",
+     "steps": [
+         {"prompt": "make a folder called site", "hint": "mkdir",
+          "idiom": "mkdir site",
+          "check": lambda fs, out: fs._resolve("site") in fs.dirs},
+         {"prompt": "move into the site folder", "hint": "cd changes directory",
+          "idiom": "cd site",
+          "check": lambda fs, out: fs.cwd == "/home/you/site"},
+         {"prompt": "write a homepage: an index.html containing the word welcome",
+          "hint": "echo text, then > into the file",
+          "idiom": "echo '<h1>welcome</h1>' > index.html",
+          "check": lambda fs, out: _ld_file_has(fs, "index.html", "welcome")},
+         {"prompt": "read the homepage back to confirm it's there",
+          "hint": "cat reads a file",
+          "idiom": "cat index.html",
+          "check": lambda fs, out: any("welcome" in l for l in out)},
+     ]},
+]
+
+
 def _net_pool_by_level(level: int) -> list:
     return [q for q in NET_QUESTIONS if q["level"] == level]
 
@@ -16573,6 +16860,19 @@ class InterviewTrainer(Vertical):
         self.app._iv_on_key(event)
 
 
+class LinuxDrillTrainer(Vertical):
+    """Full-screen LINUX DRILLS overlay: TTS speaks a bash task ("make 3 folders
+    in one command") and the learner types a real command; the result is graded
+    by OUTCOME (filesystem state / output), never the command string. `what`
+    drills are multiple choice. The app owns all state; this widget holds focus
+    and pipes every keystroke to `app._ld_on_key`."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._ld_on_key(event)
+
+
 class CloudHelpIcon(Static):
     """The always-visible, clickable `?` in the dev top bar — opens the
     command manual. Mouse-click only (the trainer owns the keyboard)."""
@@ -16990,6 +17290,18 @@ class TutorApp(App):
     #iv-foot { width: 100%; height: auto; }
     #iv-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #iv-confirm.visible { display: block; }
+    #ld { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
+    #ld.visible { display: block; }
+    #ld-topbar { width: 100%; height: auto; }
+    #ld-head { width: 1fr; height: auto; }
+    #ld-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #ld-exit:hover { background: #3a1515; color: #ff6b6b; }
+    #ld-body { width: 100%; height: 1fr; }
+    #ld-goal { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
+    #ld-term { width: 100%; height: 1fr; padding: 1 2; background: #0a0a0f; border: solid #30363d; }
+    #ld-foot { width: 100%; height: auto; }
+    #ld-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
+    #ld-confirm.visible { display: block; }
     #net { layer: overlay; width: 100%; height: 100%; padding: 1 2; background: #000000; display: none; }
     #net.visible { display: block; }
     #net-topbar { width: 100%; height: auto; }
@@ -17376,6 +17688,29 @@ class TutorApp(App):
         self._iv_pause_action = None  # what the answer pause fires
         self._iv_msg = ""             # last feedback line
         self._iv_msg_kind = ""        # "win" | "retrain"
+        self._ld_on = False           # LINUX DRILLS overlay open
+        self._ld_mode = "drill"       # "drill" | "mission"
+        self._ld_fs = ShellFS()       # the filesystem the drills run against
+        self._ld_pool: list = []      # drills for this session
+        self._ld_i = 0
+        self._ld_drill = None         # the current drill dict
+        self._ld_cmd = ""             # command being typed
+        self._ld_history: list = []   # (style, text) terminal scrollback
+        self._ld_attempts = 0
+        self._ld_msg = ""             # transient feedback / hint
+        self._ld_msg_kind = ""        # "win" | "hint" | "answer"
+        self._ld_done = False
+        self._ld_n = 0
+        self._ld_right = 0
+        self._ld_review: list = []    # drills answered wrong, re-asked at end
+        self._ld_mission = None       # current mission dict
+        self._ld_mission_i = 0
+        self._ld_mission_sel = 0      # which mission is next (cycles)
+        self._ld_pick = None          # WHAT drill: chosen option
+        self._ld_adv_timer = None
+        self._ld_gen = 0
+        self._ld_pause_action = None
+        self._ld_confirm = False
         self._menu_anim_timer = None
         self._menu_frame = 0
         self._cmd_demo_shown = False
@@ -17660,6 +17995,15 @@ class TutorApp(App):
                 yield Static("", id="iv-explain")
             yield Static("", id="iv-foot")
         yield Static("", id="iv-confirm")
+        with LinuxDrillTrainer(id="ld"):
+            with Horizontal(id="ld-topbar"):
+                yield Static("", id="ld-head")
+                yield ExitIcon(" ✕ ", id="ld-exit")
+            with Vertical(id="ld-body"):
+                yield Static("", id="ld-goal")
+                yield Static("", id="ld-term")
+            yield Static("", id="ld-foot")
+        yield Static("", id="ld-confirm")
         yield Static("", id="visual")
         yield Static("", id="cat")
         yield Static("", id="quick")
@@ -18427,6 +18771,7 @@ class TutorApp(App):
             order.append(-5)          # FIX THESE (only when there are misses)
         order += [-4, -3, -2, -1]     # NETWORK+, CLOUD, BUILD, VIM
         order.append(-7)              # INTERVIEW PREP
+        order.append(-8)              # LINUX DRILLS
         order.append(-6)              # PYTHON LAB
         order += list(range(len(GROUPS)))
         order.append(len(GROUPS))     # PYTHON REVIEW
@@ -18459,6 +18804,7 @@ class TutorApp(App):
              "✓ done" if build_done else ""),
             (-1, "VIM / NEOVIM", "#d8b4fe", "keyboard dojo", ""),
             (-7, "INTERVIEW PREP", "#7dd3fc", "AWS · Azure · Linux · k8s · TF · Ansible — MC + flashcards", ""),
+            (-8, "LINUX DRILLS", "#7ee787", "TTS drills: make this / what is this · missions · hints when stuck", ""),
             (-6, "PYTHON LAB", "#a6e3a1", "playground — every example, edit & run", ""),
         ]
         for gi, g in enumerate(GROUPS):
@@ -18506,7 +18852,7 @@ class TutorApp(App):
             line_no += 1
             # a clean divider between the non-Python paths and the Python
             # course stack, and again before the review queue
-            if si == -7 or si == len(GROUPS) - 1:
+            if si == -8 or si == len(GROUPS) - 1:
                 t.append("─" * 46, style="#3a3a3a")
                 t.append("\n")
                 line_no += 1
@@ -18543,6 +18889,10 @@ class TutorApp(App):
             note = (f"interview questions — {n} questions (2 wordings each), "
                     f"multiple choice + flashcards"
                     + (f" · {weak} weak concepts to revisit" if weak else ""))
+        elif self.series_sel == -8:
+            n = len(LINUX_DRILLS)
+            note = (f"linux drills — {n} quick bash tasks + {len(LINUX_MISSIONS)} "
+                    f"missions · graded by result, hints when stuck")
         else:
             g = GROUPS[self.series_sel]
             note = f"{g['name']} — Enter to browse its challenges"
@@ -18616,7 +18966,7 @@ class TutorApp(App):
         self._snap_menu_scroll(sel_line)
 
     def _preview_challenge(self):
-        if self.series_sel in (-1, -2, -3, -4, -7) or self.series_sel == len(GROUPS):
+        if self.series_sel in (-1, -2, -3, -4, -7, -8) or self.series_sel == len(GROUPS):
             return None   # courses / the review queue — handled separately
         if self.menu_level == "series":
             g = GROUPS[self.series_sel]
@@ -18671,6 +19021,22 @@ class TutorApp(App):
                 t.append(line, style="#d5d5d5")
                 t.append("\n")
             t.append("\nEnter to start the questions", style="dim")
+            self.query_one("#menu-preview-inner", Static).update(t)
+            return
+        if self.series_sel == -8:
+            self.query_one("#menu-preview-title", Static).update("LINUX DRILLS")
+            t = Text()
+            t.append("Quick, spoken bash drills — and longer missions.\n\n",
+                     style="#f0f0f5")
+            for line in ("DO — 'make 3 folders in one command' → type it, graded by result",
+                         "WHAT — 'what does ps aux show?' → multiple choice",
+                         "graded by outcome, not exact wording — any working command passes",
+                         "stuck? hints escalate, then the answer is revealed (never blocks)",
+                         "missions — 'ssh in → set up → restart → check logs' as a to-do list"):
+                t.append("• ", style="dim")
+                t.append(line, style="#d5d5d5")
+                t.append("\n")
+            t.append("\nEnter to start · Esc to leave", style="dim")
             self.query_one("#menu-preview-inner", Static).update(t)
             return
         if self.series_sel == len(GROUPS):
@@ -19165,6 +19531,8 @@ class TutorApp(App):
             return   # NETWORK+ overlay owns the keyboard; Esc there exits it
         if self._iv_on:
             return   # INTERVIEW PREP overlay owns the keyboard; Esc there exits it
+        if self._ld_on:
+            return   # LINUX DRILLS overlay owns the keyboard; Esc there exits it
         if self._lab_menu_on:
             self._lab_menu_close()
             return
@@ -19196,7 +19564,7 @@ class TutorApp(App):
 
     def action_back(self):
         """The ← back button (top-left): the ONLY way to leave a challenge."""
-        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on:
+        if self._ghost_on or self._vim_on or self._shell_on or self._dev_on or self._net_on or self._iv_on or self._ld_on:
             return
         if self.mode == "challenge":
             self._stop_demo_timers()
@@ -19223,6 +19591,8 @@ class TutorApp(App):
             self._net_exit()
         elif self._iv_on:
             self._iv_exit()
+        elif self._ld_on:
+            self._ld_exit()
 
     def _select_challenge(self):
         self.group_idx = self.series_sel
@@ -19440,6 +19810,8 @@ class TutorApp(App):
             return   # NETWORK+ overlay owns the keyboard
         if self._iv_on:
             return   # INTERVIEW PREP overlay owns the keyboard
+        if self._ld_on:
+            return   # LINUX DRILLS overlay owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -19474,6 +19846,9 @@ class TutorApp(App):
                     return
                 if self.series_sel == -7:
                     self._iv_begin()
+                    return
+                if self.series_sel == -8:
+                    self._ld_begin()
                     return
                 if self.series_sel == len(GROUPS):
                     self._start_py_review()
@@ -26409,6 +26784,404 @@ class TutorApp(App):
                 t.append("next question in a moment — any key to skip", style="bold #22c55e")
         t.append("   ·   answers are explained aloud", style="dim")
         self.query_one("#iv-foot", Static).update(t)
+
+    # -- LINUX DRILLS ------------------------------------------------------ #
+    def _ld_begin(self, mode=None):
+        """Open the LINUX DRILLS overlay. `mode` = "drill" (default) or
+        "mission"."""
+        if mode in ("drill", "mission"):
+            self._ld_mode = mode
+        self._ld_on = True
+        self._ld_fs = ShellFS()
+        self._ld_pool = self._ld_build_pool()
+        self._ld_i = 0
+        self._ld_review = []
+        self._ld_n = 0
+        self._ld_right = 0
+        self._ld_done = False
+        self._ld_confirm = False
+        self._ld_mission = None
+        self._ld_mission_i = 0
+        self._ld_history = []
+        self._ld_attempts = 0
+        self._ld_pick = None
+        self._ld_cmd = ""
+        self._ld_msg = ""
+        self._ld_msg_kind = ""
+        self.query_one("#ld", LinuxDrillTrainer).add_class("visible")
+        self.query_one("#ld", LinuxDrillTrainer).focus()
+        self._ld_stop_pause()
+        self._stop_menu_anim()
+        self._ld_setup_current()
+        self._ld_render()
+        self._ld_speak_prompt()
+
+    def _ld_build_pool(self):
+        """All drills, weak-first (concepts the learner has struggled with)."""
+        def key(d):
+            acc = _concept_accuracy(self.p, "ld:" + d["concept"])
+            return (acc, d["concept"])
+        return sorted(LINUX_DRILLS, key=key)
+
+    def _ld_current(self):
+        if self._ld_mode == "mission" and self._ld_mission:
+            steps = self._ld_mission["steps"]
+            if 0 <= self._ld_mission_i < len(steps):
+                return steps[self._ld_mission_i]
+            return None
+        if 0 <= self._ld_i < len(self._ld_pool):
+            return self._ld_pool[self._ld_i]
+        return None
+
+    def _ld_setup_current(self):
+        """Reset the fs for a fresh DO drill (drill mode); missions share one fs."""
+        if self._ld_mode == "mission":
+            return
+        task = self._ld_current()
+        if task is None or task.get("kind") == "what":
+            return
+        self._ld_fs = ShellFS()
+        if task.get("setup"):
+            task["setup"](self._ld_fs)
+
+    def _ld_concept(self, task):
+        """The mastery concept for a task. Mission steps have no explicit
+        concept, so derive it from the idiom's first word (the command)."""
+        c = task.get("concept")
+        if c:
+            return c
+        idiom = task.get("idiom", "")
+        return idiom.split()[0] if idiom else "linux"
+
+    def _ld_speak_prompt(self):
+        if not self.voice_on:
+            return
+        task = self._ld_current()
+        if task is None:
+            return
+        if task.get("kind") == "what":
+            opts = "; ".join(f"{i+1}: {task['choices'][i]}" for i in range(4))
+            speak(f"{task['q']} Is it {opts}?")
+        else:
+            speak(task["prompt"])
+
+    def _ld_prompt(self):
+        fs = self._ld_fs
+        if fs.ssh_host:
+            user, host = fs.ssh_host.split("@", 1)
+            return f"{user}@{host} ~ ❯ "
+        home = fs.cwd.replace("/home/you", "~", 1) if fs.cwd.startswith("/home/you") else fs.cwd
+        return f"you@box {home} ❯ "
+
+    def _ld_stop_pause(self):
+        t = getattr(self, "_ld_adv_timer", None)
+        if t is not None:
+            t.stop()
+            self._ld_adv_timer = None
+
+    def _ld_on_key(self, event):
+        k = event.key
+        if k == "escape":
+            self._ld_exit()
+            return
+        if self._ld_adv_timer is not None:
+            self._ld_stop_pause()
+            self._ld_next()
+            return
+        if self._ld_done:
+            if k == "enter":
+                self._ld_begin()
+            elif k == "m":
+                self._ld_start_mission()
+            return
+        task = self._ld_current()
+        if task is None:
+            return
+        if task.get("kind") == "what":
+            if self._ld_pick is None and k in ("1", "2", "3", "4"):
+                self._ld_answer(int(k) - 1)
+            elif self._ld_pick is None and k in ("a", "b", "c", "d"):
+                self._ld_answer("abcd".index(k))
+            return
+        # DO drill / mission step: free command typing
+        if k == "enter":
+            self._ld_submit()
+        elif k == "backspace":
+            self._ld_cmd = self._ld_cmd[:-1]
+            self._ld_render()
+        elif event.character and event.character.isprintable():
+            self._ld_cmd += event.character
+            self._ld_render()
+
+    def _ld_submit(self):
+        cmd = self._ld_cmd.strip()
+        if not cmd:
+            return
+        self._ld_cmd = ""
+        fs = self._ld_fs
+        out, err = fs.run(cmd)
+        self._ld_history.append(("cmd", self._ld_prompt() + cmd))
+        for l in out:
+            self._ld_history.append(("out", l))
+        for l in err:
+            self._ld_history.append(("err", l))
+        task = self._ld_current()
+        if task is None or task.get("kind") == "what":
+            self._ld_render()
+            return
+        if task["check"](fs, out):
+            if self._ld_attempts == 0:
+                _record_concept(self.p, "ld:" + self._ld_concept(task), True)
+            self._ld_n += 1
+            self._ld_right += 1
+            self._ld_msg = f"✓ done — {task.get('idiom', '')}"
+            self._ld_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(f"Nice. {task.get('idiom', '')}")
+            self._ld_schedule(1.6, "next")
+            self._ld_render()
+            return
+        # fail → escalating hints, never block
+        self._ld_attempts += 1
+        if self._ld_attempts == 1:
+            _record_concept(self.p, "ld:" + self._ld_concept(task), False)
+            self._ld_msg = f"not yet — hint: {task['hint']}"
+            self._ld_msg_kind = "hint"
+            if self.voice_on:
+                speak(f"Not quite. {task['hint']}")
+        elif self._ld_attempts == 2:
+            idiom = task.get("idiom", "")
+            toks = idiom.split()
+            masked = (toks[0] + " " + " ".join("_" * len(w) for w in toks[1:])) if toks else idiom
+            self._ld_msg = f"the command starts with: {masked}"
+            self._ld_msg_kind = "hint"
+            if self.voice_on:
+                speak(f"Here's how it starts: {toks[0] if toks else ''}")
+        else:
+            self._ld_msg = f"the answer is: {task.get('idiom', '')}"
+            self._ld_msg_kind = "answer"
+            self._ld_review.append(task)
+            self._ld_n += 1
+            if self.voice_on:
+                speak(f"The command is {task.get('idiom', '')}")
+            self._ld_schedule(2.4, "next")
+        self._ld_render()
+
+    def _ld_answer(self, idx):
+        task = self._ld_current()
+        if task is None or task.get("kind") != "what" or self._ld_pick is not None:
+            return
+        self._ld_pick = idx
+        self._ld_n += 1
+        if idx == task["ans"]:
+            self._ld_right += 1
+            _record_concept(self.p, "ld:" + self._ld_concept(task), True)
+            self._ld_msg = f"✓ correct — {task['why']}"
+            self._ld_msg_kind = "win"
+            win, _ = self._sounds_for("netplus")
+            play_file(win, self._fx_volume())
+            if self.voice_on:
+                speak(f"Correct. {task['why']} And to remember it: {task['say']}")
+        else:
+            _record_concept(self.p, "ld:" + self._ld_concept(task), False)
+            self._ld_review.append(task)
+            self._ld_msg = f"✗ the answer is {task['choices'][task['ans']]} — {task['why']}"
+            self._ld_msg_kind = "answer"
+            _, fail = self._sounds_for("netplus")
+            play_file(fail, self._fx_volume())
+            if self.voice_on:
+                speak(f"Incorrect. The answer is {task['choices'][task['ans']]}. "
+                      f"{task['why']} And to remember it: {task['say']}")
+        self._ld_schedule(2.2, "next")
+        self._ld_render()
+
+    def _ld_schedule(self, delay, action):
+        self._ld_stop_pause()
+        self._ld_pause_action = action
+        self._ld_gen += 1
+        gen = self._ld_gen
+        self._ld_adv_timer = self.set_timer(
+            delay, lambda: self._ld_pause_done(gen))
+
+    def _ld_pause_done(self, gen):
+        if gen != self._ld_gen or not self._ld_on:
+            return
+        self._ld_adv_timer = None
+        self._ld_pause_action = None
+        self._ld_next()
+
+    def _ld_next(self):
+        self._ld_stop_pause()
+        if self._ld_mode == "mission" and self._ld_mission:
+            self._ld_mission_i += 1
+            if self._ld_mission_i >= len(self._ld_mission["steps"]):
+                self._ld_msg = (f"🏁 mission '{self._ld_mission['name']}' complete! "
+                                "press m for another, or Esc for the menu")
+                self._ld_msg_kind = "win"
+                self._ld_mission = None
+                self._ld_done = True
+                save_progress(self.p)
+                self._celebrate()
+            else:
+                self._ld_attempts = 0
+            self._ld_render()
+            self._ld_speak_prompt()
+            return
+        # drill mode
+        self._ld_i += 1
+        if self._ld_i >= len(self._ld_pool):
+            if self._ld_review:
+                self._ld_pool = list(self._ld_review)
+                self._ld_review = []
+                self._ld_i = 0
+            else:
+                self._ld_done = True
+                save_progress(self.p)
+        self._ld_attempts = 0
+        self._ld_pick = None
+        self._ld_setup_current()
+        self._ld_render()
+        self._ld_speak_prompt()
+
+    def _ld_start_mission(self):
+        """Launch a mission (cycle through LINUX_MISSIONS)."""
+        if not LINUX_MISSIONS:
+            return
+        m = LINUX_MISSIONS[self._ld_mission_sel % len(LINUX_MISSIONS)]
+        self._ld_mission_sel += 1
+        self._ld_mode = "mission"
+        self._ld_mission = m
+        self._ld_mission_i = 0
+        self._ld_fs = ShellFS()
+        if m.get("setup"):
+            m["setup"](self._ld_fs)
+        self._ld_history = []
+        self._ld_attempts = 0
+        self._ld_n = 0
+        self._ld_right = 0
+        self._ld_done = False
+        self._ld_msg = ""
+        self._ld_msg_kind = ""
+        self._ld_render()
+        if self.voice_on:
+            speak(m["intro"])
+
+    def _ld_exit(self):
+        self._ld_stop_pause()
+        save_progress(self.p)
+        self._ld_on = False
+        self._ld_done = False
+        self._ld_confirm = False
+        self.query_one("#ld", LinuxDrillTrainer).remove_class("visible")
+        self._show_menu()
+        self.series_sel = -8
+        self.menu_level = "series"
+        self._render_menu()
+
+    def _ld_render(self):
+        self._ld_render_head()
+        self._ld_render_goal()
+        self._ld_render_term()
+        self._ld_render_foot()
+
+    def _ld_render_head(self):
+        t = Text()
+        t.append(" LINUX DRILLS ", style="bold #11111b on #7ee787")
+        if self._ld_mode == "mission" and self._ld_mission:
+            t.append(f"  mission: {self._ld_mission['name']} ", style="bold #7ee787")
+        t.append(f"·  {self._ld_right}/{self._ld_n} ", style="#d5d5d5")
+        if self._ld_review:
+            t.append(f"·  {len(self._ld_review)} to re-ask ", style="bold #fbbf24")
+        self.query_one("#ld-head", Static).update(t)
+
+    def _ld_render_goal(self):
+        t = Text()
+        if self._ld_done:
+            t.append("Session complete. ", style="bold #22c55e")
+            t.append(f"{self._ld_right}/{self._ld_n} right.\n", style="#f0f0f5")
+            t.append("\nEnter — new round   ·   m — missions   ·   Esc — menu", style="dim")
+            self.query_one("#ld-goal", Static).update(t)
+            return
+        task = self._ld_current()
+        if task is None:
+            self.query_one("#ld-goal", Static).update("")
+            return
+        if self._ld_mode == "mission" and self._ld_mission:
+            total = len(self._ld_mission["steps"])
+            for i in range(total):
+                mark = "✓" if i < self._ld_mission_i else ("▸" if i == self._ld_mission_i else "·")
+                st = "bold #22c55e" if i < self._ld_mission_i else ("bold #7ee787" if i == self._ld_mission_i else "dim")
+                t.append(f"{mark} ", style=st)
+            t.append(f"  ({self._ld_mission_i + 1}/{total})\n\n", style="dim")
+        if task.get("kind") == "what":
+            t.append("WHAT IS IT?\n\n", style="bold #ffa657")
+            t.append(task["q"], style="bold #f0f0f5")
+        else:
+            t.append("DO THIS:\n\n", style="bold #ffa657")
+            t.append(task["prompt"], style="bold #f0f0f5")
+        if self._ld_msg:
+            style = ("bold #22c55e" if self._ld_msg_kind == "win"
+                     else ("bold #fbbf24" if self._ld_msg_kind == "hint"
+                           else "bold #ffa657"))
+            t.append("\n\n")
+            t.append(self._ld_msg, style=style)
+        self.query_one("#ld-goal", Static).update(t)
+
+    def _ld_render_term(self):
+        t = Text()
+        if self._ld_done:
+            self.query_one("#ld-term", Static).update(t)
+            return
+        task = self._ld_current()
+        if task is not None and task.get("kind") == "what":
+            letters = "ABCD"
+            for i, opt in enumerate(task["choices"]):
+                style = "#f0f0f5"
+                if self._ld_pick is not None:
+                    if i == task["ans"]:
+                        style = "bold #22c55e"
+                    elif i == self._ld_pick:
+                        style = "bold #ff5555"
+                    else:
+                        style = "#5a5a5a"
+                t.append(f"  {i+1}. {opt}\n", style=style)
+            if self._ld_pick is None:
+                t.append("\npress 1-4 to answer", style="dim")
+            self.query_one("#ld-term", Static).update(t)
+            return
+        # terminal: scrollback + prompt
+        for style, text in self._ld_history[-14:]:
+            if style == "cmd":
+                t.append(text, style="bold #f0f0f5")
+            elif style == "err":
+                t.append(text, style="#f87171")
+            else:
+                t.append(text, style="#c9cdd6")
+            t.append("\n")
+        t.append(self._ld_prompt(), style="bold #7ee787")
+        t.append(self._ld_cmd, style="bold #f0f0f5")
+        t.append("█", style="bold #7ee787")
+        self.query_one("#ld-term", Static).update(t)
+
+    def _ld_render_foot(self):
+        t = Text()
+        if self._ld_done:
+            t.append("Enter — new round   ·   m — missions   ·   Esc — menu", style="dim")
+            self.query_one("#ld-foot", Static).update(t)
+            return
+        task = self._ld_current()
+        if task is not None and task.get("kind") == "what":
+            t.append("1-4 — answer", style="bold #7dd3fc")
+            t.append("   ·   Esc — menu", style="dim")
+        else:
+            t.append("type the command, Enter runs it", style="bold #7dd3fc")
+            t.append("   ·   ", style="dim")
+            t.append("graded by result, not exact wording", style="dim")
+            if self._ld_mode == "drill":
+                t.append("   ·   m — missions", style="dim")
+        self.query_one("#ld-foot", Static).update(t)
 
     def action_demo(self):
         """F3 — open/close the worked-example demo. The demo shows in the
