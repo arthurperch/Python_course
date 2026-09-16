@@ -22696,7 +22696,9 @@ class TutorApp(App):
         (same idea, different values — never the answer), then syntax IDEAS."""
         starter = self._plan_template(c) + c.get("starter", "")
         lines = starter.split("\n") if starter else [""]
-        for _ in range(10):
+        # a few blank lines to write on (kept small so line 1 + the hints fit in
+        # the editor without scrolling — a tall buffer hid line 1 behind the top)
+        for _ in range(4):
             lines.append("")
         goal = self._goal_values(c)
         lines.append("# output should look like: "
