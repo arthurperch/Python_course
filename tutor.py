@@ -3592,6 +3592,57 @@ def toggle_voice_mute() -> bool:
     return _VOICE_MUTED
 
 
+# ---- keyboard thocks: TWO independent channels — KEYS (the learner's own
+# typing) and ANIM (the ghost / command-animation typewriter). Each has its own
+# volume + mute, so you can silence the animation typing while keeping your own
+# keyboard clicks (or vice versa). --------------------------------------------
+
+_KEY_VOL = 1.0
+_KEY_MUTED = False
+_ANIM_VOL = 0.7
+_ANIM_MUTED = False
+
+
+def key_volume() -> float:
+    return 0.0 if _KEY_MUTED else _KEY_VOL
+
+
+def anim_volume() -> float:
+    return 0.0 if _ANIM_MUTED else _ANIM_VOL
+
+
+def set_key_volume(vol: float) -> None:
+    global _KEY_VOL
+    _KEY_VOL = max(0.0, min(1.0, vol))
+
+
+def set_anim_volume(vol: float) -> None:
+    global _ANIM_VOL
+    _ANIM_VOL = max(0.0, min(1.0, vol))
+
+
+def set_key_mute(muted: bool) -> None:
+    global _KEY_MUTED
+    _KEY_MUTED = muted
+
+
+def set_anim_mute(muted: bool) -> None:
+    global _ANIM_MUTED
+    _ANIM_MUTED = muted
+
+
+def toggle_key_mute() -> bool:
+    global _KEY_MUTED
+    _KEY_MUTED = not _KEY_MUTED
+    return _KEY_MUTED
+
+
+def toggle_anim_mute() -> bool:
+    global _ANIM_MUTED
+    _ANIM_MUTED = not _ANIM_MUTED
+    return _ANIM_MUTED
+
+
 # ---- writing TTS: a separate, optional voice that speaks a quick cue for each
 # line as you type ("a equals 4"). Own volume + toggle (independent of the tutor
 # voice) and it plays through its OWN sequential queue — one cue never cuts off
@@ -4176,22 +4227,28 @@ def _load_key_pool() -> None:
     _KEY_POOL = files
 
 
-def play_key() -> None:
+def play_key(anim: bool = False) -> None:
     """A real mechanical-keyboard keypress (thock) on every key.
 
-    Uses the user's own samples from the unicae_games soundpack. Each sample is
-    a distinct physical key, so cycling through them shuffled sounds like real
-    typing instead of one repeated tick. Falls back to a tiny synthetic click
-    only if the soundpack directory is missing."""
+    Two independent channels: the learner's OWN typing (anim=False) and the
+    ghost / command-animation typewriter (anim=True), each with its own mute +
+    volume. Uses the user's own samples from the unicae_games soundpack. Each
+    sample is a distinct physical key, so cycling through them shuffled sounds
+    like real typing instead of one repeated tick. Falls back to a tiny synthetic
+    click only if the soundpack directory is missing."""
+    vol = anim_volume() if anim else key_volume()
+    if vol <= 0.0:
+        return
     if not _KEY_SOUNDS:
         return
     global _KEY_POOL
     try:
         if not _KEY_POOL:
             _load_key_pool()
+        gain = int(round(65536 * vol))
         if _KEY_POOL:
             path = _KEY_POOL.pop()
-            subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", str(path)],
+            subprocess.Popen(["paplay", f"--volume={_pa_vol(gain)}", str(path)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
         # no soundpack — keep a quiet synthetic tick so typing still feels alive
@@ -4206,7 +4263,7 @@ def play_key() -> None:
         with wave.open(str(path), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
             w.writeframes(bytes(buf))
-        subprocess.Popen(["paplay", f"--volume={_pa_vol(65536)}", str(path)],
+        subprocess.Popen(["paplay", f"--volume={_pa_vol(gain)}", str(path)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
@@ -6299,6 +6356,7 @@ VIM_LESSONS = [
     (0, "i — insert", "enter insert mode before the cursor", ["i"], ""),
     (0, ":w — save", "write the buffer to disk", [":", "w", "Enter"], ""),
     (0, ":q — quit", "close the buffer", [":", "q", "Enter"], ""),
+    (0, ":wq — save & quit", "write and close in one go", [":", "w", "q", "Enter"], "the combo — save and quit together"),
 
     (1, "w — next word", "jump to the start of the next word", ["w"], ""),
     (1, "b — back a word", "jump to the start of the previous word", ["b"], ""),
@@ -14983,8 +15041,12 @@ class VolumeBar(Static):
             vol, muted, label = _VOICE_VOL, _VOICE_MUTED, "VOICE"
         elif row == 1:
             vol, muted, label = _SFX_VOL, _SFX_MUTED, "SFX"
-        else:
+        elif row == 2:
             vol, muted, label = _WRITE_VOL, _WRITE_MUTED, "WRITE"
+        elif row == 3:
+            vol, muted, label = _KEY_VOL, _KEY_MUTED, "KEYS"
+        else:
+            vol, muted, label = _ANIM_VOL, _ANIM_MUTED, "ANIM"
         filled = int(round(vol * self.METER_W))
         meter = ("█" * filled) + ("░" * (self.METER_W - filled))
         if muted:
@@ -15002,38 +15064,55 @@ class VolumeBar(Static):
         voice = self._row_markup(0, self._active == 0)
         sfx = self._row_markup(1, self._active == 1)
         write = self._row_markup(2, self._active == 2)
+        keys = self._row_markup(3, self._active == 3)
+        anim = self._row_markup(4, self._active == 4)
         hint = "[dim]click ♪ to mute · click meter to jump · [-] [+] to nudge · F4 close[/]"
-        return f"{voice}\n{sfx}\n{write}\n{hint}"
+        return f"{voice}\n{sfx}\n{write}\n{keys}\n{anim}\n{hint}"
 
     def repaint(self) -> None:
         """Repaint both faders from the current voice/sfx globals."""
         self.update(Text.from_markup(self._bar_markup()))
 
     def _row_vol(self, row: int) -> float:
-        return _VOICE_VOL if row == 0 else (_SFX_VOL if row == 1 else _WRITE_VOL)
+        return (_VOICE_VOL if row == 0
+                else (_SFX_VOL if row == 1
+                      else (_WRITE_VOL if row == 2
+                            else (_KEY_VOL if row == 3 else _ANIM_VOL))))
 
     def _set_row_vol(self, row: int, vol: float) -> None:
         if row == 0:
             set_voice_volume(vol); set_voice_mute(False)
         elif row == 1:
             set_sfx_volume(vol); set_sfx_mute(False)
-        else:
+        elif row == 2:
             set_writing_volume(vol)
             if _WRITE_MUTED:
                 toggle_writing_mute()
+        elif row == 3:
+            set_key_volume(vol)
+            if _KEY_MUTED:
+                toggle_key_mute()
+        else:
+            set_anim_volume(vol)
+            if _ANIM_MUTED:
+                toggle_anim_mute()
 
     def _toggle_row_mute(self, row: int) -> None:
         if row == 0:
             toggle_voice_mute()
         elif row == 1:
             toggle_sfx_mute()
-        else:
+        elif row == 2:
             toggle_writing_mute()
+        elif row == 3:
+            toggle_key_mute()
+        else:
+            toggle_anim_mute()
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
         x, y = event.x, event.y
-        row = 0 if y == 0 else (1 if y == 1 else 2)
+        row = 0 if y <= 0 else (1 if y == 1 else (2 if y == 2 else (3 if y == 3 else 4)))
         if self.ICON_X <= x <= self.ICON_X + 2:
             self._toggle_row_mute(row)
         elif self.METER_X <= x < self.METER_X + self.METER_W:
@@ -15049,9 +15128,9 @@ class VolumeBar(Static):
     def on_key(self, event: events.Key) -> None:
         k = event.key
         if k in ("up", "k"):
-            self._active = (self._active - 1) % 3
+            self._active = (self._active - 1) % 5
         elif k in ("down", "j"):
-            self._active = (self._active + 1) % 3
+            self._active = (self._active + 1) % 5
         elif k in ("left", "h"):
             self._set_row_vol(self._active, self._row_vol(self._active) - 0.05)
         elif k in ("right", "l"):
@@ -21608,12 +21687,17 @@ class TutorApp(App):
         self._dev_explained_tokens = set()   # re-explain command pieces each lesson
         self._dev_cmd = ""
         self._dev_write_blink_stop()
+        # clear the vim editor state for EVERY lesson — a stale "vim" stage left
+        # over from a write lesson (or a free jump) must not leak into the next
+        # run/info lesson, or the output renderer routes to the editor and
+        # KeyErrors on the missing "file" field.
+        self._dev_write_stage = "touch"
+        self._dev_vim_buf = None
+        self._dev_vim_pending = None
+        self._dev_vim_free_file = None
         if lesson["kind"] == "write":
             self._dev_phase = "write"
-            self._dev_write_stage = "touch"
             self._dev_cmd = ""
-            self._dev_vim_buf = None
-            self._dev_vim_pending = None
             self._dev_msg = ""
             self._dev_msg_kind = ""
         else:
@@ -22579,7 +22663,7 @@ class TutorApp(App):
         if self._dev_ghost_typed < len(self._dev_ghost):
             self._dev_ghost_typed += 1
             if self._dev_ghost_typed % 2 == 0:
-                play_key()   # typewriter click as the command types itself out
+                play_key(anim=True)   # typewriter click as the command types itself out
             try:
                 self.query_one("#dev-ghost", Static).update(self._dev_render_ghost())
             except Exception:
