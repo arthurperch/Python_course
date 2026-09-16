@@ -8081,6 +8081,8 @@ class AwsEnv:
         self.apigateway = {}          # api name -> {"id","deployed"}
         self.sns_topics = {}          # topic name -> {"arn","messages":[]}
         self.asg = {}                 # asg name -> {"min","max","desired"}
+        self.secrets = {}             # secret name -> {"value","arn"}
+        self.budgets = {}             # budget name -> {"amount"}
 
     def run(self, rest):
         try:
@@ -8116,9 +8118,15 @@ class AwsEnv:
             return self._sns(parts[1:])
         if svc == "autoscaling":
             return self._autoscaling(parts[1:])
+        if svc == "secretsmanager":
+            return self._secretsmanager(parts[1:])
+        if svc == "budgets":
+            return self._budgets(parts[1:])
+        if svc == "ce":
+            return self._ce(parts[1:])
         if svc in ("--version", "version"):
             return ["aws-cli/2.15.0"], []
-        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam | sqs | cloudwatch | rds | elbv2 | cloudfront | apigateway | sns | autoscaling"]
+        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam | sqs | cloudwatch | rds | elbv2 | cloudfront | apigateway | sns | autoscaling | secretsmanager | budgets | ce"]
 
     def _s3(self, args):
         if not args:
@@ -8557,6 +8565,84 @@ class AwsEnv:
                 self.asg[name]["desired"] = dc
             return [], []
         return [], [f"aws autoscaling: unknown command '{cmd}'"]
+
+    def _secretsmanager(self, args):
+        """Secrets: create-secret / put-secret-value / get-secret-value / list-secrets / delete-secret."""
+        if not args:
+            return [], ["usage: aws secretsmanager <command>"]
+        cmd = args[0]
+        if cmd == "create-secret":
+            d = _aws_flags(args[1:])
+            name = d.get("name", "secret")
+            val = d.get("secret-string", "")
+            arn = f"arn:aws:secretsmanager:us-east-1:123456789012:secret:{name}"
+            self.secrets[name] = {"value": val, "arn": arn}
+            return [f"ARN: {arn}"], []
+        if cmd == "put-secret-value":
+            d = _aws_flags(args[1:])
+            name = d.get("secret-id", "")
+            val = d.get("secret-string", "")
+            if name in self.secrets:
+                self.secrets[name]["value"] = val
+            return [], []
+        if cmd == "get-secret-value":
+            d = _aws_flags(args[1:])
+            name = d.get("secret-id", "")
+            if name not in self.secrets:
+                return [], [f"An error occurred (ResourceNotFoundException): Secrets Manager can't find the specified secret"]
+            return [f"SecretString: {self.secrets[name]['value']}"], []
+        if cmd == "list-secrets":
+            if not self.secrets:
+                return ["SecretList: []"], []
+            return [f"{n}  {self.secrets[n]['arn']}" for n in sorted(self.secrets)], []
+        if cmd == "delete-secret":
+            d = _aws_flags(args[1:])
+            self.secrets.pop(d.get("secret-id", ""), None)
+            return [], []
+        return [], [f"aws secretsmanager: unknown command '{cmd}'"]
+
+    def _monthly_cost(self):
+        """A deterministic, rough monthly bill from the resources currently up."""
+        c = 0.0
+        c += len(self.buckets) * 0.023          # S3 storage
+        c += sum(1 for i in self.instances.values() if i["State"]["Name"] == "running") * 8.40
+        c += len(self.rds_instances) * 14.00    # db.t3.micro-ish
+        c += len(self.elb) * 18.00
+        c += len(self.cloudfront) * 0.50
+        c += len(self.dynamo_tables) * 1.25
+        return round(c, 2)
+
+    def _ce(self, args):
+        """Cost Explorer: get-cost-and-usage returns the running monthly bill."""
+        if not args:
+            return [], ["usage: aws ce <command>"]
+        cmd = args[0]
+        if cmd == "get-cost-and-usage":
+            cost = self._monthly_cost()
+            return [f"Estimated monthly cost: ${cost:.2f}"], []
+        return [], [f"aws ce: unknown command '{cmd}'"]
+
+    def _budgets(self, args):
+        """Budgets: create-budget / describe-budgets — alert before the bill surprises you."""
+        if not args:
+            return [], ["usage: aws budgets <command>"]
+        cmd = args[0]
+        if cmd == "create-budget":
+            d = _aws_flags(args[1:])
+            name = d.get("budget-name", "budget")
+            amount = d.get("limit-amount", "100")
+            self.budgets[name] = {"amount": amount}
+            return [f"Budget {name} created with limit ${amount}"], []
+        if cmd == "describe-budgets":
+            if not self.budgets:
+                return ["Budgets: []"], []
+            cost = self._monthly_cost()
+            out = [f"current monthly cost: ${cost:.2f}"]
+            for n, b in sorted(self.budgets.items()):
+                over = cost > float(b["amount"])
+                out.append(f"{n}  limit ${b['amount']}  {'OVER' if over else 'under'}")
+            return out, []
+        return [], [f"aws budgets: unknown command '{cmd}'"]
 
 
 def _aws_flags(args):
@@ -9224,6 +9310,69 @@ def _run_boto3_script(code, state):
 _LIVE_SERVE = False
 
 
+class HelmEnv:
+    """A tiny offline Helm: package charts and manage releases. `run(rest)`
+    behaves like the helm CLI — install / list / upgrade / rollback / uninstall
+    — with a per-release revision counter so rollbacks read like real ones."""
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.releases = {}   # name -> {"chart","version","revision","status"}
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts:
+            return [], ["usage: helm <command>"]
+        cmd = parts[0]
+        if cmd == "install":
+            name = parts[1] if len(parts) > 1 else ""
+            if not name:
+                return [], ["Error: must either provide a name or specify --generate-name"]
+            chart = parts[2] if len(parts) > 2 else "chart"
+            self.releases[name] = {"chart": chart, "version": "1.0.0",
+                                   "revision": 1, "status": "deployed"}
+            return [f"NAME: {name}", "LAST DEPLOYED: just now", "STATUS: deployed",
+                    "REVISION: 1"], []
+        if cmd in ("list", "ls"):
+            if not self.releases:
+                return ["NAME  NAMESPACE  REVISION  STATUS  CHART"], []
+            out = ["NAME  NAMESPACE  REVISION  STATUS  CHART"]
+            for n, r in sorted(self.releases.items()):
+                out.append(f"{n}  default  {r['revision']}  {r['status']}  {r['chart']}-{r['version']}")
+            return out, []
+        if cmd == "upgrade":
+            name = parts[1] if len(parts) > 1 else ""
+            if name not in self.releases:
+                return [], [f"Error: release: not found"]
+            r = self.releases[name]
+            r["revision"] += 1
+            if "--version" in parts:
+                r["version"] = parts[parts.index("--version") + 1]
+            r["status"] = "deployed"
+            return [f"Release \"{name}\" has been upgraded. Happy Helming!"], []
+        if cmd == "rollback":
+            name = parts[1] if len(parts) > 1 else ""
+            if name not in self.releases:
+                return [], [f"Error: release: not found"]
+            r = self.releases[name]
+            r["revision"] += 1
+            r["status"] = "deployed"
+            return [f"Rollback was a success! Happy Helming!"], []
+        if cmd == "uninstall":
+            name = parts[1] if len(parts) > 1 else ""
+            if name in self.releases:
+                del self.releases[name]
+                return [f"release \"{name}\" uninstalled"], []
+            return [], [f"Error: uninstall: Release not loaded: {name}"]
+        if cmd == "status":
+            name = parts[1] if len(parts) > 1 else ""
+            if name not in self.releases:
+                return [], [f"Error: release: not found"]
+            r = self.releases[name]
+            return [f"NAME: {name}", f"STATUS: {r['status']}", f"REVISION: {r['revision']}"], []
+        return [], [f"helm: unknown command '{cmd}'"]
+
+
 class CloudLab:
     """One offline 'developer environment': local bash + git + docker + AWS +
     terraform + ansible + CI/CD. `run(cmdline)` executes one line and returns
@@ -9238,6 +9387,7 @@ class CloudLab:
         self.ansible = AnsibleEnv(self.fs)
         self.pipeline = Pipeline(self.fs)
         self.k8s = K8sEnv(self.fs)
+        self.helm = HelmEnv(self.fs)
         self.history = []
 
     def run(self, cmdline):
@@ -9263,6 +9413,8 @@ class CloudLab:
             return self.ansible.run(rest)
         if cmd == "kubectl":
             return self.k8s.run(rest)
+        if cmd == "helm":
+            return self.helm.run(rest)
         if cmd == "ci":
             return self.pipeline.run(rest)
         if cmd == "serve":
@@ -12053,6 +12205,141 @@ DEV_LESSONS = [
     {"module": "Projects: Deploy a Real Site", "kind": "info", "title": "what senior engineers actually deploy",
      "say": "You just deployed a real site to a real localhost. This is the exact pattern behind every real project on the internet.",
      "why": "Every senior-level deploy is this shape: write the code, serve it, verify it, ship it. A portfolio site, a todo API, a URL shortener, a blog — all of them start as 'write a file, serve it on localhost, check it with curl'. The stack grows (docker, k8s, terraform, a load balancer) but the loop never changes. You've now done every layer of it."},
+
+    # ==== Secrets Management ===============================================
+    {"module": "Secrets Management", "kind": "info", "title": "never hardcode a secret",
+     "say": "Passwords, API keys, tokens — they never belong in your code. This is how real apps keep secrets secret.",
+     "why": "A secret in your code is a secret in your git history, forever. The rule: store the secret in a vault, and fetch it at runtime. AWS Secrets Manager is that vault. You create a secret, and your app retrieves it only when it needs it — so a leaked repo reveals nothing."},
+
+    {"module": "Secrets Management", "kind": "run", "title": "store a secret",
+     "verify": lambda c: c.startswith("aws secretsmanager create-secret") and "db-password" in c,
+     "cmd_hint": "aws secretsmanager create-secret --name db-password --secret-string s3cr3t",
+     "say": "Store a database password as a secret called db-password.",
+     "why": "create-secret puts a value into the vault under a name and returns its ARN. From now on, the password lives in Secrets Manager — never in a file, never in code.",
+     "on_win": "The password is in the vault. Your code will never hold it."},
+
+    {"module": "Secrets Management", "kind": "run", "title": "fetch it at runtime",
+     "verify": lambda c: c.startswith("aws secretsmanager get-secret-value") and "db-password" in c,
+     "cmd_hint": "aws secretsmanager get-secret-value --secret-id db-password",
+     "say": "Fetch the db-password secret back out.",
+     "why": "get-secret-value is the ONLY way the value comes back — and only the app, with the right permissions, can call it. This is the runtime fetch: the app asks for the secret the moment it needs to connect, instead of carrying it around.",
+     "on_win": "There it is — fetched on demand, never baked in. That's the whole secret-management pattern."},
+
+    {"module": "Secrets Management", "kind": "run", "title": "rotate it",
+     "verify": lambda c: c.startswith("aws secretsmanager put-secret-value") and "db-password" in c,
+     "cmd_hint": "aws secretsmanager put-secret-value --secret-id db-password --secret-string n3w-s3cr3t",
+     "say": "Rotate the password by writing a new value over the old one.",
+     "why": "Rotation is the discipline: regularly swap secrets so a leaked one goes stale. put-secret-value overwrites the value in place — the name stays, the secret changes. Senior teams rotate on a schedule, not just after a breach.",
+     "on_win": "Rotated. The old password is dead and the app fetches the new one next time."},
+
+    {"module": "Secrets Management", "kind": "run", "title": "see what's stored",
+     "expect": ["aws secretsmanager list-secrets"],
+     "cmd_hint": "aws secretsmanager list-secrets",
+     "say": "List the secrets in your vault.",
+     "why": "list-secrets shows every secret's name and ARN — but NOT the values. The vault knows what it holds; it just never spills it. This is the audit view.",
+     "on_win": "Names and ARNs, no values. The vault guards what it holds."},
+
+    {"module": "Secrets Management", "kind": "challenge", "title": "store and fetch, from memory",
+     "say": "A new secret is needed: store the API key api-key with value k3y, then fetch it back — from memory.",
+     "why": "The secret loop is always store → fetch at runtime → rotate. When you can run it without looking, you've internalized the pattern every secure app uses.",
+     "recall": "create-secret stores it, get-secret-value fetches it.",
+     "hint": "create-secret --name api-key --secret-string k3y, then get-secret-value --secret-id api-key.",
+     "tools": ["aws secretsmanager create-secret --name api-key", "aws secretsmanager get-secret-value --secret-id api-key"],
+     "verify_lab": lambda lab: "api-key" in lab.aws.secrets and lab.aws.secrets["api-key"]["value"] == "k3y",
+     "replay": ["aws secretsmanager create-secret --name api-key --secret-string k3y",
+                "aws secretsmanager get-secret-value --secret-id api-key"],
+     "on_win": "Stored and fetched from memory. Secrets in, secrets out — nothing in code."},
+
+    {"module": "Secrets Management", "kind": "info", "title": "secrets stay secret",
+     "say": "The full discipline: store in the vault, fetch at runtime, rotate on schedule, and never commit a secret.",
+     "why": "In the real world you'd add: IAM policy so only the app role can read the secret, rotation automation, and a secret scanner in CI that blocks any commit containing a password. This module gives you the core loop; the rest is the same loop, hardened."},
+
+    # ==== Helm & GitOps ====================================================
+    {"module": "Helm & GitOps", "kind": "info", "title": "package the app",
+     "say": "Kubernetes is raw; Helm packages it. Now you'll ship and manage apps as versioned releases.",
+     "why": "Helm is the package manager for Kubernetes. A chart bundles all your k8s manifests, and a release is a running instance of that chart — with a revision number you can upgrade and roll back. It turns 'a pile of yaml' into 'one deployable unit with history'."},
+
+    {"module": "Helm & GitOps", "kind": "run", "title": "install the chart",
+     "verify": lambda c: c.startswith("helm install") and "web" in c,
+     "cmd_hint": "helm install web ./chart",
+     "say": "Install the web app from its chart.",
+     "why": "helm install deploys a chart as a new release, named web. It prints the name, status, and revision — revision 1, the first version of this release. One command, a whole app up.",
+     "on_win": "Release web, revision 1, deployed. The app is up as a versioned release."},
+
+    {"module": "Helm & GitOps", "kind": "run", "title": "see your releases",
+     "expect": ["helm list", "helm ls"],
+     "cmd_hint": "helm list",
+     "say": "List your installed releases.",
+     "why": "helm list shows every release, its revision, status, and chart. It's the inventory view — what's deployed, at what version, and whether it's healthy.",
+     "on_win": "There's web, revision 1, deployed. Your release inventory."},
+
+    {"module": "Helm & GitOps", "kind": "run", "title": "upgrade it",
+     "verify": lambda c: c.startswith("helm upgrade") and "web" in c,
+     "cmd_hint": "helm upgrade web ./chart --version 1.1.0",
+     "say": "Upgrade the web release to version 1.1.0.",
+     "why": "helm upgrade moves a release to a new chart version, bumping the revision. This is the deploy: ship 1.1.0 over 1.0.0, with the old revision kept so you can always go back.",
+     "on_win": "web is now on 1.1.0, revision 2. The new version is live."},
+
+    {"module": "Helm & GitOps", "kind": "run", "title": "roll it back",
+     "expect": ["helm rollback web"],
+     "cmd_hint": "helm rollback web",
+     "say": "Roll web back to the previous revision.",
+     "why": "helm rollback rewinds a release to its prior revision — the instant undo for a bad deploy. Revision history is the safety net: ship freely, because you can always go back.",
+     "on_win": "Rolled back. The bad version is gone and the previous one is serving again."},
+
+    {"module": "Helm & GitOps", "kind": "challenge", "title": "install, upgrade, rollback from memory",
+     "say": "Run the full release lifecycle on a new app called api: install it, upgrade it, then roll it back — from memory.",
+     "why": "The release loop is install → upgrade → rollback. This is the deploy pattern behind every k8s app a senior ships daily.",
+     "recall": "helm install api ./chart, helm upgrade api ./chart --version 2.0.0, helm rollback api.",
+     "hint": "install api from ./chart, upgrade to 2.0.0, then roll back.",
+     "tools": ["helm install api", "helm upgrade api", "helm rollback api"],
+     "verify_lab": lambda lab: "api" in lab.helm.releases and lab.helm.releases["api"]["revision"] >= 3,
+     "replay": ["helm install api ./chart", "helm upgrade api ./chart --version 2.0.0", "helm rollback api"],
+     "on_win": "Full release lifecycle from memory. Install, upgrade, roll back — you own it."},
+
+    {"module": "Helm & GitOps", "kind": "info", "title": "GitOps: the repo is the truth",
+     "say": "Helm plus git is GitOps: your repo holds the desired state, and a tool makes the cluster match it.",
+     "why": "GitOps is the senior pattern this leads to: every change is a commit, and a controller (like ArgoCD) watches the repo and reconciles the cluster to match. Deploy = git push. Rollback = git revert. The repo becomes the single source of truth, auditable and reviewable. Helm gives you the packaging; GitOps gives you the workflow."},
+
+    # ==== Cost & Budgets ===================================================
+    {"module": "Cost & Budgets", "kind": "info", "title": "the bill",
+     "say": "Every resource you create costs money. Now you'll watch the bill and set a budget so it never surprises you.",
+     "why": "In the cloud, you're charged for what's running — servers, databases, load balancers, all of it. The discipline is FinOps: know your spend, set a budget, and get alerted before you blow past it. Leaving a big server on all month is how surprise bills happen."},
+
+    {"module": "Cost & Budgets", "kind": "run", "title": "see the cost",
+     "expect": ["aws ce get-cost-and-usage"],
+     "cmd_hint": "aws ce get-cost-and-usage",
+     "say": "Check your estimated monthly cost.",
+     "why": "aws ce is Cost Explorer — it reads every running resource and estimates the monthly bill. The number you see is the sum of your servers, databases, and load balancers, right now.",
+     "on_win": "That's your estimated bill. Every running resource is in that number."},
+
+    {"module": "Cost & Budgets", "kind": "run", "title": "set a budget",
+     "verify": lambda c: c.startswith("aws budgets create-budget") and "monthly" in c,
+     "cmd_hint": "aws budgets create-budget --budget-name monthly --limit-amount 100",
+     "say": "Set a budget called monthly with a 100 dollar limit.",
+     "why": "create-budget sets a monthly spending limit. When your cost crosses it, the budget flips to OVER — your early warning before the bill gets painful. Set it once, and the spend can't sneak up on you.",
+     "on_win": "Budget monthly is armed at $100. The spend is now watched."},
+
+    {"module": "Cost & Budgets", "kind": "run", "title": "check the budget",
+     "expect": ["aws budgets describe-budgets"],
+     "cmd_hint": "aws budgets describe-budgets",
+     "say": "Check your budget against the current cost.",
+     "why": "describe-budgets shows the current monthly cost next to each budget limit, and flags OVER when you've crossed it. It's the FinOps dashboard — cost vs limit, at a glance.",
+     "on_win": "There's the cost against your $100 limit. Under — for now."},
+
+    {"module": "Cost & Budgets", "kind": "challenge", "title": "watch the bill from memory",
+     "say": "Now do it yourself: check the cost, set a budget called prod at 200, then confirm it — from memory.",
+     "why": "The FinOps loop is see the cost → set the budget → check the budget. When it's habit, the bill never surprises you.",
+     "recall": "aws ce get-cost-and-usage, aws budgets create-budget, aws budgets describe-budgets.",
+     "hint": "check the cost, create-budget --budget-name prod --limit-amount 200, then describe-budgets.",
+     "tools": ["aws ce get-cost-and-usage", "aws budgets create-budget --budget-name prod", "aws budgets describe-budgets"],
+     "verify_lab": lambda lab: "prod" in lab.aws.budgets and lab.aws.budgets["prod"]["amount"] == "200",
+     "replay": ["aws ce get-cost-and-usage", "aws budgets create-budget --budget-name prod --limit-amount 200", "aws budgets describe-budgets"],
+     "on_win": "Cost checked, budget set, confirmed. FinOps from memory."},
+
+    {"module": "Cost & Budgets", "kind": "info", "title": "FinOps is the habit",
+     "say": "Watch the cost, set budgets, tear down what you're not using — that's how senior teams keep cloud bills sane.",
+     "why": "FinOps is the discipline of cloud money: measure the spend, budget it, and kill idle resources (a stopped-but-not-terminated server still bills). The habit is worth more than any single command — the teams with sane bills are the ones that check the cost every week."},
 ]
 
 
@@ -23836,6 +24123,12 @@ class TutorApp(App):
             s[f"topic {name}"] = str(len(t["messages"]))
         for name, a in lab.aws.asg.items():
             s[f"asg {name}"] = f"desired {a['desired']}"
+        for name in lab.aws.secrets:
+            s[f"secret {name}"] = "•••"
+        for name, b in lab.aws.budgets.items():
+            s[f"budget {name}"] = f"${b['amount']}"
+        for name, r in lab.helm.releases.items():
+            s[f"release {name}"] = f"rev {r['revision']}"
         for k in lab.tf.resources:
             s[f"resource {k}"] = ""
         for h, st in lab.ansible.hosts.items():
