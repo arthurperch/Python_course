@@ -137,6 +137,7 @@ _BASH_ART_RAW = """\
             `-+oooyMMMdsoo+/:.
 """
 _BASH_ART = [ln[::2] for ln in _BASH_ART_RAW.splitlines()[::2]]
+_BASH_ART = [ln[::2] for ln in _BASH_ART[::2]]  # half again — a compact "pacman devil"
 
 # Challenges are grouped by difficulty. Each challenge:
 #   expect = substrings that must appear in the (lowercased) OUTPUT
@@ -5840,10 +5841,13 @@ class VimEditor(Static):
         # viewport follows the cursor; only the visible window is drawn, so a
         # long file scrolls with the mouse wheel (or the cursor pulling it down)
         vr = max(1, getattr(self, "visible_rows", 12))
+        # keep 3 lines of breathing room below the cursor so it never pins to the
+        # very bottom edge while typing — the viewport pulls down a little early
+        limit = max(1, vr - 3)
         if self.cursor_row < self.scroll_top:
             self.scroll_top = self.cursor_row
-        elif self.cursor_row >= self.scroll_top + vr:
-            self.scroll_top = self.cursor_row - vr + 1
+        elif self.cursor_row >= self.scroll_top + limit:
+            self.scroll_top = self.cursor_row - limit + 1
         self.scroll_top = max(0, min(self.scroll_top, max(0, len(self.buffer) - vr)))
         t = Text()
         bottom = min(len(self.buffer), self.scroll_top + vr)
@@ -5879,8 +5883,9 @@ class VimEditor(Static):
                 before.stylize(hl)
                 after.stylize(hl)
                 if self.mode == "insert":
-                    # nvim insert mode = a thin bar cursor; underline draws the `_`
-                    cur_style = f"underline bold {hl}"
+                    # nvim insert mode = a solid GREEN block (Bean wants a block
+                    # cursor while typing, never a thin underline)
+                    cur_style = "black on #22c55e bold"
                 else:
                     # nvim normal mode = a solid block, always visible even on a blank cell
                     cur_style = "black on #e6e6e6 bold"
@@ -19313,11 +19318,39 @@ class BackButton(Static):
         self.repaint()
 
     def repaint(self) -> None:
-        self.update(Text.from_markup("[bold #7dd3fc on #1e3a5f]( ← )[/]"))
+        self.update(Text.from_markup("[bold #ffffff on #2563eb]( ← )[/]"))
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
         self.app.action_back()
+
+
+class ScrollTopIcon(Static):
+    """Top-left pacman/up icon — click to smooth-jump the current page to the top."""
+
+    def on_mount(self) -> None:
+        self.repaint()
+
+    def repaint(self) -> None:
+        self.update(Text.from_markup("[bold #fbbf24 on #3a2f00](● ▲)[/]"))
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._scroll_to_top()
+
+
+class ScrollBottomIcon(Static):
+    """Bottom-left down icon — click to smooth-jump the current page to the bottom."""
+
+    def on_mount(self) -> None:
+        self.repaint()
+
+    def repaint(self) -> None:
+        self.update(Text.from_markup("[bold #fbbf24 on #3a2f00](● ▼)[/]"))
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._scroll_to_bottom()
 
 
 class ExitIcon(Static):
@@ -19346,8 +19379,12 @@ class TutorApp(App):
     CSS = """
     Screen { background: #000000; }
     #topbar-row { height: 3; background: $boost; }
-    #back-btn { width: 6; padding: 0 1; }
+    #back-btn { width: 7; height: 3; padding: 0 1; content-align: center middle; }
     #back-btn:hover { background: $surface; }
+    #scroll-top { width: 6; height: 3; padding: 0 1; content-align: center middle; }
+    #scroll-top:hover { background: $surface; }
+    #scroll-bottom { dock: bottom; width: 6; height: 1; padding: 0 1; }
+    #scroll-bottom:hover { background: $surface; }
     #topbar { width: 1fr; padding: 1 2; }
     #profile-icon { width: 6; padding: 1 1; }
     #profile-icon:hover { background: $surface; }
@@ -19516,13 +19553,13 @@ class TutorApp(App):
     #dev.visible { display: block; }
     #dev-topbar { width: 100%; height: auto; }
     #dev-head { width: 1fr; height: auto; }
-    #dev-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #dev-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #dev-exit:hover { background: #3a1515; color: #ff6b6b; }
-    #shell-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #shell-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #shell-exit:hover { background: #3a1515; color: #ff6b6b; }
-    #vim-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #vim-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #vim-exit:hover { background: #3a1515; color: #ff6b6b; }
-    #net-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #net-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #net-exit:hover { background: #3a1515; color: #ff6b6b; }
     #dev-confirm { layer: overlay; width: 56%; height: auto; border: tall $warning; background: #14141f; padding: 2 3; display: none; align-horizontal: center; align-vertical: middle; }
     #dev-confirm.visible { display: block; }
@@ -19537,7 +19574,7 @@ class TutorApp(App):
     #iv.visible { display: block; }
     #iv-topbar { width: 100%; height: auto; }
     #iv-head { width: 1fr; height: auto; }
-    #iv-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #iv-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #iv-exit:hover { background: #3a1515; color: #ff6b6b; }
     #iv-body { width: 100%; height: 1fr; padding: 1 1; }
     #iv-question { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
@@ -19550,7 +19587,7 @@ class TutorApp(App):
     #ld.visible { display: block; }
     #ld-topbar { width: 100%; height: auto; }
     #ld-head { width: 1fr; height: auto; }
-    #ld-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #ld-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #ld-exit:hover { background: #3a1515; color: #ff6b6b; }
     #ld-body { width: 100%; height: 1fr; }
     #ld-goal { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
@@ -19562,7 +19599,7 @@ class TutorApp(App):
     #rg.visible { display: block; }
     #rg-topbar { width: 100%; height: auto; }
     #rg-head { width: 1fr; height: auto; }
-    #rg-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #rg-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #rg-exit:hover { background: #3a1515; color: #ff6b6b; }
     #rg-body { width: 100%; height: 1fr; }
     #rg-goal { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
@@ -19574,7 +19611,7 @@ class TutorApp(App):
     #pr.visible { display: block; }
     #pr-topbar { width: 100%; height: auto; }
     #pr-head { width: 1fr; height: auto; }
-    #pr-exit { width: 5; height: 3; padding: 0 1; color: #f87171; text-style: bold; }
+    #pr-exit { width: 6; height: 3; padding: 0 1; color: #ff6b6b; text-style: bold; }
     #pr-exit:hover { background: #3a1515; color: #ff6b6b; }
     #pr-body { width: 100%; height: 1fr; }
     #pr-goal { width: 100%; height: auto; padding: 1 2; border: round #334155; background: #0d1117; }
@@ -20138,10 +20175,12 @@ class TutorApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="topbar-row"):
+            yield ScrollTopIcon(id="scroll-top")
             yield BackButton(id="back-btn")
             yield Static("", id="topbar")
             yield ProfileIcon(id="profile-icon")
             yield VolumeIcon(id="volume-icon")
+        yield ScrollBottomIcon(id="scroll-bottom")
         # menu view (shown on launch)
         yield Static("", id="menu-banner")
         yield Static("", id="menu-progress")
@@ -21609,20 +21648,33 @@ class TutorApp(App):
 
     def _banner_text(self):
         t = Text()
-        # title — bold thick
-        t.append("Cracked Programmer", style="bold #f9a8d4")
-        name = self.p.get("name", "")
-        if name:
-            t.append("  ·  ", style="dim")
-            t.append(f"welcome back, {name}", style="bold #ff9d00")
-        t.append("\n")
-        # big "TUTOR" block art (animated random color) + the bash skull (yellow)
+        # big "TUTOR" block art (animated random color) on the left; the
+        # center-right holds pacman pellets + the title + the compact skull.
         tutor_color = random.choice(_TUTOR_COLORS)
         tutor_h = len(_TUTOR_ART)
         tutor_w = len(_TUTOR_ART[0])
-        bash_h = len(_BASH_ART)
-        h = max(tutor_h, bash_h)
-        top = (h - tutor_h) // 2  # center TUTOR against the taller bash art
+        right = []
+        # row 0: little pacman pellets, spaced out, each a random color
+        pm = Text()
+        for i in range(5):
+            if i:
+                pm.append("  ", style="")
+            pm.append("●", style="bold " + random.choice(_TUTOR_COLORS))
+        right.append(pm)
+        # row 1: the title
+        title = Text()
+        title.append("Cracked Programmer", style="bold #f9a8d4")
+        name = self.p.get("name", "")
+        if name:
+            title.append("  ·  ", style="dim")
+            title.append(f"welcome back, {name}", style="bold #ff9d00")
+        right.append(title)
+        right.append(Text(""))
+        # rows 3+: the compact skull (yellow)
+        for ln in _BASH_ART:
+            right.append(Text(ln, style="#fbbf24"))
+        h = max(tutor_h, len(right))
+        top = (h - tutor_h) // 2
         for row in range(h):
             t.append("  ", style="")
             if top <= row < top + tutor_h:
@@ -21630,8 +21682,8 @@ class TutorApp(App):
             else:
                 t.append(" " * tutor_w, style="")
             t.append("    ", style="")
-            if row < bash_h:
-                t.append(_BASH_ART[row], style="#fbbf24")
+            if row < len(right):
+                t.append_text(right[row])
             t.append("\n")
         return t
 
@@ -21993,6 +22045,30 @@ class TutorApp(App):
             if self.menu_level in ("challenges", "dev_modules", "net_modules"):
                 self.menu_level = "series"
                 self._render_menu()
+
+    def _scroll_to_top(self):
+        """Smooth-jump the active page to the top (menu list, else the editor)."""
+        try:
+            if self.mode == "menu":
+                self.query_one("#menu-list", VerticalScroll).scroll_home(animate=True)
+            else:
+                ed = self.query_one("#editor", VimEditor)
+                ed.scroll_top = 0
+                ed._redraw()
+        except Exception:
+            pass
+
+    def _scroll_to_bottom(self):
+        """Smooth-jump the active page to the bottom (menu list, else the editor)."""
+        try:
+            if self.mode == "menu":
+                self.query_one("#menu-list", VerticalScroll).scroll_end(animate=True)
+            else:
+                ed = self.query_one("#editor", VimEditor)
+                ed.scroll_top = max(0, len(ed.buffer) - ed.visible_rows)
+                ed._redraw()
+        except Exception:
+            pass
 
     def action_exit(self):
         """The red ✕ in a trainer's top bar: open the centered 'save progress?'
@@ -33100,10 +33176,11 @@ class TutorApp(App):
         # `%` = the current buffer (like nvim). We run it against a temp file.
         code = self.query_one("#editor", VimEditor).get_text()
         if raw in ("q", "quit"):
-            self.exit()
+            self.action_back()   # back to the menu, don't quit the whole app
         elif raw in ("wq", "x"):
-            save_progress(self.p)
-            self.exit()
+            # in the Python editor there's no file to save — "I'm done" means
+            # run + check it (this used to exit the app, which read as a crash)
+            self._run_and_submit()
         elif raw in ("w", "write"):
             self._set_output("[bold]\"challenge.py\" written[/]")
         elif raw == "run":
