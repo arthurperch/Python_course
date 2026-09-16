@@ -5013,6 +5013,71 @@ def _plain_syntax_hint(code: str) -> str:
     return f"Python computes {first}, but without print it won't show you the answer."
 
 
+def _file_line_gloss(line: str, fname: str = "") -> str:
+    """A short right-side gloss for one line of a DevOps write-file (Dockerfile,
+    terraform, ansible/k8s YAML, hosts.ini, Makefile, slurm, JSON, HTML) — or a
+    Python line via the AST explainer. Used by the vim 'write this file' pane."""
+    s = line.strip()
+    if not s:
+        return ""
+    low = (fname or "").lower()
+    if s.startswith("#") and not s.startswith("#SBATCH"):
+        return "a comment — ignored"
+    if low.endswith(".py"):
+        return _line_explain(s)
+    if "dockerfile" in low:
+        d = {"FROM": "the base image to build on", "COPY": "copy a file into the image",
+             "RUN": "run a command during the build", "CMD": "what runs when it starts",
+             "WORKDIR": "set the working directory", "EXPOSE": "a port the app uses",
+             "ENV": "set an environment variable", "ENTRYPOINT": "the fixed startup command",
+             "USER": "run as this user", "ADD": "copy a file/URL into the image",
+             "LABEL": "add metadata", "VOLUME": "mark a mount point"}
+        return d.get(s.split()[0].upper(), "an image-build instruction")
+    if low.endswith((".tf", ".bicep")):
+        if s.startswith("resource"): return "create a cloud resource"
+        if s.startswith("provider"): return "configure the cloud provider"
+        if s.startswith("variable"): return "a value you can set"
+        if s.startswith("output"): return "show a value after apply"
+        if s.startswith("module"): return "reuse a bundle of resources"
+        if s.startswith("data"): return "read existing info"
+        if s.startswith("terraform"): return "the terraform settings block"
+        if "=" in s: return "an attribute of the block above"
+        return "part of the terraform config"
+    if low.endswith((".yml", ".yaml")):
+        y = {"apiVersion:": "the k8s API version", "kind:": "what kind of object",
+             "metadata:": "its name + labels", "spec:": "the desired state",
+             "hosts:": "which machines this targets", "tasks:": "the steps to run",
+             "become:": "run as root", "containers:": "the pod's containers",
+             "image:": "which image to run", "replicas:": "how many copies",
+             "selector:": "which pods this applies to", "ports:": "the ports to open",
+             "handler:": "runs when notified", "notify:": "trigger a handler on change",
+             "apt:": "install a package", "service:": "manage a service",
+             "copy:": "copy a file over", "template:": "copy a file, fill in variables",
+             "name:": "a name/label"}
+        for k, v in y.items():
+            if s.startswith(k):
+                return v
+        if s.startswith("- name:"): return "a task/step name"
+        if s.startswith("- "): return "a list item"
+        return "part of the config"
+    if low.endswith(".ini"):
+        return "a group of hosts" if (s.startswith("[") and s.endswith("]")) else "a host in this group"
+    if low.endswith("makefile"):
+        if ":" in s and not s[:1].isspace(): return "a target — what to build"
+        if s[:1].isspace(): return "a command to run"
+        return "part of the Makefile"
+    if low.endswith(".slurm"):
+        if s.startswith("#SBATCH"): return "a scheduler option"
+        return "a command the job runs"
+    if low.endswith(".json"):
+        return "a config key/value"
+    if low.endswith(".html"):
+        return "a line of the web page"
+    if low.endswith(".md"):
+        return "a documentation line"
+    return "a line of the file"
+
+
 def _ghost_tip(code: str) -> str:
     """Spoken pointer about THIS example — the confusing bits explained in
     plain words, personalized to the actual variables/numbers in play (so two
@@ -27394,6 +27459,16 @@ class TutorApp(App):
                     # not reached yet — dim ghost
                     t.append("    ", style="")
                     self._dev_append_code(t, tline, "#5a5a5a")
+                gloss = _file_line_gloss(tline, fname)
+                if gloss:
+                    maxw = self._dev_term_width()
+                    avail = maxw - 4 - len(tline) - 5
+                    if avail >= 8:
+                        if len(gloss) > avail:
+                            gloss = gloss[:max(1, avail - 1)].rstrip() + "…"
+                        t.append("  ", style="")
+                        t.append("· ", style="#3f4756")
+                        t.append(gloss, style="#6b7280")
                 t.append("\n")
         else:
             t.append("\n\n")
