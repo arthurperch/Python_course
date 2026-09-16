@@ -10069,6 +10069,58 @@ class HelmEnv:
         return [], [f"helm: unknown command '{cmd}'"]
 
 
+class GitopsEnv:
+    """Offline ArgoCD-style GitOps: an app watches the repo; when the repo gets
+    a new commit the app drifts OutOfSync, and `argocd app sync` reconciles the
+    cluster back to match the repo. `rollback` reverts a revision. The repo IS
+    the source of truth — you change git, never the cluster by hand."""
+
+    def __init__(self, fs, git):
+        self.fs = fs
+        self.git = git
+        self.apps = {}   # name -> {"revision": int, "synced_at": commit-count, "history": []}
+
+    def _synced(self, a):
+        return len(self.git.commits) <= a["synced_at"]
+
+    def run(self, rest):
+        parts = rest.split()
+        if not parts or parts[0] != "app":
+            return [], ["usage: argocd app <create|list|sync|rollback>"]
+        if len(parts) < 2:
+            return [], ["usage: argocd app <create|list|sync|rollback>"]
+        cmd = parts[1]
+        name = parts[2] if len(parts) > 2 else ""
+        if cmd == "create":
+            self.apps[name] = {"revision": 1, "synced_at": len(self.git.commits),
+                               "history": [1]}
+            return [f"application '{name}' created — ArgoCD is watching the repo"], []
+        if cmd == "list":
+            if not self.apps:
+                return ["NAME  SYNC STATUS  HEALTH  REVISION"], []
+            out = ["NAME  SYNC STATUS  HEALTH  REVISION"]
+            for n, a in sorted(self.apps.items()):
+                status = "Synced" if self._synced(a) else "OutOfSync"
+                out.append(f"{n}  {status:<12} Healthy  {a['revision']}")
+            return out, []
+        if cmd == "sync":
+            if name not in self.apps:
+                return [], [f"application '{name}' not found"]
+            a = self.apps[name]
+            a["synced_at"] = len(self.git.commits)
+            a["revision"] += 1
+            a["history"].append(a["revision"])
+            return [f"application '{name}' synced — cluster now matches the repo"], []
+        if cmd == "rollback":
+            if name not in self.apps:
+                return [], [f"application '{name}' not found"]
+            a = self.apps[name]
+            a["revision"] = max(1, a["revision"] - 1)
+            a["synced_at"] = len(self.git.commits)
+            return [f"application '{name}' rolled back to revision {a['revision']}"], []
+        return [], [f"argocd app: unknown command '{cmd}'"]
+
+
 class PromEnv:
     """Offline Prometheus: deterministic metric series + a PromQL subset
     (rate/sum/avg/max/count). `run(rest)` takes the query AFTER 'promql'.
@@ -10134,6 +10186,7 @@ class CloudLab:
         self.helm = HelmEnv(self.fs)
         self.az = AzEnv(self.fs)
         self.prom = PromEnv(self.fs)
+        self.gitops = GitopsEnv(self.fs, self.git)
         self.history = []
 
     def run(self, cmdline):
@@ -10167,6 +10220,8 @@ class CloudLab:
             return self.prom.run(rest)
         if cmd == "trivy":
             return self._trivy(rest)
+        if cmd == "argocd":
+            return self.gitops.run(rest)
         if cmd == "ci":
             return self.pipeline.run(rest)
         if cmd == "serve":
@@ -13471,6 +13526,80 @@ DEV_LESSONS = [
     {"module": "Security: Lock the Cluster", "kind": "info", "title": "RBAC, network policy, scan",
      "say": "Three layers, one principle: least privilege. RBAC controls who, network policy controls what talks, and scanning controls what ships.",
      "why": "Real cluster security is defense in depth: a role scoped to one resource, a network policy that defaults to deny, and a scan that catches vulnerable images before deploy. No single layer is enough — together they're a wall. You now run all three."},
+
+    # ==== GitOps: The Repo Is Truth ========================================
+    {"module": "GitOps: The Repo Is Truth", "kind": "info", "title": "the repo is the source of truth",
+     "say": "Until now you deployed by running commands. GitOps flips it: the git repo is the single source of truth, and a controller makes the cluster match it. You change the repo, never the cluster by hand.",
+     "why": "GitOps means the desired state of your system lives in git — versioned, reviewable, auditable. ArgoCD (the controller) watches the repo and syncs the cluster to match. When the repo changes, the cluster drifts 'OutOfSync'; ArgoCD reconciles it. Rollback is just 'go back to a previous commit'."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "run", "title": "create the app",
+     "verify": lambda c: c.startswith("argocd app create") and "web" in c,
+     "cmd_hint": "argocd app create web",
+     "say": "Create an ArgoCD application called web.",
+     "why": "Creating the app tells ArgoCD 'watch this repo and manage this app'. From now on, ArgoCD owns the cluster's state for web — you stop kubectl-applying by hand and start committing to the repo.",
+     "on_win": "web is now managed by ArgoCD. The repo is in charge."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "run", "title": "see it synced",
+     "expect": ["argocd app list"],
+     "cmd_hint": "argocd app list",
+     "say": "List your apps and their sync status.",
+     "why": "argocd app list is the dashboard: every app, its sync status (Synced or OutOfSync), and its revision. Synced means the cluster matches the repo. This is the first thing you check when something's off.",
+     "on_win": "web is Synced. The cluster matches the repo — as it should."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "write", "title": "change the manifest",
+     "file": "deployment.yaml",
+     "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: web\n",
+     "lines": [
+         ("kind: Deployment", "the kind — this manifest describes a deployment"),
+         ("name: web", "the app it manages"),
+         ("replicas: 3", "the change: three copies, up from one"),
+     ],
+     "say": "Change the desired state in the repo — write deployment.yaml with three replicas. touch it, nvim in, and type it out.",
+     "why": "This is the whole idea: you don't kubectl scale. You edit the manifest in git and let the controller do it. The file is the truth; the cluster will follow.",
+     "on_win": "The manifest now says 3 replicas. You changed the repo, not the cluster."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "run", "title": "stage the change",
+     "verify": lambda c: c.startswith("git add") and ("deployment.yaml" in c or "." in c),
+     "cmd_hint": "git add deployment.yaml",
+     "say": "Stage the changed manifest.",
+     "why": "git add marks the file for commit. In GitOps, this is the first half of 'publishing' a change — stage it, then commit it, and the repo now declares the new state.",
+     "on_win": "deployment.yaml staged. The change is queued."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "run", "title": "commit the change",
+     "verify": lambda c: c.startswith("git commit") and "bump" in c,
+     "cmd_hint": "git commit -m \"bump to 3 replicas\"",
+     "say": "Commit the change.",
+     "why": "The commit is the moment the repo's truth changes. ArgoCD sees the new commit and flags the app OutOfSync — the cluster no longer matches what the repo says. That drift is the signal to reconcile.",
+     "on_win": "Committed. The repo now says 3 replicas — and the cluster doesn't match yet."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "run", "title": "see the drift",
+     "expect": ["argocd app list"],
+     "cmd_hint": "argocd app list",
+     "say": "Check the app status again.",
+     "why": "After the commit, web is OutOfSync — the cluster is behind the repo. This is GitOps's core signal: drift detection. The controller sees the gap and is ready to close it the moment you tell it to.",
+     "on_win": "web is OutOfSync. The repo moved; the cluster hasn't followed yet."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "run", "title": "sync it",
+     "verify": lambda c: c.startswith("argocd app sync") and "web" in c,
+     "cmd_hint": "argocd app sync web",
+     "say": "Sync web — reconcile the cluster to match the repo.",
+     "why": "sync is the reconcile: ArgoCD applies the repo's manifest to the cluster, bringing them back into agreement. The cluster now runs 3 replicas — but YOU never touched kubectl. The repo did the work.",
+     "on_win": "web is Synced again, now at 3 replicas. The repo deployed it."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "challenge", "title": "create, drift, sync — from memory",
+     "say": "From memory: create an app prod-web, check it's synced, then sync it to bump its revision.",
+     "why": "The GitOps loop is create → (commit drifts it) → sync. When you can run it from memory, you understand that the repo — not the cluster — is where you work.",
+     "recall": "argocd app create → argocd app list → argocd app sync.",
+     "hint": "argocd app create prod-web, argocd app list, argocd app sync prod-web.",
+     "tools": ["argocd app create prod-web", "argocd app list", "argocd app sync prod-web"],
+     "verify_lab": lambda lab: "prod-web" in lab.gitops.apps
+                               and lab.gitops.apps["prod-web"]["revision"] == 2,
+     "replay": ["argocd app create prod-web", "argocd app list", "argocd app sync prod-web"],
+     "on_win": "Created, checked, synced — from memory. The repo is your control plane."},
+
+    {"module": "GitOps: The Repo Is Truth", "kind": "info", "title": "the repo is truth",
+     "say": "Change the repo, not the cluster. The controller detects the drift and syncs. Rollback is a previous commit. That's GitOps.",
+     "why": "GitOps is the end of the course because it's the summit: everything you've learned — git, manifests, k8s, automation — collapses into one loop. Commit to the repo, the cluster follows, and every change is versioned and reversible. That's how the best teams ship, and now you can too."},
 ]
 
 
@@ -26013,6 +26142,8 @@ class TutorApp(App):
             s[f"az nsg {name}"] = f"{len(nsg['rules'])} rules"
         for name, rt in lab.az.route_tables.items():
             s[f"az rt {name}"] = f"{len(rt['routes'])} routes"
+        for name, a in lab.gitops.apps.items():
+            s[f"app {name}"] = "Synced" if lab.gitops._synced(a) else "OutOfSync"
         for k in lab.tf.resources:
             s[f"resource {k}"] = ""
         for h, st in lab.ansible.hosts.items():
