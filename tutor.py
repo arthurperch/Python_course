@@ -137,7 +137,6 @@ _BASH_ART_RAW = """\
             `-+oooyMMMdsoo+/:.
 """
 _BASH_ART = [ln[::2] for ln in _BASH_ART_RAW.splitlines()[::2]]
-_BASH_ART = [ln[::2] for ln in _BASH_ART[::2]]  # half again — a compact "pacman devil"
 
 # Challenges are grouped by difficulty. Each challenge:
 #   expect = substrings that must appear in the (lowercased) OUTPUT
@@ -19332,7 +19331,7 @@ class ScrollTopIcon(Static):
         self.repaint()
 
     def repaint(self) -> None:
-        self.update(Text.from_markup("[bold #fbbf24 on #3a2f00](● ▲)[/]"))
+        self.update(Text.from_markup("[bold #fbbf24](● ▲)[/]"))
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -19346,7 +19345,7 @@ class ScrollBottomIcon(Static):
         self.repaint()
 
     def repaint(self) -> None:
-        self.update(Text.from_markup("[bold #fbbf24 on #3a2f00](● ▼)[/]"))
+        self.update(Text.from_markup("[bold #fbbf24](● ▼)[/]"))
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
@@ -19381,9 +19380,9 @@ class TutorApp(App):
     #topbar-row { height: 3; background: $boost; }
     #back-btn { width: 7; height: 3; padding: 0 1; content-align: center middle; }
     #back-btn:hover { background: $surface; }
-    #scroll-top { width: 6; height: 3; padding: 0 1; content-align: center middle; }
+    #scroll-top { width: 7; height: 3; padding: 0 1; content-align: center middle; }
     #scroll-top:hover { background: $surface; }
-    #scroll-bottom { dock: bottom; width: 6; height: 1; padding: 0 1; }
+    #scroll-bottom { dock: bottom; width: 7; height: 1; padding: 0 1; content-align: center middle; }
     #scroll-bottom:hover { background: $surface; }
     #topbar { width: 1fr; padding: 1 2; }
     #profile-icon { width: 6; padding: 1 1; }
