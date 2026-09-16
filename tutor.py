@@ -8383,6 +8383,7 @@ class AwsEnv:
         self.security_groups = {}     # sg name -> {"ingress":[(proto,port,cidr)], "egress":[]}
         self.route_tables = {}        # rtb id -> {"routes":[(dest,target)]}
         self.next_rtb = 1
+        self.kms_keys = {}            # key id -> {"arn"}
 
     def run(self, rest):
         try:
@@ -8424,6 +8425,8 @@ class AwsEnv:
             return self._budgets(parts[1:])
         if svc == "ce":
             return self._ce(parts[1:])
+        if svc == "kms":
+            return self._kms(parts[1:])
         if svc in ("--version", "version"):
             return ["aws-cli/2.15.0"], []
         return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam | sqs | cloudwatch | rds | elbv2 | cloudfront | apigateway | sns | autoscaling | secretsmanager | budgets | ce"]
@@ -8834,6 +8837,20 @@ class AwsEnv:
                 self.rds_instances[ident]["class"] = d["db-instance-class"]
             return [f"DBInstance {ident} modified."], []
         return [], [f"aws rds: unknown command '{cmd}'"]
+
+    def _kms(self, args):
+        """Encryption keys: create-key / list-keys (at-rest encryption for
+        regulated data)."""
+        if not args:
+            return [], ["usage: aws kms <create-key|list-keys>"]
+        cmd = args[0]
+        if cmd == "create-key":
+            kid = "key-%04d" % (len(self.kms_keys) + 1)
+            self.kms_keys[kid] = {"arn": f"arn:aws:kms:us-east-1:123456789012:key/{kid}"}
+            return [f"KeyId: {kid}", f"KeyArn: {self.kms_keys[kid]['arn']}"], []
+        if cmd == "list-keys":
+            return [k for k in sorted(self.kms_keys)] or ["Keys: []"], []
+        return [], [f"aws kms: unknown command '{cmd}'"]
 
     def _elb(self, args):
         """Load balancers: create-load-balancer / register-targets / describe-load-balancers."""
@@ -13600,6 +13617,69 @@ DEV_LESSONS = [
     {"module": "GitOps: The Repo Is Truth", "kind": "info", "title": "the repo is truth",
      "say": "Change the repo, not the cluster. The controller detects the drift and syncs. Rollback is a previous commit. That's GitOps.",
      "why": "GitOps is the end of the course because it's the summit: everything you've learned — git, manifests, k8s, automation — collapses into one loop. Commit to the repo, the cluster follows, and every change is versioned and reversible. That's how the best teams ship, and now you can too."},
+
+    # ==== Regulated Ops: Finance-Ready =====================================
+    {"module": "Regulated Ops: Finance-Ready", "kind": "info", "title": "why finance is different",
+     "say": "When money moves through your system, the bar changes. Now you'll map three compliance standards to the operational controls you already run.",
+     "why": "Three standards govern finance: SOX (financial-reporting integrity → an audit trail for every change), PCI-DSS (cardholder data → encryption + least privilege), and SOC 2 (security, availability, confidentiality → backup and recovery). None of them name a single command — they name OUTCOMES, and you've already been running the commands that produce them: git log, RBAC, KMS, snapshots. This module connects the dots."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "run", "title": "the audit trail",
+     "verify": lambda c: c.startswith("git log"),
+     "cmd_hint": "git log",
+     "say": "Read the commit history.",
+     "why": "git log is the audit trail SOX demands: who changed what, when, and why. Every deployment, every config change, every schema tweak — signed, timestamped, and append-only. When a regulator asks 'who touched the payment code and when?', git log is the answer.",
+     "on_win": "Every change, signed and timestamped. That's the audit trail."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "run", "title": "segregation of duties",
+     "verify": lambda c: c.startswith("kubectl auth can-i delete pods") and "dev" in c,
+     "cmd_hint": "kubectl auth can-i delete pods --as dev",
+     "say": "Verify that the dev user CANNOT delete pods.",
+     "why": "Segregation of duties means the person who writes code isn't the person who can destroy production. Here, dev can read pods but not delete them — one human can't both make a change and approve/push it unchecked. This is the core SOX/SOC-2 control against fraud and accidents.",
+     "on_win": "Access denied. Write code, read prod — but never delete it."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "run", "title": "encrypt at rest",
+     "verify": lambda c: c.startswith("aws kms create-key"),
+     "cmd_hint": "aws kms create-key",
+     "say": "Create a KMS key for at-rest encryption.",
+     "why": "PCI-DSS requires cardholder data to be encrypted at rest — so a stolen disk reveals nothing. KMS creates the key that encrypts your databases, volumes, and S3 objects. In transit, TLS already covers the wire; KMS covers the disk.",
+     "on_win": "A key exists. Data at rest is now unreadable without it."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "run", "title": "RPO — the snapshot",
+     "verify": lambda c: c.startswith("aws rds create-db-snapshot") and "fin-snap" in c,
+     "cmd_hint": "aws rds create-db-snapshot --db-snapshot-identifier fin-snap --db-instance-identifier fin-db",
+     "say": "Snapshot fin-db as fin-snap — your recovery point.",
+     "why": "RPO (Recovery Point Objective) is 'how much data can you lose?' A snapshot is the answer: the freshest snapshot is the most you could lose. Finance sets RPOs in minutes, not hours — so you snapshot before anything risky, and on a schedule.",
+     "on_win": "fin-snap is the recovery point. The most you can lose is what happened since."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "run", "title": "RTO — the restore",
+     "verify": lambda c: c.startswith("aws rds restore-db-instance-from-db-snapshot") and "fin-snap" in c,
+     "cmd_hint": "aws rds restore-db-instance-from-db-snapshot --db-instance-identifier fin-recovered --db-snapshot-identifier fin-snap",
+     "say": "Restore fin-recovered from fin-snap.",
+     "why": "RTO (Recovery Time Objective) is 'how fast can you recover?' Restore is the clock: from the moment the database dies to the moment it's back from snapshot. A one-command restore is a tight RTO — the difference between a 5-minute outage and a full day of downtime.",
+     "on_win": "Restored. RPO measured in minutes, RTO in one command."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "challenge", "title": "the compliance loop from memory",
+     "say": "From memory: create a database fin-db, snapshot it as fin-snap, restore it as fin-recovered, and confirm dev can't delete pods.",
+     "why": "This is the whole regulated-ops loop: build → encrypt → backup (RPO) → restore (RTO) → least-privilege check. When you can run it from memory, you can stand in front of an auditor and point at each control and say 'here it is, running'.",
+     "recall": "create-db-instance → create-db-snapshot → restore → auth can-i (deny).",
+     "hint": "create fin-db, snapshot fin-snap, restore fin-recovered, then auth can-i delete pods --as dev.",
+     "tools": ["aws rds create-db-instance --db-instance-identifier fin-db",
+               "aws rds create-db-snapshot --db-snapshot-identifier fin-snap",
+               "aws rds restore-db-instance-from-db-snapshot --db-instance-identifier fin-recovered",
+               "kubectl auth can-i delete pods"],
+     "verify_lab": lambda lab: "fin-db" in lab.aws.rds_instances
+                               and "fin-snap" in lab.aws.db_snapshots
+                               and "fin-recovered" in lab.aws.rds_instances
+                               and lab.aws.rds_instances["fin-recovered"].get("restored_from") == "fin-snap",
+     "replay": ["aws rds create-db-instance --db-instance-identifier fin-db --engine postgres",
+                "aws rds create-db-snapshot --db-snapshot-identifier fin-snap --db-instance-identifier fin-db",
+                "aws rds restore-db-instance-from-db-snapshot --db-instance-identifier fin-recovered --db-snapshot-identifier fin-snap",
+                "kubectl auth can-i delete pods --as dev"],
+     "on_win": "Built, backed up, recovered, least-privileged — the auditor's checklist, from memory."},
+
+    {"module": "Regulated Ops: Finance-Ready", "kind": "info", "title": "audit, least privilege, encryption",
+     "say": "SOX wants an audit trail, PCI wants encryption and least privilege, SOC 2 wants recovery. You run all three: git log, RBAC + KMS, snapshots.",
+     "why": "Compliance isn't a separate skill from engineering — it IS the engineering, done deliberately. An audit trail, least-privilege access, encryption at rest, and tested recovery aren't paperwork; they're the same systems you'd build anyway, pointed at provable outcomes. A senior engineer at a regulated shop speaks both languages: the command AND the requirement it satisfies."},
 ]
 
 
@@ -26136,6 +26216,8 @@ class TutorApp(App):
             s[f"az aks {name}"] = lab.az.aks[name]["nodes"] + " nodes"
         for name, sg in lab.aws.security_groups.items():
             s[f"sg {name}"] = f"{len(sg['ingress'])} in / {len(sg['egress'])} out"
+        for kid in lab.aws.kms_keys:
+            s[f"kms {kid}"] = ""
         for rid, rt in lab.aws.route_tables.items():
             s[f"{rid}"] = f"{len(rt['routes'])} routes"
         for name, nsg in lab.az.nsgs.items():
