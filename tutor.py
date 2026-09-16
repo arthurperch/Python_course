@@ -8304,6 +8304,9 @@ class AwsEnv:
         self.asg = {}                 # asg name -> {"min","max","desired"}
         self.secrets = {}             # secret name -> {"value","arn"}
         self.budgets = {}             # budget name -> {"amount"}
+        self.security_groups = {}     # sg name -> {"ingress":[(proto,port,cidr)], "egress":[]}
+        self.route_tables = {}        # rtb id -> {"routes":[(dest,target)]}
+        self.next_rtb = 1
 
     def run(self, rest):
         try:
@@ -8433,6 +8436,57 @@ class AwsEnv:
                 if iid in self.instances:
                     self.instances[iid]["State"]["Name"] = state
             return [f"{iid}: {state}" for iid in ids], []
+        if cmd == "create-security-group":
+            d = _aws_flags(args[1:])
+            name = d.get("group-name", "sg")
+            if name in self.security_groups:
+                return [], [f"An error occurred (InvalidGroup.Duplicate): {name}"]
+            self.security_groups[name] = {"ingress": [], "egress": []}
+            return [f"GroupId: sg-{name}"], []
+        if cmd in ("authorize-security-group-ingress", "authorize-security-group-egress"):
+            d = _aws_flags(args[1:])
+            name = d.get("group-name", "")
+            if name not in self.security_groups:
+                return [], [f"An error occurred (InvalidGroup.NotFound): {name}"]
+            key = "ingress" if cmd.endswith("ingress") else "egress"
+            rule = (d.get("protocol", "tcp"),
+                    d.get("port", d.get("from-port", "")),
+                    d.get("cidr", ""))
+            self.security_groups[name][key].append(rule)
+            return [], []
+        if cmd == "describe-security-groups":
+            if not self.security_groups:
+                return ["SecurityGroups: []"], []
+            out = []
+            for name, sg in sorted(self.security_groups.items()):
+                out.append(f"{name}  ingress={len(sg['ingress'])}  egress={len(sg['egress'])}")
+                for proto, port, cidr in sg["ingress"]:
+                    out.append(f"    in  {proto} {port}  {cidr}")
+                for proto, port, cidr in sg["egress"]:
+                    out.append(f"    out {proto} {port}  {cidr}")
+            return out, []
+        if cmd == "create-route-table":
+            rid = "rtb-%04d" % self.next_rtb
+            self.next_rtb += 1
+            self.route_tables[rid] = {"routes": []}
+            return [f"RouteTableId: {rid}"], []
+        if cmd == "create-route":
+            d = _aws_flags(args[1:])
+            rid = d.get("route-table-id", "")
+            if rid not in self.route_tables:
+                return [], [f"An error occurred (InvalidRouteTableID.NotFound): {rid}"]
+            self.route_tables[rid]["routes"].append(
+                (d.get("destination-cidr-block", ""), d.get("gateway-id", "")))
+            return [], []
+        if cmd == "describe-route-tables":
+            if not self.route_tables:
+                return ["RouteTables: []"], []
+            out = []
+            for rid, rt in sorted(self.route_tables.items()):
+                out.append(f"{rid}  routes={len(rt['routes'])}")
+                for dest, target in rt["routes"]:
+                    out.append(f"    {dest} -> {target}")
+            return out, []
         return [], [f"aws ec2: unknown command '{cmd}'"]
 
     def _lambda(self, args):
@@ -8896,6 +8950,8 @@ class AzEnv:
         self.aks = {}                    # name -> {"rg","nodes","kubeconfig"}
         self.webapps = {}                # name -> {"rg","url"}
         self.functions = {}              # name -> {"rg","runtime"}
+        self.nsgs = {}                   # nsg name -> {"rules":[(name,port,access)]}
+        self.route_tables = {}           # rt name -> {"routes":[(prefix,hop)]}
 
     def run(self, rest):
         try:
@@ -9060,6 +9116,69 @@ class AzEnv:
                     return sorted(self.vnets[vnet]["subnets"]) or ["(empty)"], []
                 return [], [f"az network vnet subnet: unknown command '{scmd}'"]
             return [], [f"az network vnet: unknown command '{cmd}'"]
+        if sub == "nsg":
+            if len(args) < 2:
+                return [], ["usage: az network nsg <create|list|rule> ..."]
+            cmd = args[1]
+            d = _aws_flags(args[2:])
+            if cmd == "create":
+                name = d.get("name", "nsg")
+                self.nsgs[name] = {"rules": []}
+                return [f"Network security group '{name}' created."], []
+            if cmd == "list":
+                return ([f"{n}  rules={len(self.nsgs[n]['rules'])}"
+                         for n in sorted(self.nsgs)] or ["(no NSGs)"]), []
+            if cmd == "rule":
+                if len(args) < 3:
+                    return [], ["usage: az network nsg rule <create|list> ..."]
+                rcmd = args[2]
+                d = _aws_flags(args[3:])
+                nsg = d.get("nsg-name", "")
+                if nsg not in self.nsgs:
+                    return [], [f"Network security group '{nsg}' was not found."]
+                if rcmd == "create":
+                    rule = (d.get("name", "rule"),
+                            d.get("destination-port-ranges", ""),
+                            d.get("access", "Allow"))
+                    self.nsgs[nsg]["rules"].append(rule)
+                    return [f"Rule '{d.get('name', 'rule')}' added to '{nsg}' "
+                            f"({d.get('access', 'Allow')})."], []
+                if rcmd == "list":
+                    return ([f"{n}  port {p}  {a}"
+                             for n, p, a in self.nsgs[nsg]["rules"]] or ["(no rules)"]), []
+                return [], [f"az network nsg rule: unknown command '{rcmd}'"]
+            return [], [f"az network nsg: unknown command '{cmd}'"]
+        if sub == "route-table":
+            if len(args) < 2:
+                return [], ["usage: az network route-table <create|list|route> ..."]
+            cmd = args[1]
+            d = _aws_flags(args[2:])
+            if cmd == "create":
+                name = d.get("name", "rt")
+                self.route_tables[name] = {"routes": []}
+                return [f"Route table '{name}' created."], []
+            if cmd == "list":
+                return ([f"{n}  routes={len(self.route_tables[n]['routes'])}"
+                         for n in sorted(self.route_tables)] or ["(no route tables)"]), []
+            if cmd == "route":
+                if len(args) < 3:
+                    return [], ["usage: az network route-table route <create|list> ..."]
+                rcmd = args[2]
+                d = _aws_flags(args[3:])
+                rt = d.get("route-table-name", "")
+                if rt not in self.route_tables:
+                    return [], [f"Route table '{rt}' was not found."]
+                if rcmd == "create":
+                    self.route_tables[rt]["routes"].append(
+                        (d.get("address-prefix", ""), d.get("next-hop-type", "")))
+                    return [f"Route to {d.get('address-prefix', '')} added "
+                            f"({d.get('next-hop-type', '')})."], []
+                if rcmd == "list":
+                    return ([f"{dest} -> {hop}"
+                             for dest, hop in self.route_tables[rt]["routes"]]
+                            or ["(no routes)"]), []
+                return [], [f"az network route-table route: unknown command '{rcmd}'"]
+            return [], [f"az network route-table: unknown command '{cmd}'"]
         return [], [f"az network: unknown subcommand '{sub}'"]
 
     def _aks(self, args):
@@ -12886,6 +13005,71 @@ DEV_LESSONS = [
     {"module": "Azure: The Second Cloud", "kind": "info", "title": "both clouds, one pattern",
      "say": "AWS and Azure are two dialects of the same language: networks, servers, storage, and a CLI to drive them.",
      "why": "The senior skill isn't memorizing both CLIs — it's recognizing the pattern (isolate → provision → connect → secure) and translating it across clouds. You now have the vocabulary for both: the concepts you mastered on AWS map one-to-one onto Azure, and vice versa."},
+
+    # ==== Network: Lock It Down ============================================
+    {"module": "Network: Lock It Down", "kind": "info", "title": "default deny",
+     "say": "A server with no firewall rules is a server anyone can reach. Now you'll build the wall: a security group that denies everything by default, then opens only what you choose.",
+     "why": "A security group is the per-server firewall. It starts EMPTY — nothing gets in — and every rule you add is an allow. That's 'default deny': you explicitly open each port a service needs, and nothing else. The rule of thumb: the only open ports are the ones you meant to open."},
+
+    {"module": "Network: Lock It Down", "kind": "run", "title": "create the firewall",
+     "verify": lambda c: c.startswith("aws ec2 create-security-group") and "web-sg" in c,
+     "cmd_hint": "aws ec2 create-security-group --group-name web-sg --description web servers",
+     "say": "Create an empty security group called web-sg.",
+     "why": "create-security-group makes the container for your rules — empty at first, so it blocks EVERYTHING by default. The name is how you'll attach rules to it. AWS calls it a security group; Azure calls it an NSG; the idea is identical.",
+     "on_win": "web-sg exists, and it's blocking everything. That's the correct starting state."},
+
+    {"module": "Network: Lock It Down", "kind": "run", "title": "open SSH",
+     "verify": lambda c: c.startswith("aws ec2 authorize-security-group-ingress") and "web-sg" in c and "22" in c,
+     "cmd_hint": "aws ec2 authorize-security-group-ingress --group-name web-sg --protocol tcp --port 22 --cidr 0.0.0.0/0",
+     "say": "Allow SSH (port 22) into web-sg.",
+     "why": "authorize-security-group-ingress opens one port to a source. Port 22 is SSH — how you log in to administer the box. The --cidr 0.0.0.0/0 means 'from anywhere'; a tighter setup would narrow it to just your IP.",
+     "on_win": "SSH is open. Now you can get in to manage the server."},
+
+    {"module": "Network: Lock It Down", "kind": "run", "title": "open HTTP",
+     "verify": lambda c: c.startswith("aws ec2 authorize-security-group-ingress") and "web-sg" in c and "80" in c,
+     "cmd_hint": "aws ec2 authorize-security-group-ingress --group-name web-sg --protocol tcp --port 80 --cidr 0.0.0.0/0",
+     "say": "Allow web traffic (port 80) into web-sg.",
+     "why": "Port 80 is HTTP — the traffic your web server actually serves. So a web server needs exactly two rules: 22 for you to manage it, 80 for the world to reach it. Nothing else. That's least privilege applied to the network.",
+     "on_win": "80 and 22 open — a web server with a locked-down firewall, nothing more."},
+
+    {"module": "Network: Lock It Down", "kind": "run", "title": "audit the rules",
+     "expect": ["aws ec2 describe-security-groups"],
+     "cmd_hint": "aws ec2 describe-security-groups",
+     "say": "List the security groups and their rules.",
+     "why": "describe-security-groups is the audit view — every group, every open port, every source. Before you ship, you read this to confirm the ONLY open ports are the ones you meant to open. A surprise port here is a breach waiting.",
+     "on_win": "Two ingress rules: 22 and 80. Nothing surprising. Ship it."},
+
+    {"module": "Network: Lock It Down", "kind": "run", "title": "create a route table",
+     "expect": ["aws ec2 create-route-table"],
+     "cmd_hint": "aws ec2 create-route-table",
+     "say": "Create a route table — traffic's roadmap.",
+     "why": "A route table decides where traffic goes: which subnet can reach the internet, and which stays private. Creating one is the first half; adding a route to the internet gateway is the second. Note the id it prints — you'll need it next.",
+     "on_win": "The route table exists — grab its id, you'll use it in the next step."},
+
+    {"module": "Network: Lock It Down", "kind": "run", "title": "route to the internet",
+     "verify": lambda c: c.startswith("aws ec2 create-route") and "0.0.0.0/0" in c and "rtb-" in c,
+     "cmd_hint": "aws ec2 create-route --route-table-id rtb-0001 --destination-cidr-block 0.0.0.0/0 --gateway-id igw-1",
+     "say": "Add a default route: send all traffic (0.0.0.0/0) to the internet gateway.",
+     "why": "0.0.0.0/0 means 'everything' — this is the default route that lets a subnet reach the internet. The --gateway-id points at the internet gateway. A public subnet has this route; a private subnet deliberately does not — that's what 'private' means.",
+     "on_win": "The default route is in. Traffic in that subnet can now reach the internet."},
+
+    {"module": "Network: Lock It Down", "kind": "challenge", "title": "lock down api-sg from memory",
+     "say": "From memory: create a security group called api-sg, then open SSH (port 22) — and NOTHING else. Leave port 80 closed.",
+     "why": "An API server is the same idea as the web server, tightened: management access in (22), and no public web port because the API is only reached through the load balancer. Building it from memory means the default-deny reflex is yours.",
+     "recall": "create-security-group → authorize-security-group-ingress (port 22 only).",
+     "hint": "aws ec2 create-security-group --group-name api-sg, then authorize-security-group-ingress --group-name api-sg --port 22.",
+     "tools": ["aws ec2 create-security-group --group-name api-sg",
+               "aws ec2 authorize-security-group-ingress --group-name api-sg"],
+     "verify_lab": lambda lab: "api-sg" in lab.aws.security_groups
+                               and any(r[1] == "22" for r in lab.aws.security_groups["api-sg"]["ingress"])
+                               and not any(r[1] == "80" for r in lab.aws.security_groups["api-sg"]["ingress"]),
+     "replay": ["aws ec2 create-security-group --group-name api-sg --description api",
+                "aws ec2 authorize-security-group-ingress --group-name api-sg --protocol tcp --port 22 --cidr 0.0.0.0/0"],
+     "on_win": "api-sg open on 22 only. Default deny, done from memory."},
+
+    {"module": "Network: Lock It Down", "kind": "info", "title": "default deny, then allow",
+     "say": "The pattern is always the same: start closed, open only what's needed, then audit. Security groups (AWS) and NSGs (Azure) are the same idea in two skins.",
+     "why": "Networking security is a discipline, not a checkbox: default-deny, least-privilege ports, and a habit of auditing before you ship. You've now done it in both clouds — the muscle memory transfers, only the CLI spelling changes."},
 ]
 
 
@@ -25418,6 +25602,14 @@ class TutorApp(App):
             s[f"az vnet {name}"] = ",".join(sorted(v["subnets"])) or "(no subnets)"
         for name in lab.az.aks:
             s[f"az aks {name}"] = lab.az.aks[name]["nodes"] + " nodes"
+        for name, sg in lab.aws.security_groups.items():
+            s[f"sg {name}"] = f"{len(sg['ingress'])} in / {len(sg['egress'])} out"
+        for rid, rt in lab.aws.route_tables.items():
+            s[f"{rid}"] = f"{len(rt['routes'])} routes"
+        for name, nsg in lab.az.nsgs.items():
+            s[f"az nsg {name}"] = f"{len(nsg['rules'])} rules"
+        for name, rt in lab.az.route_tables.items():
+            s[f"az rt {name}"] = f"{len(rt['routes'])} routes"
         for k in lab.tf.resources:
             s[f"resource {k}"] = ""
         for h, st in lab.ansible.hosts.items():
