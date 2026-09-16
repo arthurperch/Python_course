@@ -9217,6 +9217,13 @@ def _run_boto3_script(code, state):
         return r.stdout, r.stderr, new_state
 
 
+# Real-localhost serving is OFF in headless tests (deterministic, no side
+# effects) and ON when the app runs for real — `serve <port>` then writes the
+# learner's HTML to a live temp dir, starts a real `python3 -m http.server`, and
+# opens the browser so they SEE their deployed site.
+_LIVE_SERVE = False
+
+
 class CloudLab:
     """One offline 'developer environment': local bash + git + docker + AWS +
     terraform + ansible + CI/CD. `run(cmdline)` executes one line and returns
@@ -9258,9 +9265,44 @@ class CloudLab:
             return self.k8s.run(rest)
         if cmd == "ci":
             return self.pipeline.run(rest)
+        if cmd == "serve":
+            return self._serve(rest)
         if cmd == "python3" and self._uses_boto3(cmdline):
             return self._run_boto3(cmdline)
         return self.fs.run(cmdline)
+
+    def _serve(self, rest):
+        """`serve [port]` — deploy the learner's HTML to a REAL localhost. In the
+        live app it writes the .html files to a temp dir, starts a real
+        `python3 -m http.server`, and opens the browser; headless tests get the
+        same message without the side effects."""
+        port = rest.split()[0] if rest.strip() else "8080"
+        html = {p.rsplit("/", 1)[-1]: c for p, c in self.fs.files.items() if p.endswith(".html")}
+        if not html:
+            return [], ["serve: no .html file found — write an index.html first"]
+        if not _LIVE_SERVE:
+            return [f"Serving http://localhost:{port}",
+                    "(simulated — write an index.html and it really serves it)"], []
+        try:
+            live = Path(tempfile.gettempdir()) / "tutor-live"
+            live.mkdir(exist_ok=True)
+            for name, content in html.items():
+                (live / name).write_text(content)
+            prior = getattr(self, "serve_proc", None)
+            if prior is not None:
+                try:
+                    prior.terminate()
+                except Exception:
+                    pass
+            self.serve_proc = subprocess.Popen(
+                ["python3", "-m", "http.server", port, "--directory", str(live)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["xdg-open", f"http://localhost:{port}"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return [f"Serving http://localhost:{port}",
+                    "a browser window should have opened — that's your site, live."], []
+        except Exception as e:
+            return [], [f"serve: {e}"]
 
     def _uses_boto3(self, cmdline):
         parts = cmdline.split()
@@ -11967,6 +12009,50 @@ DEV_LESSONS = [
     {"module": "SRE: The Traffic Spike", "kind": "info", "title": "the incident loop",
      "say": "That's the loop every on-call engineer runs: alarm fires, metric confirms, scale up, verify recovery, write the postmortem.",
      "why": "Every incident, big or small, is the same shape: DETECT (the alarm), DIAGNOSE (the metric), FIX (scale, roll back, restart), VERIFY (the metric recovers), and LEARN (the blameless postmortem). You've now run the first four. The fifth — writing down what happened so it doesn't happen twice — is what separates an engineer who fixes from one who improves."},
+
+    # ==== Projects: Deploy a Real Site =====================================
+    {"module": "Projects: Deploy a Real Site", "kind": "info", "title": "build and deploy, for real",
+     "say": "Final project: build a real website and deploy it to a real localhost — one you can open in your actual browser.",
+     "why": "This is the whole thing put together. You write a real HTML page, deploy it with one command, and it actually serves on localhost — a real browser window pops up showing YOUR page. This is how a static site goes from your editor to the world."},
+
+    {"module": "Projects: Deploy a Real Site", "kind": "write", "title": "write the landing page",
+     "file": "index.html",
+     "content": "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"utf-8\">\n    <title>my site</title>\n    <style>\n      body { font-family: sans-serif; max-width: 640px; margin: 4rem auto; padding: 0 1rem; }\n      h1 { color: #1a1a2e; }\n      a { color: #2563eb; }\n    </style>\n  </head>\n  <body>\n    <h1>hello, world</h1>\n    <p>This is my site, deployed from a terminal.</p>\n  </body>\n</html>\n",
+     "lines": [["<!doctype html>", "the doctype declares this is HTML5"],
+              ["<style>", "inline CSS styles the page — clean, centered, readable"],
+              ["<h1>", "the main heading"],
+              ["<body>", "everything visible on the page lives here"]],
+     "say": "Write a real landing page into index dot h t m l: a doctype, a title, some inline styles, and a heading.",
+     "why": "This is a complete, real HTML page — doctype, meta, a style block, and visible content. It's a genuine static site, the same shape as any landing page on the internet.",
+     "on_win": "A real page, written. Next you deploy it so it actually lives on localhost."},
+
+    {"module": "Projects: Deploy a Real Site", "kind": "run", "title": "deploy it to localhost",
+     "verify": lambda c: c.startswith("serve") and "8080" in c,
+     "cmd_hint": "serve 8080",
+     "say": "Deploy your site by serving it on port 8080.",
+     "why": "serve writes your HTML to a live folder, starts a real local web server on port 8080, and opens your browser at localhost:8080 — you'll SEE your page. This is the moment a site goes live.",
+     "on_win": "A browser window should have opened showing your page. That's your site, deployed — check the address bar: localhost:8080."},
+
+    {"module": "Projects: Deploy a Real Site", "kind": "run", "title": "verify it's live",
+     "expect": ["curl localhost:8080", "curl http://localhost:8080"],
+     "cmd_hint": "curl localhost:8080",
+     "say": "Fetch localhost port 8080 to confirm your site is being served.",
+     "why": "curl is the terminal's browser. Hitting localhost:8080 returns your page's HTML with a 200 — the same request your browser just made. Deploy, then verify: that's the release check.",
+     "on_win": "A 200 and your HTML back. The site is live and confirmed."},
+
+    {"module": "Projects: Deploy a Real Site", "kind": "challenge", "title": "redeploy on a new port",
+     "say": "Now vary it: deploy the same site again, but on port 3000 this time — from memory.",
+     "why": "This is the repetition-with-variation drill: same deploy, different port. Real engineers re-deploy constantly with small changes, and the command barely changes — only the port.",
+     "recall": "serve 3000 — the deploy command, then the new port.",
+     "hint": "serve, then 3000.",
+     "tools": ["serve 3000"],
+     "verify": lambda c: c.startswith("serve") and "3000" in c,
+     "replay": ["serve 3000"],
+     "on_win": "Redeployed on 3000. Same site, new port — that's the variation pattern."},
+
+    {"module": "Projects: Deploy a Real Site", "kind": "info", "title": "what senior engineers actually deploy",
+     "say": "You just deployed a real site to a real localhost. This is the exact pattern behind every real project on the internet.",
+     "why": "Every senior-level deploy is this shape: write the code, serve it, verify it, ship it. A portfolio site, a todo API, a URL shortener, a blog — all of them start as 'write a file, serve it on localhost, check it with curl'. The stack grows (docker, k8s, terraform, a load balancer) but the loop never changes. You've now done every layer of it."},
 ]
 
 
@@ -28431,6 +28517,8 @@ class TutorApp(App):
 
 
 def main():
+    global _LIVE_SERVE
+    _LIVE_SERVE = True
     TutorApp().run()
 
 
