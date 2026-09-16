@@ -27523,13 +27523,26 @@ class TutorApp(App):
                 gloss = _file_line_gloss(tline, fname)
                 if gloss:
                     maxw = self._dev_term_width()
-                    avail = maxw - 4 - len(tline) - 5
-                    if avail >= 8:
+                    # right-align explanations to a fixed column, with a grey
+                    # dotted leader line filling the gap so they line up
+                    max_code = min(max((len(x) for x in target_lines), default=0), 26)
+                    gloss_col = 4 + max_code + 2
+                    cur = (i == buf.row)
+                    code_end = 4 + len(tline)
+                    gap = gloss_col - code_end
+                    # where the gloss actually starts (leader + space, or just space)
+                    start = (gloss_col + 1) if gap > 0 else (code_end + 1)
+                    avail = maxw - start
+                    if avail >= 6:
                         if len(gloss) > avail:
                             gloss = gloss[:max(1, avail - 1)].rstrip() + "…"
-                        t.append("  ", style="")
-                        t.append("· ", style="#3f4756")
-                        t.append(gloss, style="#6b7280")
+                        if gap > 0:
+                            t.append("·" * gap, style="#4a5060")
+                        t.append(" ", style="")
+                        st = "bold #c792ea"
+                        if cur:
+                            st += " on #4a4320"
+                        t.append(gloss, style=st)
                 t.append("\n")
         else:
             t.append("\n\n")
