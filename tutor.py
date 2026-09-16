@@ -8057,6 +8057,10 @@ class AwsEnv:
         self.iam_users = set()    # usernames
         self.iam_roles = {}       # role -> {"policies": []}
         self.iam_policies = {}    # policy name -> arn
+        self.sqs_queues = {}          # queue name -> list of {"MessageId","Body"}
+        self.cloudwatch_metrics = {}  # "namespace/metric" -> list of value strings
+        self.rds_instances = {}       # identifier -> {"engine","class","status"}
+        self.elb = {}                 # lb name -> {"arn","targets":[]}
 
     def run(self, rest):
         try:
@@ -8076,9 +8080,17 @@ class AwsEnv:
             return self._dynamodb(parts[1:])
         if svc == "iam":
             return self._iam(parts[1:])
+        if svc == "sqs":
+            return self._sqs(parts[1:])
+        if svc == "cloudwatch":
+            return self._cloudwatch(parts[1:])
+        if svc == "rds":
+            return self._rds(parts[1:])
+        if svc == "elbv2":
+            return self._elb(parts[1:])
         if svc in ("--version", "version"):
             return ["aws-cli/2.15.0"], []
-        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam"]
+        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam | sqs | cloudwatch | rds | elbv2"]
 
     def _s3(self, args):
         if not args:
@@ -8274,6 +8286,122 @@ class AwsEnv:
         if cmd == "list-roles":
             return [f"{r} (policies: {len(self.iam_roles[r]['policies'])})" for r in sorted(self.iam_roles)], []
         return [], [f"aws iam: unknown command '{cmd}'"]
+
+    def _sqs(self, args):
+        """Queues: create-queue / send-message / receive-message / delete-queue."""
+        if not args:
+            return [], ["usage: aws sqs <command>"]
+        cmd = args[0]
+        if cmd == "create-queue":
+            d = _aws_flags(args[1:])
+            name = d.get("queue-name", "queue")
+            url = f"https://sqs.us-east-1.amazonaws.com/123456789012/{name}"
+            self.sqs_queues[name] = []
+            return [url], []
+        if cmd == "send-message":
+            d = _aws_flags(args[1:])
+            url = d.get("queue-url", "")
+            name = url.rstrip("/").split("/")[-1]
+            if name not in self.sqs_queues:
+                return [], ["An error occurred (AWS.SimpleQueueService.NonExistentQueue)"]
+            body = d.get("message-body", "")
+            mid = f"msg-{len(self.sqs_queues[name]) + 1}"
+            self.sqs_queues[name].append({"MessageId": mid, "Body": body})
+            return [f"MessageId: {mid}"], []
+        if cmd == "receive-message":
+            d = _aws_flags(args[1:])
+            url = d.get("queue-url", "")
+            name = url.rstrip("/").split("/")[-1]
+            if name not in self.sqs_queues:
+                return [], ["An error occurred (NonExistentQueue)"]
+            q = self.sqs_queues[name]
+            if not q:
+                return [], []
+            msg = q.pop(0)
+            return [f"MessageId: {msg['MessageId']}", f"Body: {msg['Body']}"], []
+        if cmd == "delete-queue":
+            d = _aws_flags(args[1:])
+            url = d.get("queue-url", "")
+            name = url.rstrip("/").split("/")[-1]
+            self.sqs_queues.pop(name, None)
+            return [], []
+        return [], [f"aws sqs: unknown command '{cmd}'"]
+
+    def _cloudwatch(self, args):
+        """Metrics: put-metric-data / get-metric-statistics."""
+        if not args:
+            return [], ["usage: aws cloudwatch <command>"]
+        cmd = args[0]
+        if cmd == "put-metric-data":
+            d = _aws_flags(args[1:])
+            ns = d.get("namespace", "default")
+            name = d.get("metric-name", "metric")
+            val = d.get("value", "0")
+            self.cloudwatch_metrics.setdefault(f"{ns}/{name}", []).append(val)
+            return [], []
+        if cmd == "get-metric-statistics":
+            d = _aws_flags(args[1:])
+            ns = d.get("namespace", "default")
+            name = d.get("metric-name", "metric")
+            vals = self.cloudwatch_metrics.get(f"{ns}/{name}", [])
+            if not vals:
+                return ["Datapoints: []"], []
+            try:
+                nums = [float(v) for v in vals]
+                return [f"Datapoints: {len(nums)}  avg {sum(nums)/len(nums):.1f}  "
+                        f"max {max(nums):.1f}  min {min(nums):.1f}"], []
+            except ValueError:
+                return [f"Datapoints: {len(vals)}"], []
+        return [], [f"aws cloudwatch: unknown command '{cmd}'"]
+
+    def _rds(self, args):
+        """Databases: create-db-instance / describe-db-instances / delete-db-instance."""
+        if not args:
+            return [], ["usage: aws rds <command>"]
+        cmd = args[0]
+        if cmd == "create-db-instance":
+            d = _aws_flags(args[1:])
+            ident = d.get("db-instance-identifier", "db")
+            engine = d.get("engine", "postgres")
+            klass = d.get("db-instance-class", "db.t3.micro")
+            self.rds_instances[ident] = {"engine": engine, "class": klass, "status": "available"}
+            return [f"DBInstance {ident}  {engine}  {klass}  creating..."], []
+        if cmd == "describe-db-instances":
+            if not self.rds_instances:
+                return ["DBInstances: []"], []
+            return [f"{i}  {d['engine']}  {d['class']}  {d['status']}"
+                    for i, d in sorted(self.rds_instances.items())], []
+        if cmd == "delete-db-instance":
+            d = _aws_flags(args[1:])
+            ident = d.get("db-instance-identifier", "")
+            self.rds_instances.pop(ident, None)
+            return [], []
+        return [], [f"aws rds: unknown command '{cmd}'"]
+
+    def _elb(self, args):
+        """Load balancers: create-load-balancer / register-targets / describe-load-balancers."""
+        if not args:
+            return [], ["usage: aws elbv2 <command>"]
+        cmd = args[0]
+        if cmd == "create-load-balancer":
+            d = _aws_flags(args[1:])
+            name = d.get("name", "lb")
+            arn = f"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/{name}"
+            self.elb[name] = {"arn": arn, "targets": []}
+            return [arn], []
+        if cmd == "register-targets":
+            d = _aws_flags(args[1:])
+            name = d.get("target-group-arn", "app/lb").split("/")[-1]
+            ids = [a for a in args if a.startswith("i-")]
+            if name in self.elb:
+                self.elb[name]["targets"].extend(ids)
+            return [f"registered {len(ids)} target(s)"], []
+        if cmd == "describe-load-balancers":
+            if not self.elb:
+                return ["LoadBalancers: []"], []
+            return [f"{name}  targets: {len(self.elb[name]['targets'])}"
+                    for name in sorted(self.elb)], []
+        return [], [f"aws elbv2: unknown command '{cmd}'"]
 
 
 def _aws_flags(args):
@@ -11268,6 +11396,78 @@ DEV_LESSONS = [
     {"module": "Observability & Least Privilege", "kind": "info", "title": "every token, least privilege",
      "say": "The rule applies everywhere: every programmatic token, role, and service account gets the minimum permissions its job needs — never a broad admin key.",
      "why": "Broad keys are how breaches become disasters. A leaked admin token is the whole account; a leaked scoped token is one bucket. Scope every credential to its exact job, rotate them, and revoke the ones nobody uses."},
+
+    # ==== Queues, Metrics & Databases ======================================
+    {"module": "Queues, Metrics & Databases", "kind": "info", "title": "the rest of the cloud",
+     "say": "Four more services turn a single server into a real system: queues, metrics, databases, and a load balancer.",
+     "why": "A real app isn't one server. Queues hand work between parts without them ever talking directly. Metrics tell you how healthy everything is. Databases hold the data. A load balancer spreads traffic across many servers. These four are the skeleton of a production system."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "make a queue",
+     "verify": lambda c: c.startswith("aws sqs create-queue") and "jobs" in c,
+     "cmd_hint": "aws sqs create-queue --queue-name jobs",
+     "say": "Create a queue called jobs.",
+     "why": "SQS is a message queue. One part of your app drops a message in, another part picks it up later — they never have to run at the same time. create-queue makes the queue and prints its URL, which is how you point at it.",
+     "on_win": "A queue named jobs now exists. It holds messages until something is ready to work them."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "send a message",
+     "verify": lambda c: c.startswith("aws sqs send-message") and "hello" in c,
+     "cmd_hint": "aws sqs send-message --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/jobs --message-body hello",
+     "say": "Send a message into the jobs queue.",
+     "why": "send-message drops one message onto the queue. The queue URL points at the right queue, and the body is whatever text you want to pass along. It replies with a message id.",
+     "on_win": "A message is sitting in the queue now, waiting for a worker to grab it."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "pull it off",
+     "verify": lambda c: c.startswith("aws sqs receive-message"),
+     "cmd_hint": "aws sqs receive-message --queue-url https://sqs.us-east-1.amazonaws.com/123456789012/jobs",
+     "say": "Receive the message from the jobs queue.",
+     "why": "receive-message pulls the oldest message off the queue so a worker can process it. Once received, it's gone from the queue — that's what makes queues safe for splitting work across many workers.",
+     "on_win": "You pulled the message off. One send, one receive — that's the whole queue contract."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "record a metric",
+     "verify": lambda c: c.startswith("aws cloudwatch put-metric-data") and "cpu" in c,
+     "cmd_hint": "aws cloudwatch put-metric-data --namespace app --metric-name cpu --value 42",
+     "say": "Record a CPU metric of 42 into CloudWatch.",
+     "why": "CloudWatch stores numbers about your system — CPU, error rates, anything you measure. put-metric-data writes one datapoint. Dashboards and alarms read these numbers back to tell you how healthy things are.",
+     "on_win": "One CPU datapoint stored. Metrics are how you see the system without looking at it."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "read the metric back",
+     "verify": lambda c: c.startswith("aws cloudwatch get-metric-statistics") and "cpu" in c,
+     "cmd_hint": "aws cloudwatch get-metric-statistics --namespace app --metric-name cpu",
+     "say": "Ask CloudWatch for the statistics on your cpu metric.",
+     "why": "get-metric-statistics reads back the datapoints you stored and computes the average, max, and min. That's what a monitoring dashboard calls every few seconds to draw its graphs.",
+     "on_win": "There's your average. One metric written, one read — that's observability in two commands."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "spin up a database",
+     "verify": lambda c: c.startswith("aws rds create-db-instance") and "appdb" in c,
+     "cmd_hint": "aws rds create-db-instance --db-instance-identifier appdb --engine postgres --db-instance-class db.t3.micro",
+     "say": "Create a database instance called appdb running postgres.",
+     "why": "RDS is a managed database. Instead of installing postgres on a server yourself, you ask for a database instance and AWS runs it. The identifier is its name, the engine is the database type, and the class is how big a machine it runs on.",
+     "on_win": "A postgres database called appdb is coming up. Managed means no server to babysit."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "see your databases",
+     "expect": ["aws rds describe-db-instances"],
+     "cmd_hint": "aws rds describe-db-instances",
+     "say": "List your database instances.",
+     "why": "describe-db-instances shows every database you have, its engine, size, and status. Check here to see it's up before anything tries to use it.",
+     "on_win": "appdb is there and available. Your data has a home."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "add a load balancer",
+     "verify": lambda c: c.startswith("aws elbv2 create-load-balancer") and "web" in c,
+     "cmd_hint": "aws elbv2 create-load-balancer --name web",
+     "say": "Create a load balancer called web.",
+     "why": "A load balancer sits in front of your servers and spreads incoming traffic across them. When one server is busy, the balancer sends the next request elsewhere — that's how big apps stay up under load.",
+     "on_win": "A load balancer named web is now in front of your stack, ready to spread traffic."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "run", "title": "point it at your servers",
+     "verify": lambda c: c.startswith("aws elbv2 register-targets") and "i-0001" in c,
+     "cmd_hint": "aws elbv2 register-targets --target-group-arn app/web i-0001",
+     "say": "Register instance i-0001 as a target of your load balancer.",
+     "why": "register-targets tells the load balancer which servers to send traffic to. Once i-0001 is a target, the balancer can route requests to it. This is how you add servers to the pool as you grow.",
+     "on_win": "i-0001 is now behind the load balancer, ready to take traffic."},
+
+    {"module": "Queues, Metrics & Databases", "kind": "info", "title": "the whole system, one stack",
+     "say": "Put it together: the queue moves work, the database stores data, metrics watch the health, the load balancer spreads the load — and EC2 does the computing.",
+     "why": "Now you've touched every layer of a production stack: servers (EC2), storage (S3), queues (SQS), databases (RDS), metrics (CloudWatch), and traffic (ELB). A senior engineer reaches for the right one at the right moment. That's the whole game."},
 ]
 
 
@@ -23033,6 +23233,14 @@ class TutorApp(App):
             s[f"user {u}"] = ""
         for r in lab.aws.iam_roles:
             s[f"role {r}"] = ""
+        for name in lab.aws.sqs_queues:
+            s[f"queue {name}"] = str(len(lab.aws.sqs_queues[name]))
+        for key in lab.aws.cloudwatch_metrics:
+            s[f"metric {key}"] = str(len(lab.aws.cloudwatch_metrics[key]))
+        for ident, db in lab.aws.rds_instances.items():
+            s[f"db {ident}"] = db["engine"]
+        for name, lb in lab.aws.elb.items():
+            s[f"lb {name}"] = str(len(lb["targets"])) + " targets"
         for k in lab.tf.resources:
             s[f"resource {k}"] = ""
         for h, st in lab.ansible.hosts.items():
