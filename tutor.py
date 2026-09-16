@@ -5838,7 +5838,15 @@ class VimEditor(Static):
 
     def render(self) -> Text:
         # viewport follows the cursor; only the visible window is drawn, so a
-        # long file scrolls with the mouse wheel (or the cursor pulling it down)
+        # long file scrolls with the mouse wheel (or the cursor pulling it down).
+        # Always read the LIVE widget height (the on_resize cache can lag a frame
+        # and then the cursor block drifts out of the visible writing zone).
+        try:
+            live = self.size.height
+            if live and live > 0:
+                self.visible_rows = live
+        except Exception:
+            pass
         vr = max(1, getattr(self, "visible_rows", 12))
         # keep 3 lines of breathing room below the cursor so it never pins to the
         # very bottom edge while typing — the viewport pulls down a little early
@@ -5931,7 +5939,7 @@ class VimEditor(Static):
 
     def on_resize(self, event: events.Resize) -> None:
         # track how many lines fit so the viewport scrolls correctly
-        self.visible_rows = max(1, self.content_size.height)
+        self.visible_rows = max(1, event.size.height)
 
     def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
         event.stop()
@@ -22324,6 +22332,8 @@ class TutorApp(App):
             return   # RECALL GYM overlay owns the keyboard
         if self._pr_on:
             return   # MINI PROJECTS overlay owns the keyboard
+        if self._lab_menu_on:
+            return   # the whole-course Lab playground owns the keyboard
         if self._cat_playing:
             return   # cat-microwave loading screen in progress — input is ignored
         if self._lesson_on:
@@ -22683,7 +22693,8 @@ class TutorApp(App):
 
     def _test_editor_text(self, c):
         """LEFT test editor: starter code, 10 blank lines, then (line 11) a
-        comment showing the expected output, then per-line syntax IDEAS."""
+        comment showing the expected output, then a commented style example
+        (same idea, different values — never the answer), then syntax IDEAS."""
         starter = self._plan_template(c) + c.get("starter", "")
         lines = starter.split("\n") if starter else [""]
         for _ in range(10):
@@ -22691,6 +22702,12 @@ class TutorApp(App):
         goal = self._goal_values(c)
         lines.append("# output should look like: "
                      + ("  ".join(goal) if goal else "see the task"))
+        # commented style example — the same SHAPE, different values, never the answer
+        _, ex_code = example_code(c.get("example", ""))
+        if ex_code.strip():
+            lines.append("# style (same idea, different values):")
+            for ln in ex_code.strip().splitlines():
+                lines.append("#   " + ln)
         for i, h in enumerate(self._task_suggestions(c)[:8], 1):
             lines.append(f"# line {i} idea: {h}")
         return "\n".join(lines)
@@ -22799,6 +22816,17 @@ class TutorApp(App):
             Text.from_markup("[bold]-- INSERT --[/]"))
         self.query_one("#lab-menu-hint", Static).update(
             Text.from_markup("[dim]click a ▾ group to collapse · click a [ ] to load · edit · run · ✕ to close[/]"))
+        self.query_one("#lab-menu-editor", VimEditor).set_text("")
+        self.query_one("#lab-menu-output", Static).update(
+            Text.from_markup("[bold #fbbf24]loading the lab…[/]"))
+        self.query_one("#lab-menu", Vertical).focus()
+        # populate on the next frame so the "loading…" line actually paints first
+        # (the populate loop runs every example's code, which is not instant)
+        self.call_after_refresh(self._lab_menu_populate)
+
+    def _lab_menu_populate(self):
+        if not self._lab_menu_on:
+            return   # the user hit ✕ while it was still loading
         items = self.query_one("#lab-menu-items", Vertical)
         for old in list(items.children):
             try:
@@ -22829,7 +22857,6 @@ class TutorApp(App):
             self.query_one("#lab-menu-editor", VimEditor).set_text(
                 self._lab_menu_toggles[0].code)
         self.query_one("#lab-menu-output", Static).update("")
-        self.query_one("#lab-menu", Vertical).focus()
 
     def _lab_group_toggle(self, hdr):
         """Collapse/expand one Lab group (▾ open / ▸ closed)."""
