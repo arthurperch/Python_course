@@ -7879,6 +7879,9 @@ class K8sEnv:
         self.services = {}      # name -> {type, port}
         self.healed = 0         # pods the controller replaced after deletion
         self.next = 1
+        self.roles = {}          # name -> {verbs: set, resources: set}
+        self.rolebindings = {}   # name -> {role, user}
+        self.networkpolicies = {}  # name -> {policy_type}
 
     def _sync(self, name):
         """Realize the desired state: pods match the deployment's replicas.
@@ -7985,7 +7988,45 @@ class K8sEnv:
             return self._delete(parts[1:])
         if cmd == "apply":
             return self._apply(parts[1:])
+        if cmd == "create" and parts[1:2] == ["role"]:
+            name = parts[2]
+            v = self._kw(parts, "--verb")
+            r = self._kw(parts, "--resource")
+            self.roles[name] = {"verbs": set(v.split(",")) if v else set(),
+                                "resources": set(r.split(",")) if r else set()}
+            return [f"role.rbac.authorization.k8s.io/{name} created"], []
+        if cmd == "create" and parts[1:2] == ["rolebinding"]:
+            name = parts[2]
+            role = self._kw(parts, "--role") or ""
+            user = self._kw(parts, "--user") or ""
+            self.rolebindings[name] = {"role": role, "user": user}
+            return [f"rolebinding.rbac.authorization.k8s.io/{name} created"], []
+        if cmd == "auth" and parts[1:2] == ["can-i"]:
+            # kubectl auth can-i get pods --as dev
+            verb = parts[2] if len(parts) > 2 else ""
+            resource = parts[3] if len(parts) > 3 else ""
+            user = self._kw(parts, "--as") or ""
+            # allowed if any binding maps user -> role with the verb+resource
+            allowed = False
+            for rb in self.rolebindings.values():
+                if user and rb["user"] != user:
+                    continue
+                role = self.roles.get(rb["role"])
+                if role and verb in role["verbs"] and resource in role["resources"]:
+                    allowed = True
+                    break
+            return ([f"yes"] if allowed else [f"no - access denied"]), []
         return [], [f"kubectl: '{cmd}' is not supported in this lab"]
+
+    def _kw(self, parts, name):
+        """Extract `--name value` or `--name=value` from a token list (or None)."""
+        if name in parts:
+            i = parts.index(name)
+            return parts[i + 1] if i + 1 < len(parts) else ""
+        for p in parts:
+            if p.startswith(name + "="):
+                return p.split("=", 1)[1]
+        return None
 
     def _get(self, args):
         kind = args[0] if args else "pods"
@@ -8021,6 +8062,28 @@ class K8sEnv:
                 ext = "<pending>" if s["type"] == "LoadBalancer" else "<none>"
                 out.append(f"{n:<7} {s['type']:<15} 10.96.0.1    {ext:<13} "
                            f"{s['port']}/TCP   10m")
+            return out, []
+        if kind in ("roles", "role"):
+            if not self.roles:
+                return ["No resources found in default namespace."], []
+            out = ["NAME   AGE"]
+            for n in sorted(self.roles):
+                out.append(f"{n}   5m")
+            return out, []
+        if kind in ("rolebindings", "rolebinding"):
+            if not self.rolebindings:
+                return ["No resources found in default namespace."], []
+            out = ["NAME   ROLE   USERS"]
+            for n in sorted(self.rolebindings):
+                rb = self.rolebindings[n]
+                out.append(f"{n}   {rb['role']}   {rb['user']}")
+            return out, []
+        if kind in ("networkpolicies", "networkpolicy", "netpol"):
+            if not self.networkpolicies:
+                return ["No resources found in default namespace."], []
+            out = ["NAME   POD-SELECTOR"]
+            for n in sorted(self.networkpolicies):
+                out.append(f"{n}   <all>")
             return out, []
         return [], [f'error: the server doesn\'t have a resource type '
                     f'"{kind}"']
@@ -8142,6 +8205,18 @@ class K8sEnv:
                                    else "ClusterIP",
                                    "port": port.group(1) if port else "80"}
             return [f"service/{name} created"], []
+        if kind == "Role":
+            verbs = set(re.findall(r'-\s*"(get|list|create|delete|update|watch|patch)"', content))
+            resources = set(re.findall(r'resources:\s*\[([^\]]*)\]', content))
+            self.roles[name] = {"verbs": verbs, "resources": resources}
+            return [f"role.rbac.authorization.k8s.io/{name} created"], []
+        if kind == "RoleBinding":
+            role = re.search(r"name:\s*(\S+)", content)
+            self.rolebindings[name] = {"role": role.group(1) if role else "", "user": ""}
+            return [f"rolebinding.rbac.authorization.k8s.io/{name} created"], []
+        if kind == "NetworkPolicy":
+            self.networkpolicies[name] = {"policy_type": "Ingress"}
+            return [f"networkpolicy.networking.k8s.io/{name} created"], []
         return [], [f'error: unsupported kind "{kind}" in this lab']
 
 
@@ -10090,6 +10165,8 @@ class CloudLab:
             return self.helm.run(rest)
         if cmd == "promql":
             return self.prom.run(rest)
+        if cmd == "trivy":
+            return self._trivy(rest)
         if cmd == "ci":
             return self.pipeline.run(rest)
         if cmd == "serve":
@@ -10097,6 +10174,20 @@ class CloudLab:
         if cmd == "python3" and self._uses_boto3(cmdline):
             return self._run_boto3(cmdline)
         return self.fs.run(cmdline)
+
+    def _trivy(self, rest):
+        """`trivy image <image>` — a container-vulnerability scan. Deterministic:
+        images tagged 1.0/old/unpatched report fixed CVEs; anything else scans clean."""
+        parts = rest.split()
+        if len(parts) < 2 or parts[0] != "image":
+            return [], ["usage: trivy image <image>"]
+        img = parts[1]
+        if re.search(r"(^|:)(1\.0|old|unpatched)(\s|$|:)", img) or ":1.0" in img or ":old" in img:
+            return [f"{img}: CRITICAL CVE-2021-44228 (log4shell — RCE)",
+                    f"{img}: HIGH   CVE-2022-0778 (openssl — DoS)",
+                    f"{img}: HIGH   CVE-2023-1234 (libssl — info leak)",
+                    "3 vulnerabilities found"], []
+        return [f"{img}: No vulnerabilities found (clean)"], []
 
     def _serve(self, rest):
         """`serve [port]` — deploy the learner's HTML to a REAL localhost. In the
@@ -13298,6 +13389,88 @@ DEV_LESSONS = [
     {"module": "Databases: Backups & Scale", "kind": "info", "title": "backup, replicate, scale, migrate",
      "say": "Snapshot before risky changes, replicate for reads and failover, scale when it slows — and migrate with a plan.",
      "why": "The fourth habit is migration: changing the schema. The safe pattern is snapshot → apply the change → verify → if it breaks, restore. You now have every piece of that loop. Real production databases run on exactly these four verbs: backup, replicate, scale, migrate."},
+
+    # ==== Security: Lock the Cluster =======================================
+    {"module": "Security: Lock the Cluster", "kind": "info", "title": "least privilege in the cluster",
+     "say": "A Kubernetes cluster is a shared system — and a shared system needs locks. Now you'll grant the least access each user needs, wall off the network, and scan for vulnerabilities.",
+     "why": "Cluster security has three layers: RBAC (who can do what), network policy (what can talk to what), and image scanning (is the code you're running safe). The principle running through all of it is least privilege — grant exactly what's needed, nothing more."},
+
+    {"module": "Security: Lock the Cluster", "kind": "run", "title": "create a role",
+     "verify": lambda c: c.startswith("kubectl create role pod-reader") and "get" in c and "pods" in c,
+     "cmd_hint": "kubectl create role pod-reader --verb=get,list --resource=pods",
+     "say": "Create a role called pod-reader that can get and list pods.",
+     "why": "A Role is a named set of permissions — which verbs (get, list, create…) on which resources (pods, secrets…). By itself it does nothing; it's the permission set waiting to be handed to someone.",
+     "on_win": "pod-reader exists — a permission set for reading pods, nothing else."},
+
+    {"module": "Security: Lock the Cluster", "kind": "run", "title": "bind it to a user",
+     "verify": lambda c: c.startswith("kubectl create rolebinding read-pods") and "pod-reader" in c and "dev" in c,
+     "cmd_hint": "kubectl create rolebinding read-pods --role=pod-reader --user=dev",
+     "say": "Bind the pod-reader role to a user called dev.",
+     "why": "A RoleBinding connects a role to a user (or group). This is where least privilege becomes real: dev now gets pod-reader's permissions and nothing else. No one gets admin by default.",
+     "on_win": "dev now has pod-reader. That's the whole RBAC model: role + binding."},
+
+    {"module": "Security: Lock the Cluster", "kind": "run", "title": "check they can",
+     "verify": lambda c: c.startswith("kubectl auth can-i get pods") and "dev" in c,
+     "cmd_hint": "kubectl auth can-i get pods --as dev",
+     "say": "Ask the cluster: can dev get pods?",
+     "why": "auth can-i is the 'is this allowed?' check. It evaluates the same rules the API server would, so you can verify a permission WITHOUT actually doing it. This is how you test your RBAC before someone complains.",
+     "on_win": "yes. dev can read pods — exactly what you granted."},
+
+    {"module": "Security: Lock the Cluster", "kind": "run", "title": "check they can't",
+     "verify": lambda c: c.startswith("kubectl auth can-i delete pods") and "dev" in c,
+     "cmd_hint": "kubectl auth can-i delete pods --as dev",
+     "say": "Ask the cluster: can dev DELETE pods?",
+     "why": "The important check is the negative one: dev can read but NOT delete. That's least privilege doing its job — a compromised dev account can look but can't destroy. Always verify the deny, not just the allow.",
+     "on_win": "no — access denied. Read yes, delete no. That's the wall."},
+
+    {"module": "Security: Lock the Cluster", "kind": "write", "title": "write the deny-all policy",
+     "file": "netpol.yaml",
+     "content": "apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: deny-all\nspec:\n  podSelector: {}\n  policyTypes:\n  - Ingress\n",
+     "lines": [
+         ("kind: NetworkPolicy", "the kind — this declares a network policy"),
+         ("name: deny-all", "its name — you'll apply it and see it in the cluster"),
+         ("podSelector: {}", "empty selector = this applies to EVERY pod"),
+         ("- Ingress", "blocks all incoming traffic by default"),
+     ],
+     "say": "Write a network policy file — touch netpol.yaml, nvim in, and type the deny-all policy that blocks all incoming traffic.",
+     "why": "A NetworkPolicy is the firewall between pods. An empty podSelector means 'every pod', and listing Ingress with no rules means 'allow nothing in'. It's default-deny, applied to the whole cluster.",
+     "on_win": "deny-all is written. Default-deny, for the network."},
+
+    {"module": "Security: Lock the Cluster", "kind": "run", "title": "apply the policy",
+     "verify": lambda c: c.startswith("kubectl apply -f netpol.yaml"),
+     "cmd_hint": "kubectl apply -f netpol.yaml",
+     "say": "Apply the network policy.",
+     "why": "apply -f turns the yaml into a live rule. From now on, pods can only receive traffic you explicitly allow. The cluster goes from 'everything talks to everything' to 'nothing talks unless you say so'.",
+     "on_win": "deny-all is live. The cluster is walled off by default."},
+
+    {"module": "Security: Lock the Cluster", "kind": "run", "title": "scan the image",
+     "verify": lambda c: c.startswith("trivy image app:1.0"),
+     "cmd_hint": "trivy image app:1.0",
+     "say": "Scan the app:1.0 image for vulnerabilities.",
+     "why": "trivy is an image scanner — it reads every package in your container and flags known CVEs. Scanning before you deploy is how you catch a vulnerable base image BEFORE it runs in production. The fix is usually: update the base, rebuild, rescan.",
+     "on_win": "CRITICAL log4shell. Good catch — this image should never have shipped."},
+
+    {"module": "Security: Lock the Cluster", "kind": "challenge", "title": "lock it down from memory",
+     "say": "From memory: create a role sec-reader granting get on secrets, bind it to a user called auditor, then confirm auditor can get secrets.",
+     "why": "RBAC is the same three moves every time: define the role, bind it to a user, verify with can-i. When you can do it from memory, least-privilege is a reflex, not a checklist.",
+     "recall": "create role → create rolebinding → auth can-i.",
+     "hint": "kubectl create role sec-reader --verb=get --resource=secrets, then create rolebinding sec-binding --role=sec-reader --user=auditor, then auth can-i get secrets --as auditor.",
+     "tools": ["kubectl create role sec-reader",
+               "kubectl create rolebinding sec-binding",
+               "kubectl auth can-i get secrets"],
+     "verify_lab": lambda lab: "sec-reader" in lab.k8s.roles
+                               and "get" in lab.k8s.roles["sec-reader"]["verbs"]
+                               and "secrets" in lab.k8s.roles["sec-reader"]["resources"]
+                               and "sec-binding" in lab.k8s.rolebindings
+                               and lab.k8s.rolebindings["sec-binding"]["user"] == "auditor",
+     "replay": ["kubectl create role sec-reader --verb=get --resource=secrets",
+                "kubectl create rolebinding sec-binding --role=sec-reader --user=auditor",
+                "kubectl auth can-i get secrets --as auditor"],
+     "on_win": "Role, binding, verified — least privilege done from memory."},
+
+    {"module": "Security: Lock the Cluster", "kind": "info", "title": "RBAC, network policy, scan",
+     "say": "Three layers, one principle: least privilege. RBAC controls who, network policy controls what talks, and scanning controls what ships.",
+     "why": "Real cluster security is defense in depth: a role scoped to one resource, a network policy that defaults to deny, and a scan that catches vulnerable images before deploy. No single layer is enough — together they're a wall. You now run all three."},
 ]
 
 
