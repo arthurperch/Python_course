@@ -8074,6 +8074,7 @@ class AwsEnv:
         self.iam_policies = {}    # policy name -> arn
         self.sqs_queues = {}          # queue name -> list of {"MessageId","Body"}
         self.cloudwatch_metrics = {}  # "namespace/metric" -> list of value strings
+        self.cloudwatch_alarms = {}   # alarm name -> {"metric","threshold","state"}
         self.rds_instances = {}       # identifier -> {"engine","class","status"}
         self.elb = {}                 # lb name -> {"arn","targets":[]}
         self.cloudfront = {}          # dist id -> {"origin","domain"}
@@ -8365,6 +8366,35 @@ class AwsEnv:
             name = d.get("metric-name", "metric")
             val = d.get("value", "0")
             self.cloudwatch_metrics.setdefault(f"{ns}/{name}", []).append(val)
+            # a metric above an alarm's threshold flips that alarm to ALARM
+            try:
+                num = float(val)
+                for a in self.cloudwatch_alarms.values():
+                    if a["metric"] == name and num > float(a["threshold"]):
+                        a["state"] = "ALARM"
+                    elif a["metric"] == name:
+                        a["state"] = "OK"
+            except ValueError:
+                pass
+            return [], []
+        if cmd == "put-metric-alarm":
+            d = _aws_flags(args[1:])
+            name = d.get("alarm-name", "alarm")
+            self.cloudwatch_alarms[name] = {"metric": d.get("metric-name", "metric"),
+                                            "threshold": d.get("threshold", "100"),
+                                            "state": "OK"}
+            return [], []
+        if cmd == "describe-alarms":
+            if not self.cloudwatch_alarms:
+                return ["MetricAlarms: []"], []
+            return [f"{n}  {a['metric']} > {a['threshold']}  [{a['state']}]"
+                    for n, a in sorted(self.cloudwatch_alarms.items())], []
+        if cmd == "set-alarm-state":
+            d = _aws_flags(args[1:])
+            name = d.get("alarm-name", "")
+            state = d.get("state-value", "OK")
+            if name in self.cloudwatch_alarms:
+                self.cloudwatch_alarms[name]["state"] = state
             return [], []
         if cmd == "get-metric-statistics":
             d = _aws_flags(args[1:])
@@ -11875,6 +11905,68 @@ DEV_LESSONS = [
     {"module": "IaC: One Command, Whole Stack", "kind": "info", "title": "IaC is the whole job",
      "say": "You've now done the full IaC loop: describe everything in files, build it with one command, tear it down and rebuild, and test it on localhost.",
      "why": "Infrastructure-as-code is the discipline that makes the cloud reproducible: files describe the system, commands make it real, and the same files rebuild it identically anywhere. Terraform builds the machines, Ansible configures them, and curl proves they work. That's how real teams ship, every day."},
+
+    # ==== SRE: The Traffic Spike ===========================================
+    {"module": "SRE: The Traffic Spike", "kind": "info", "title": "the traffic spike",
+     "say": "It's 2am. Traffic triples, latency climbs, and an alarm goes off. This is the incident you'll run — detect it, scale up, and bring it back.",
+     "why": "Running production isn't just building it — it's keeping it alive when things go wrong. The loop is always the same: an alarm fires, you look at the metric, you add capacity, and the metric recovers. Here's the whole thing, step by step."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "run", "title": "set the alarm",
+     "verify": lambda c: c.startswith("aws cloudwatch put-metric-alarm") and "high-latency" in c,
+     "cmd_hint": "aws cloudwatch put-metric-alarm --alarm-name high-latency --metric-name latency --threshold 100",
+     "say": "Set a CloudWatch alarm called high-latency that watches the latency metric and trips above 100.",
+     "why": "An alarm is the thing that wakes you up at 2am. It watches a metric and flips to ALARM when the value crosses the threshold. Set it once, and the system pages you instead of you refreshing a dashboard.",
+     "on_win": "Alarm armed. The moment latency passes 100, it flips to ALARM — your early warning system is live."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "run", "title": "the spike hits",
+     "verify": lambda c: c.startswith("aws cloudwatch put-metric-data") and "latency" in c,
+     "cmd_hint": "aws cloudwatch put-metric-data --namespace app --metric-name latency --value 200",
+     "say": "Record a latency reading of 200 — the traffic spike just arrived.",
+     "why": "put-metric-data writes one datapoint. At 200, it's double the alarm's threshold, so the alarm you just armed flips to ALARM automatically. Metrics aren't just records — they drive alerts.",
+     "on_win": "Latency 200, and your alarm just flipped to ALARM. The system is telling you it's in trouble."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "run", "title": "the page comes in",
+     "expect": ["aws cloudwatch describe-alarms"],
+     "cmd_hint": "aws cloudwatch describe-alarms",
+     "say": "Check your alarms to see what's firing.",
+     "why": "describe-alarms lists every alarm and its state. high-latency shows ALARM — that's the page. Before you touch anything, you look at the alarm board to confirm what's actually wrong.",
+     "on_win": "There it is: high-latency in ALARM. Confirmed — now you fix it."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "run", "title": "scale up under load",
+     "verify": lambda c: c.startswith("kubectl scale") and "--replicas=5" in c,
+     "cmd_hint": "kubectl scale deployment web --replicas=5",
+     "say": "Scale the web deployment to five replicas to absorb the extra traffic.",
+     "why": "Latency is high because one server can't handle the load. kubectl scale adds more copies of your app — five replicas share the traffic, so each does less and responds faster. Scale up is the first fix for a traffic spike.",
+     "on_win": "Five replicas now. More servers sharing the load — latency should start dropping."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "run", "title": "latency recovers",
+     "verify": lambda c: c.startswith("aws cloudwatch put-metric-data") and "latency" in c,
+     "cmd_hint": "aws cloudwatch put-metric-data --namespace app --metric-name latency --value 40",
+     "say": "Record a latency reading of 40 now that the extra servers are up.",
+     "why": "With five replicas the load is spread, so latency drops to 40 — under the threshold. Writing the new datapoint flips the alarm back to OK automatically. The metric is how you confirm the fix worked.",
+     "on_win": "Latency 40, alarm back to OK. You detected, scaled, and recovered — that's the whole incident."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "challenge", "title": "run the incident from memory",
+     "say": "The spike hits again. This time, run the whole response yourself: arm the alarm, see it fire, scale up, and record the recovery.",
+     "why": "An incident is a sequence, and the sequence is the skill. Alarm → metric → scale → recover. When it's 2am and you're paged, you don't think — you run the loop.",
+     "recall": "put-metric-alarm arms it, put-metric-data records it, kubectl scale fixes it, describe-alarms confirms it.",
+     "hint": "arm the high-latency alarm, record a spike (200), scale web to 5, then record the recovery (40).",
+     "tools": ["aws cloudwatch put-metric-alarm --alarm-name high-latency",
+               "aws cloudwatch put-metric-data --namespace app --metric-name latency",
+               "kubectl scale deployment web --replicas=5",
+               "aws cloudwatch describe-alarms"],
+     "verify_lab": lambda lab: ("high-latency" in lab.aws.cloudwatch_alarms
+                                and len(lab.aws.cloudwatch_metrics.get("app/latency", [])) >= 2),
+     "replay": ["aws cloudwatch put-metric-alarm --alarm-name high-latency --metric-name latency --threshold 100",
+                "aws cloudwatch put-metric-data --namespace app --metric-name latency --value 200",
+                "kubectl scale deployment web --replicas=5",
+                "aws cloudwatch put-metric-data --namespace app --metric-name latency --value 40",
+                "aws cloudwatch describe-alarms"],
+     "on_win": "You ran the whole incident from memory. That's what being on-call actually is."},
+
+    {"module": "SRE: The Traffic Spike", "kind": "info", "title": "the incident loop",
+     "say": "That's the loop every on-call engineer runs: alarm fires, metric confirms, scale up, verify recovery, write the postmortem.",
+     "why": "Every incident, big or small, is the same shape: DETECT (the alarm), DIAGNOSE (the metric), FIX (scale, roll back, restart), VERIFY (the metric recovers), and LEARN (the blameless postmortem). You've now run the first four. The fifth — writing down what happened so it doesn't happen twice — is what separates an engineer who fixes from one who improves."},
 ]
 
 
@@ -23644,6 +23736,8 @@ class TutorApp(App):
             s[f"queue {name}"] = str(len(lab.aws.sqs_queues[name]))
         for key in lab.aws.cloudwatch_metrics:
             s[f"metric {key}"] = str(len(lab.aws.cloudwatch_metrics[key]))
+        for name, a in lab.aws.cloudwatch_alarms.items():
+            s[f"alarm {name}"] = a["state"]
         for ident, db in lab.aws.rds_instances.items():
             s[f"db {ident}"] = db["engine"]
         for name, lb in lab.aws.elb.items():
