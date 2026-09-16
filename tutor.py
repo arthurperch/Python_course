@@ -10759,37 +10759,59 @@ CMD_EXPLAIN = {
 }
 
 
+def _cmd_tokens(s):
+    """Split a command line into tokens, PRESERVING quotes (echo "a b" stays one
+    token that keeps its quotes, so the on-screen command is exactly right)."""
+    toks = []
+    cur = ""
+    q = None
+    for ch in s:
+        if q:
+            cur += ch
+            if ch == q:
+                q = None
+        elif ch in "'\"":
+            q = ch
+            cur += ch
+        elif ch.isspace():
+            if cur:
+                toks.append(cur)
+                cur = ""
+        else:
+            cur += ch
+    if cur:
+        toks.append(cur)
+    return toks
+
+
 def _explain_tokens(cmdline):
     """Split a command line into classified, explained tokens.
 
     Returns a list of dicts: {token, kind, brief, detail, color}. `kind` is
-    program|verb|flag|value. Curated explanations come from CMD_EXPLAIN; the
-    rest get a generic explanation by shape so nothing is left unexplained.
+    program|verb|flag|value. `token` keeps its original quoting; classification
+    and curated lookups use the quote-stripped `core`.
     """
-    try:
-        import shlex
-        parts = shlex.split(cmdline)
-    except Exception:
-        parts = cmdline.split()
-    if not parts:
+    raw = _cmd_tokens(cmdline)
+    if not raw:
         return []
-    prog = parts[0]
+    prog = raw[0].strip("'\"")
     entry = CMD_EXPLAIN.get(prog, {})
     tokens = []
-    for i, tok in enumerate(parts):
+    for i, tok in enumerate(raw):
+        core = tok.strip("'\"")
         if i == 0:
             kind = "program"
-        elif tok.startswith("--") or (tok.startswith("-") and len(tok) > 1):
+        elif core.startswith("--") or (core.startswith("-") and len(core) > 1):
             kind = "flag"
-        elif i == 1 and tok in entry.get("verbs", {}):
+        elif i == 1 and core in entry.get("verbs", {}):
             # the immediate subcommand (docker build, git commit, aws s3)
             kind = "verb"
-        elif tok in entry.get("verbs_verb", {}):
+        elif core in entry.get("verbs_verb", {}):
             # a nested action (aws s3 mb, az vm create)
             kind = "verb"
         else:
             kind = "value"
-        brief, detail = _explain_entry(prog, entry, tok, kind, i)
+        brief, detail = _explain_entry(prog, entry, core, kind, i)
         tokens.append({"token": tok, "kind": kind, "brief": brief,
                        "detail": detail, "color": _EXPLAIN_COLORS[kind]})
     return tokens
@@ -19050,7 +19072,17 @@ class TokenChip(Static):
         if self._tok_mode == "py":
             self.app._py_open_token(self.token_i)
         else:
-            self.app._dev_open_token(self.token_i)
+            self.app._dev_select_token(self.token_i)
+
+
+class StarChip(Static):
+    """The blinking ★ in the explainer's command row — click to toggle the
+    full 'what the whole command does' explanation (up to 3 lines). The app
+    owns the blink (a timer swaps the glyph), this just routes the click."""
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app._dev_toggle_full()
 
 
 class PyExplainOverlay(Vertical):
@@ -19534,9 +19566,12 @@ class TutorApp(App):
     #dev-help.visible { display: block; }
     #dev-explain { width: 100%; height: auto; border: solid #30363d; background: #0d1117; padding: 0 1; display: none; }
     #dev-explain.visible { display: block; }
-    #dev-explain-summary { width: 100%; height: auto; }
     #dev-explain-cmd { width: 100%; height: auto; }
-    #dev-explain-legend { width: 100%; height: auto; }
+    #dev-explain-star { width: auto; height: 1; padding: 0 1; color: #fbbf24; text-style: bold; }
+    #dev-explain-star:hover { background: $surface; }
+    #dev-explain-line { width: 100%; height: 1; }
+    #dev-explain-full { width: 100%; height: auto; display: none; }
+    #dev-explain-full.visible { display: block; }
     TokenChip { width: auto; height: 1; padding: 0 1; }
     TokenChip:hover { background: $surface; }
     #dev-expl-detail { layer: overlay; width: 60%; height: auto; max-height: 72%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
@@ -19872,6 +19907,10 @@ class TutorApp(App):
         self._dev_explain_cmd = ""    # explainer: the command being explained
         self._dev_explain_open = False  # detail overlay open
         self._dev_explain_tok = 0     # which token's detail is open
+        self._dev_explain_sel = 0     # which token is selected (single-line)
+        self._dev_explain_full = False  # star toggled the full explanation
+        self._dev_explain_blink = False
+        self._dev_explain_blink_timer = None
         self._py_explain_tokens = []  # python explainer: tokenized code
         self._py_explain_code = ""    # python explainer: the code being explained
         self._py_explain_open = False # python explainer overlay open
@@ -20233,11 +20272,12 @@ class TutorApp(App):
                 yield ExitIcon(" ✕ ", id="dev-exit")
             yield Static("", id="dev-ghost")
             with Vertical(id="dev-explain"):
-                yield Static("", id="dev-explain-summary")
                 with Horizontal(id="dev-explain-cmd"):
                     for _i in range(16):
                         yield TokenChip("", token_i=_i, id=f"dev-tok-{_i}")
-                yield Static("", id="dev-explain-legend")
+                    yield StarChip("", id="dev-explain-star")
+                yield Static("", id="dev-explain-line")
+                yield Static("", id="dev-explain-full")
             with Horizontal(id="dev-body"):
                 with Vertical(id="dev-term"):
                     yield Static("", id="dev-output")
@@ -26045,9 +26085,9 @@ class TutorApp(App):
         if self._dev_idx >= len(DEV_LESSONS):
             self._dev_phase = "run"
             return
-        # close any open explainer detail + reset so the new lesson re-renders
-        if getattr(self, "_dev_explain_open", False):
-            self._dev_close_token()
+        # reset the explainer so the new lesson re-renders fresh
+        self._dev_stop_blink()
+        self._dev_explain_full = False
         self._dev_explain_cmd = ""
         self._dev_explain_tokens = []
         lesson = self._dev_lesson()
@@ -26815,10 +26855,6 @@ class TutorApp(App):
             if key == "escape":
                 self._dev_toggle_help()
             return
-        if self._dev_explain_open:
-            if key == "escape":
-                self._dev_close_token()
-            return
         # the centered 'save progress?' card owns the keys first (even over vim)
         if self._dev_confirm:
             ch = (event.character or "").lower()
@@ -26946,6 +26982,7 @@ class TutorApp(App):
         self._dev_enter_blink_stop()
         self._dev_write_blink_stop()
         self._dev_load_stop()
+        self._dev_stop_blink()
         at = getattr(self, "_dev_auto_timer", None)
         if at is not None:
             at.stop(); self._dev_auto_timer = None
@@ -26999,9 +27036,10 @@ class TutorApp(App):
     # -- command explainer (color-coded breakdown + clickable tokens) -------- #
 
     def _dev_render_explain(self):
-        """Populate the command explainer panel — a summary, the command
-        colorized by token type, and a per-token legend. Hidden for info/
-        challenge/vim lessons (nothing to type)."""
+        """The command explainer: one static colorized command line (clickable
+        tokens, correct quotes), a single selected-token explanation line below,
+        and a blinking ★ that toggles a 3-line 'whole command' explanation.
+        Hidden for info/challenge/vim lessons (nothing to type)."""
         panel = self.query_one("#dev-explain", Vertical)
         cmd = ""
         if 0 <= self._dev_idx < len(DEV_LESSONS):
@@ -27019,24 +27057,18 @@ class TutorApp(App):
             panel.remove_class("visible")
             self._dev_explain_tokens = []
             self._dev_explain_cmd = ""
+            self._dev_stop_blink()
             return
         if cmd == self._dev_explain_cmd and self._dev_explain_tokens:
-            return  # already rendered for this command
+            self._dev_render_line()
+            self._dev_render_full()
+            return
         self._dev_explain_cmd = cmd
         self._dev_explain_tokens = _explain_tokens(cmd)
         tokens = self._dev_explain_tokens
-        prog = tokens[0]["token"] if tokens else ""
-        entry = CMD_EXPLAIN.get(prog, {})
-        # summary: what the tool is, then the specific action
-        tsum = Text()
-        tsum.append("what this does:  ", style="bold #fbbf24")
-        tsum.append(entry.get("summary", f"{prog} runs a command."), style="#8b949e")
-        verbs = [x for x in tokens if x["kind"] == "verb"]
-        if verbs:
-            tsum.append("  →  ", style="#6b7280")
-            tsum.append(verbs[0]["brief"], style="#86efac")
-        self.query_one("#dev-explain-summary", Static).update(tsum)
-        # colorized, clickable tokens
+        self._dev_explain_sel = 0
+        self._dev_explain_full = False
+        # colorized, clickable tokens (static, exact quoting — no flashing)
         for i in range(16):
             chip = self.query_one(f"#dev-tok-{i}", TokenChip)
             if i < len(tokens):
@@ -27046,51 +27078,80 @@ class TutorApp(App):
             else:
                 chip.token_i = -1
                 chip.update("")
-        # legend: colored token → brief (kept dim/compact so it reads small)
-        tleg = Text()
-        for tok in tokens:
-            tleg.append("  ", style="")
-            tleg.append(tok["token"], style="bold " + tok["color"])
-            tleg.append("  ", style="")
-            tleg.append(tok["brief"], style="#8b949e")
-            tleg.append("\n")
-        tleg.append("click a token for more detail", style="dim")
-        self.query_one("#dev-explain-legend", Static).update(tleg)
         panel.add_class("visible")
+        self._dev_start_blink()
+        self._dev_render_line()
+        self._dev_render_full()
 
-    def _dev_open_token(self, i):
+    def _dev_render_line(self):
+        """One line: the selected token (its color) + its brief."""
+        tokens = self._dev_explain_tokens
+        if not tokens:
+            self.query_one("#dev-explain-line", Static).update("")
+            return
+        sel = min(self._dev_explain_sel, len(tokens) - 1)
+        tok = tokens[sel]
+        t = Text()
+        t.append("  ", style="")
+        t.append(tok["token"], style="bold " + tok["color"])
+        t.append("  —  ", style="#6b7280")
+        t.append(tok["brief"], style="#8b949e")
+        self.query_one("#dev-explain-line", Static).update(t)
+
+    def _dev_render_full(self):
+        """The ★ toggle: the whole command explained, wrapped to ≤3 small lines."""
+        tokens = self._dev_explain_tokens
+        fw = self.query_one("#dev-explain-full", Static)
+        if not self._dev_explain_full or not tokens:
+            fw.remove_class("visible")
+            return
+        prog = tokens[0]["token"]
+        entry = CMD_EXPLAIN.get(prog, {})
+        parts = []
+        summ = entry.get("summary", "")
+        if summ:
+            parts.append(summ.rstrip("."))
+        for tok in tokens[1:]:
+            parts.append(f"{tok['token']} = {tok['brief'].rstrip('.')}")
+        body = " · ".join(parts)
+        lines = _wrap_words(body, self._dev_term_width())[:3]
+        t = Text()
+        for ln in lines:
+            t.append("  " + ln, style="#8b949e")
+            t.append("\n")
+        fw.update(t)
+        fw.add_class("visible")
+
+    def _dev_select_token(self, i):
         tokens = self._dev_explain_tokens
         if not tokens or not (0 <= i < len(tokens)):
             return
-        self._dev_explain_tok = i
-        self._dev_explain_open = True
-        d = self.query_one("#dev-expl-detail", Static)
-        d.update(self._dev_render_token_detail())
-        d.add_class("visible")
+        self._dev_explain_sel = i
+        self._dev_render_line()
 
-    def _dev_close_token(self):
-        self._dev_explain_open = False
-        self.query_one("#dev-expl-detail", Static).remove_class("visible")
-        self.query_one("#dev", CloudTrainer).focus()
+    def _dev_toggle_full(self):
+        self._dev_explain_full = not self._dev_explain_full
+        self._dev_render_full()
 
-    def _dev_render_token_detail(self):
-        tokens = self._dev_explain_tokens
-        i = self._dev_explain_tok
-        if not tokens or not (0 <= i < len(tokens)):
-            return Text()
-        tok = tokens[i]
-        t = Text()
-        t.append("COMMAND BREAKDOWN", style="bold cyan")
-        t.append("   Esc to close\n\n", style="dim")
-        t.append(tok["token"], style="bold " + tok["color"])
-        t.append(f"   ({_EXPLAIN_KIND_LABEL[tok['kind']]})\n\n", style="#8b949e")
-        t.append(tok["brief"], style="bold #f0f0f5")
-        t.append("\n\n")
-        t.append(tok["detail"] or tok["brief"], style="#d5d5d5")
-        t.append("\n\n")
-        t.append("in:  ", style="dim")
-        t.append(self._dev_explain_cmd, style="#8b949e")
-        return t
+    def _dev_start_blink(self):
+        self._dev_stop_blink()
+        self._dev_blink_tick()
+        self._dev_explain_blink_timer = self.set_interval(0.6, self._dev_blink_tick)
+
+    def _dev_stop_blink(self):
+        t = getattr(self, "_dev_explain_blink_timer", None)
+        if t is not None:
+            t.stop()
+            self._dev_explain_blink_timer = None
+
+    def _dev_blink_tick(self):
+        self._dev_explain_blink = not getattr(self, "_dev_explain_blink", False)
+        try:
+            star = self.query_one("#dev-explain-star", StarChip)
+            star.update(Text(" ★", style="bold #fbbf24") if self._dev_explain_blink
+                        else Text(" ☆", style="#6b7280"))
+        except Exception:
+            pass
 
     # -- animated command ghost (run lessons) ------------------------------- #
 
