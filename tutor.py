@@ -10754,6 +10754,148 @@ def _explain_entry(prog, entry, tok, kind, i):
     return brief, detail
 
 
+# =========================================================================== #
+# PYTHON EXPLAINER — breaks Python code into keyword/builtin/name/string tokens
+# with a clickable manual. `PY_EXPLAIN` is the curated knowledge base; the
+# tokenizer uses the stdlib `tokenize` module for exact token boundaries.
+# =========================================================================== #
+
+_PY_COLORS = {"keyword": "#f87171", "builtin": "#86efac", "name": "#7dd3fc",
+              "string": "#fbbf24", "number": "#c084fc", "op": "#8b949e"}
+_PY_KIND_LABEL = {"keyword": "a keyword", "builtin": "a built-in",
+                  "name": "a name / variable", "string": "a string",
+                  "number": "a number", "op": "an operator / punctuation"}
+
+PY_EXPLAIN = {
+    "def": ("Define a function", "Starts a function: a named, reusable block of code."),
+    "return": ("Send a value back", "Ends the function and hands back its result to the caller."),
+    "for": ("Loop over a sequence", "Repeats the indented block once per item."),
+    "in": ("Membership / iterate", "Checks if something is in a sequence, or drives a for loop."),
+    "if": ("Branch on a condition", "Runs the block only if the condition is true."),
+    "else": ("The fallback branch", "Runs when the if/elif conditions were all false."),
+    "elif": ("Another condition", "Else-if: checks a second condition when the first was false."),
+    "while": ("Loop while true", "Repeats the block as long as the condition holds."),
+    "import": ("Bring in a module", "Loads a library so you can use its functions."),
+    "from": ("Import part of a module", "Pulls a specific name out of a module."),
+    "as": ("Give an alias", "Renames an import (import numpy as np)."),
+    "class": ("Define a class", "Starts a blueprint for creating objects."),
+    "try": ("Attempt risky code", "Starts a block that catches errors."),
+    "except": ("Catch an error", "Runs when code in the try block raised an error."),
+    "finally": ("Always runs", "Runs whether or not an error happened."),
+    "raise": ("Throw an error", "Deliberately raises an exception."),
+    "with": ("Manage a resource", "Auto-opens and closes a resource (e.g. a file)."),
+    "lambda": ("One-line function", "A small anonymous function: lambda x: x + 1."),
+    "yield": ("Produce a value lazily", "Turns the function into a generator."),
+    "pass": ("Do nothing", "A placeholder that does nothing — fills an empty block."),
+    "break": ("Exit the loop", "Stops the loop immediately."),
+    "continue": ("Skip to next iteration", "Jumps to the next loop cycle."),
+    "del": ("Delete something", "Removes a variable or a list/dict entry."),
+    "assert": ("Check a claim", "Raises an error if the condition is false."),
+    "not": ("Negate", "Flips true to false and false to true."),
+    "and": ("Both must be true", "True only if both sides are true."),
+    "or": ("Either can be true", "True if at least one side is true."),
+    "is": ("Identity check", "True if two names point to the same object."),
+    "True": ("The boolean true", "A literal meaning yes/true."),
+    "False": ("The boolean false", "A literal meaning no/false."),
+    "None": ("Nothing / null", "The absence of a value."),
+    "print": ("Print to the screen", "Writes text/values to the output."),
+    "len": ("Length", "How many items are in a sequence."),
+    "range": ("A sequence of numbers", "range(5) → 0,1,2,3,4."),
+    "str": ("Convert to string", "Turns a value into text."),
+    "int": ("Convert to integer", "Turns a value into a whole number."),
+    "float": ("Convert to float", "Turns a value into a decimal number."),
+    "list": ("Make a list", "A mutable ordered collection."),
+    "dict": ("Make a dictionary", "Key → value pairs."),
+    "set": ("Make a set", "An unordered collection of unique items."),
+    "tuple": ("Make a tuple", "An immutable ordered collection."),
+    "input": ("Read user input", "Asks the user for a line of text."),
+    "open": ("Open a file", "Returns a file object for reading/writing."),
+    "sum": ("Add them up", "Returns the total of an iterable of numbers."),
+    "min": ("Smallest value", "Returns the minimum."),
+    "max": ("Largest value", "Returns the maximum."),
+    "sorted": ("Sort a sequence", "Returns a new sorted list."),
+    "enumerate": ("Index + item pairs", "Yields (0, first), (1, second), …"),
+    "zip": ("Pair two sequences", "Yields tuples combining items position-by-position."),
+    "map": ("Apply a function to each", "Runs a function over every item."),
+    "filter": ("Keep matching items", "Keeps items where the function returns true."),
+    "type": ("The type of a value", "Tells you what kind of object something is."),
+    "isinstance": ("Check the type", "True if the value is that type."),
+    "append": ("Add to the end", "Adds one item to a list."),
+    "split": ("Break a string apart", "Splits text into a list on a separator."),
+    "join": ("Glue strings together", "Joins a list of strings into one."),
+    "format": ("Format a string", "Inserts values into placeholders."),
+    "strip": ("Trim whitespace", "Removes leading/trailing spaces."),
+    "replace": ("Swap text", "Replaces one substring with another."),
+}
+
+
+def _py_explain_tokens(code):
+    """Tokenize Python code into explained, color-coded tokens.
+
+    Uses the stdlib `tokenize` for exact boundaries; classifies KEYWORD,
+    builtin NAME, plain NAME, STRING, NUMBER, and operators/punctuation.
+    Returns a list of dicts {token, kind, brief, detail, color}.
+    """
+    import io, tokenize as _tok, keyword as _kw, builtins
+    _BUILTINS = set(dir(builtins))
+    out = []
+
+    def emit(s, kind):
+        brief, detail = _py_explain_entry(s, kind)
+        out.append({"token": s, "kind": kind, "brief": brief,
+                    "detail": detail, "color": _PY_COLORS[kind]})
+
+    try:
+        for t in _tok.generate_tokens(io.StringIO(code).readline):
+            if t.type in (_tok.ENDMARKER, _tok.NL, _tok.NEWLINE,
+                          _tok.INDENT, _tok.DEDENT, _tok.COMMENT, _tok.ENCODING):
+                continue
+            s = t.string
+            if t.type == _tok.NAME:
+                if _kw.iskeyword(s):
+                    emit(s, "keyword")
+                elif s in _BUILTINS:
+                    emit(s, "builtin")
+                else:
+                    emit(s, "name")
+            elif t.type == _tok.STRING:
+                emit(s, "string")
+            elif t.type == _tok.NUMBER:
+                emit(s, "number")
+            else:
+                emit(s, "op")
+    except Exception:
+        out = []
+        for s in code.split():
+            if _kw.iskeyword(s):
+                emit(s, "keyword")
+            elif s in _BUILTINS:
+                emit(s, "builtin")
+            elif s.isidentifier():
+                emit(s, "name")
+            else:
+                emit(s, "op")
+    return out
+
+
+def _py_explain_entry(s, kind):
+    if kind in ("keyword", "builtin"):
+        e = PY_EXPLAIN.get(s)
+        if e:
+            return e if isinstance(e, tuple) else (e, "")
+    if kind == "keyword":
+        return f"{s} — a Python keyword.", f"{s} is part of Python's syntax — it shapes the structure of the code."
+    if kind == "builtin":
+        return f"{s} — a built-in function/type.", f"{s} is always available in Python — no import needed."
+    if kind == "string":
+        return f"{s} — a string (text).", "A literal piece of text in quotes."
+    if kind == "number":
+        return f"{s} — a number.", "A numeric literal."
+    if kind == "op":
+        return f"{s} — an operator / punctuation.", "Syntax that combines or separates parts of the code."
+    return f"{s} — a name (variable).", "A name that refers to a value you've defined or passed in."
+
+
 SHELL_LESSONS = [
     # ---- stage 0: Meet the Terminal -------------------------------------- #
     {"title": "where am I?", "stage": 0, "expect": ["pwd"], "cmd_hint": "pwd",
@@ -18827,18 +18969,35 @@ class CloudHelpIcon(Static):
 
 
 class TokenChip(Static):
-    """A single clickable command token in the explainer — clicking it opens the
-    detail manual for that token. Mouse-click only (the trainer owns the
-    keyboard)."""
+    """A single clickable command/code token in the explainer — clicking it opens
+    the detail manual for that token. Mouse-click only (the trainer owns the
+    keyboard). `mode` is "dev" (shell command) or "py" (Python code)."""
 
-    def __init__(self, label: str = "", token_i: int = 0, color: str = "#f0f0f5", **kw):
+    def __init__(self, label: str = "", token_i: int = 0, color: str = "#f0f0f5",
+                 mode: str = "dev", **kw):
         super().__init__(label, **kw)
         self.token_i = token_i
         self._tok_color = color
+        self._tok_mode = mode
 
     def on_click(self, event: events.Click) -> None:
         event.stop()
-        self.app._dev_open_token(self.token_i)
+        if self._tok_mode == "py":
+            self.app._py_open_token(self.token_i)
+        else:
+            self.app._dev_open_token(self.token_i)
+
+
+class PyExplainOverlay(Vertical):
+    """The full-screen Python code-explainer overlay: shows the challenge's
+    example code broken into clickable, color-coded tokens with a legend.
+    Owns the keyboard while open (Esc closes; clicking a token opens its
+    detail manual)."""
+
+    can_focus = True
+
+    def on_key(self, event: events.Key) -> None:
+        self.app._py_explain_key(event)
 
 
 class VolumeBar(Static):
@@ -19308,7 +19467,7 @@ class TutorApp(App):
     #dev-foot { width: 100%; height: auto; margin-top: 1; }
     #dev-help { layer: overlay; width: 66%; height: auto; max-height: 92%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #dev-help.visible { display: block; }
-    #dev-explain { width: 100%; height: auto; border: solid #30363d; background: #0d1117; padding: 1 2; display: none; }
+    #dev-explain { width: 100%; height: auto; border: solid #30363d; background: #0d1117; padding: 0 1; display: none; }
     #dev-explain.visible { display: block; }
     #dev-explain-summary { width: 100%; height: auto; }
     #dev-explain-cmd { width: 100%; height: auto; }
@@ -19317,6 +19476,15 @@ class TutorApp(App):
     TokenChip:hover { background: $surface; }
     #dev-expl-detail { layer: overlay; width: 60%; height: auto; max-height: 72%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #dev-expl-detail.visible { display: block; }
+    #py-explain { layer: overlay; width: 72%; height: auto; max-height: 84%; border: tall $accent; background: #11111b; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
+    #py-explain.visible { display: block; }
+    #py-explain-title { width: 100%; height: auto; }
+    #py-explain-body { width: 100%; height: auto; }
+    #py-explain-code { width: 100%; height: auto; }
+    #py-explain-cmd { width: 100%; height: auto; }
+    #py-explain-legend { width: 100%; height: auto; }
+    #py-explain-detail { layer: overlay; width: 60%; height: auto; max-height: 72%; border: tall $accent; background: #11111b; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
+    #py-explain-detail.visible { display: block; }
     #cheat { width: 100%; height: auto; max-height: 24; border: tall $warning; padding: 1 2; display: none; }
     #cheat.visible { display: block; }
     #side-examples { width: 100%; height: auto; max-height: 14; border: tall $warning; padding: 0; }
@@ -19391,6 +19559,7 @@ class TutorApp(App):
         Binding("f12", "quick_check", "Check", show=False),
         Binding("m", "toggle_music", "Music", show=False),
         Binding("g", "map", "Map", show=False),
+        Binding("question_mark", "toggle_py_explain", "Explain", show=False),
         Binding("ctrl+enter", "jump", "Jump", show=False),
         Binding("y", "quit_save", "SaveQuit", show=False),
         Binding("e", "lesson", "Lesson", show=False),
@@ -19638,6 +19807,11 @@ class TutorApp(App):
         self._dev_explain_cmd = ""    # explainer: the command being explained
         self._dev_explain_open = False  # detail overlay open
         self._dev_explain_tok = 0     # which token's detail is open
+        self._py_explain_tokens = []  # python explainer: tokenized code
+        self._py_explain_code = ""    # python explainer: the code being explained
+        self._py_explain_open = False # python explainer overlay open
+        self._py_detail_open = False  # python token detail overlay open
+        self._py_explain_tok = 0
         self._net_on = False          # NETWORK+ overlay open
         self._net_module = 0          # current module idx (0-3)
         self._net_queue: list = []    # pending steps for this module
@@ -20010,6 +20184,15 @@ class TutorApp(App):
         yield Static("", id="dev-expl-detail")
         yield Static("", id="dev-confirm")
         yield Static("", id="dev-load")
+        with PyExplainOverlay(id="py-explain"):
+            yield Static("", id="py-explain-title")
+            with Vertical(id="py-explain-body"):
+                yield Static("", id="py-explain-code")
+                with Horizontal(id="py-explain-cmd"):
+                    for _i in range(24):
+                        yield TokenChip("", token_i=_i, mode="py", id=f"py-tok-{_i}")
+                yield Static("", id="py-explain-legend")
+        yield Static("", id="py-explain-detail")
         with NetTrainer(id="net"):
             with Horizontal(id="net-topbar"):
                 yield Static("", id="net-head")
@@ -22228,6 +22411,8 @@ class TutorApp(App):
             t.append("HOW IT WORKS", style="bold magenta")
             t.append("\n")
             t.append_text(_ghost_why_text(ex))
+        t.append("\n\n")
+        t.append("?  explain the code, token by token", style="dim")
         return _box_lines(_lines_of(t))
 
     def _set_task_arrow(self, title):
@@ -26780,11 +26965,11 @@ class TutorApp(App):
         # summary: what the tool is, then the specific action
         tsum = Text()
         tsum.append("what this does:  ", style="bold #fbbf24")
-        tsum.append(entry.get("summary", f"{prog} runs a command."), style="#d5d5d5")
+        tsum.append(entry.get("summary", f"{prog} runs a command."), style="#8b949e")
         verbs = [x for x in tokens if x["kind"] == "verb"]
         if verbs:
             tsum.append("  →  ", style="#6b7280")
-            tsum.append(verbs[0]["brief"], style="bold #86efac")
+            tsum.append(verbs[0]["brief"], style="#86efac")
         self.query_one("#dev-explain-summary", Static).update(tsum)
         # colorized, clickable tokens
         for i in range(16):
@@ -26796,13 +26981,13 @@ class TutorApp(App):
             else:
                 chip.token_i = -1
                 chip.update("")
-        # legend: colored token → brief
+        # legend: colored token → brief (kept dim/compact so it reads small)
         tleg = Text()
         for tok in tokens:
             tleg.append("  ", style="")
             tleg.append(tok["token"], style="bold " + tok["color"])
-            tleg.append("  —  ", style="#6b7280")
-            tleg.append(tok["brief"], style="#d5d5d5")
+            tleg.append("  ", style="")
+            tleg.append(tok["brief"], style="#8b949e")
             tleg.append("\n")
         tleg.append("click a token for more detail", style="dim")
         self.query_one("#dev-explain-legend", Static).update(tleg)
@@ -30216,6 +30401,113 @@ class TutorApp(App):
             self.query_one("#side-examples", Vertical).add_class("hidden")
         else:
             self.query_one("#side-examples", Vertical).remove_class("hidden")
+
+    # ---- python code explainer (`?` → clickable token manual) -------------- #
+
+    def action_toggle_py_explain(self):
+        if self.mode != "challenge":
+            return
+        self._py_toggle_explain()
+
+    def _py_toggle_explain(self):
+        ov = self.query_one("#py-explain", PyExplainOverlay)
+        if ov.has_class("visible"):
+            self._py_close_explain()
+            return
+        c = self._current()
+        code = example_code(c.get("example", ""))[1] if c.get("example", "") else ""
+        if not code.strip():
+            code = " ".join(c.get("need", []))
+        if not code.strip():
+            return
+        self._py_explain_code = code
+        self._py_explain_tokens = _py_explain_tokens(code)
+        self._py_explain_open = True
+        self._py_detail_open = False
+        ov.add_class("visible")
+        ov.focus()
+        self._py_render_explain()
+
+    def _py_render_explain(self):
+        tokens = self._py_explain_tokens
+        t = Text()
+        t.append("PYTHON CODE EXPLAINED", style="bold cyan")
+        t.append("   Esc to close · click a token for its manual\n", style="dim")
+        self.query_one("#py-explain-title", Static).update(t)
+        tc = Text()
+        for ln in self._py_explain_code.strip().split("\n")[:10]:
+            tc.append(ln, style="#9a9aa5")
+            tc.append("\n")
+        self.query_one("#py-explain-code", Static).update(tc)
+        for i in range(24):
+            chip = self.query_one(f"#py-tok-{i}", TokenChip)
+            if i < len(tokens):
+                tok = tokens[i]
+                chip.token_i = i
+                chip.update(Text(tok["token"], style="bold " + tok["color"]))
+            else:
+                chip.token_i = -1
+                chip.update("")
+        tleg = Text()
+        seen = set()
+        for tok in tokens:
+            if tok["token"] in seen:
+                continue
+            seen.add(tok["token"])
+            tleg.append("  ", style="")
+            tleg.append(tok["token"], style="bold " + tok["color"])
+            tleg.append("  ", style="")
+            tleg.append(tok["brief"], style="#8b949e")
+            tleg.append("\n")
+        self.query_one("#py-explain-legend", Static).update(tleg)
+
+    def _py_open_token(self, i):
+        tokens = self._py_explain_tokens
+        if not tokens or not (0 <= i < len(tokens)):
+            return
+        self._py_explain_tok = i
+        self._py_detail_open = True
+        d = self.query_one("#py-explain-detail", Static)
+        d.update(self._py_render_detail())
+        d.add_class("visible")
+
+    def _py_close_token(self):
+        self._py_detail_open = False
+        self.query_one("#py-explain-detail", Static).remove_class("visible")
+        self.query_one("#py-explain", PyExplainOverlay).focus()
+
+    def _py_close_explain(self):
+        self._py_explain_open = False
+        self._py_detail_open = False
+        self.query_one("#py-explain-detail", Static).remove_class("visible")
+        self.query_one("#py-explain", PyExplainOverlay).remove_class("visible")
+        try:
+            self.query_one("#editor", VimEditor).focus()
+        except Exception:
+            pass
+
+    def _py_render_detail(self):
+        tokens = self._py_explain_tokens
+        i = self._py_explain_tok
+        if not tokens or not (0 <= i < len(tokens)):
+            return Text()
+        tok = tokens[i]
+        t = Text()
+        t.append("PYTHON BREAKDOWN", style="bold cyan")
+        t.append("   Esc to close\n\n", style="dim")
+        t.append(tok["token"], style="bold " + tok["color"])
+        t.append(f"   ({_PY_KIND_LABEL[tok['kind']]})\n\n", style="#8b949e")
+        t.append(tok["brief"], style="bold #f0f0f5")
+        t.append("\n\n")
+        t.append(tok["detail"] or tok["brief"], style="#d5d5d5")
+        return t
+
+    def _py_explain_key(self, event):
+        if event.key == "escape":
+            if self._py_detail_open:
+                self._py_close_token()
+            else:
+                self._py_close_explain()
 
     def action_toggle_voice(self):
         self.voice_on = not self.voice_on
