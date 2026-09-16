@@ -8880,6 +8880,245 @@ def _aws_flags(args):
     return d
 
 
+class AzEnv:
+    """Simulated Azure CLI (offline): resource groups, VMs, storage accounts,
+    VNets/subnets, AKS, app services, functions. Mirrors AwsEnv's feel but
+    speaks `az group/vm/storage/network/aks/webapp/functionapp`. Deterministic
+    ids (vm-0001, vm-0002, …) like the AWS `i-0001` pattern."""
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.resource_groups = set()     # names
+        self.vms = {}                    # name -> {"rg","size","state","id"}
+        self.next_vm = 1
+        self.storage_accounts = {}       # name -> {"rg","containers":{}}
+        self.vnets = {}                  # name -> {"rg","subnets":set(),"address"}
+        self.aks = {}                    # name -> {"rg","nodes","kubeconfig"}
+        self.webapps = {}                # name -> {"rg","url"}
+        self.functions = {}              # name -> {"rg","runtime"}
+
+    def run(self, rest):
+        try:
+            parts = shlex.split(rest)
+        except ValueError:
+            parts = rest.split()
+        if not parts:
+            return [], ["usage: az <service> <command>"]
+        svc = parts[0]
+        if svc == "group":
+            return self._group(parts[1:])
+        if svc == "vm":
+            return self._vm(parts[1:])
+        if svc == "storage":
+            return self._storage(parts[1:])
+        if svc == "network":
+            return self._network(parts[1:])
+        if svc == "aks":
+            return self._aks(parts[1:])
+        if svc == "webapp":
+            return self._webapp(parts[1:])
+        if svc == "functionapp":
+            return self._functionapp(parts[1:])
+        if svc in ("--version", "version"):
+            return ["azure-cli 2.55.0"], []
+        return [], [f"az: error: unrecognized arguments: '{svc}' (try "
+                    "group, vm, storage, network, aks, webapp, functionapp)"]
+
+    def _group(self, args):
+        if not args:
+            return [], ["usage: az group <create|list|delete>"]
+        cmd = args[0]
+        d = _aws_flags(args[1:])
+        if cmd == "create":
+            name = d.get("name", "myrg")
+            if name in self.resource_groups:
+                return [], [f"The resource group '{name}' already exists."]
+            self.resource_groups.add(name)
+            return [f"Resource group '{name}' created in {d.get('location', 'eastus')}."], []
+        if cmd == "list":
+            return sorted(self.resource_groups) or ["(no resource groups)"], []
+        if cmd == "delete":
+            name = d.get("name", "")
+            if name not in self.resource_groups:
+                return [], [f"The resource group '{name}' was not found."]
+            self.resource_groups.discard(name)
+            return [], []
+        return [], [f"az group: unknown command '{cmd}'"]
+
+    def _vm(self, args):
+        if not args:
+            return [], ["usage: az vm <create|list|start|stop|delete>"]
+        cmd = args[0]
+        d = _aws_flags(args[1:])
+        if cmd == "create":
+            name = d.get("name", "vm")
+            rg = d.get("resource-group", "default")
+            vid = "vm-%04d" % self.next_vm
+            self.next_vm += 1
+            self.vms[name] = {"rg": rg, "size": d.get("size", "Standard_B1s"),
+                              "state": "running", "id": vid}
+            self.resource_groups.add(rg)
+            return [f"VM '{name}' created — id {vid}, running ({d.get('image', 'UbuntuLTS')})."], []
+        if cmd == "list":
+            if not self.vms:
+                return ["(no VMs)"], []
+            return [f"{n}  {self.vms[n]['state']:<8} {self.vms[n]['size']}"
+                    for n in sorted(self.vms)], []
+        if cmd in ("start", "stop"):
+            name = d.get("name", "")
+            if name not in self.vms:
+                return [], [f"The VM '{name}' was not found."]
+            self.vms[name]["state"] = "running" if cmd == "start" else "stopped"
+            return [f"VM '{name}' {'started' if cmd == 'start' else 'stopped'}."], []
+        if cmd == "delete":
+            name = d.get("name", "")
+            if name in self.vms:
+                del self.vms[name]
+            return [], []
+        return [], [f"az vm: unknown command '{cmd}'"]
+
+    def _storage(self, args):
+        if not args:
+            return [], ["usage: az storage <account|container> ..."]
+        sub = args[0]
+        if sub == "account":
+            if len(args) < 2:
+                return [], ["usage: az storage account <create|list|delete>"]
+            cmd = args[1]
+            d = _aws_flags(args[2:])
+            if cmd == "create":
+                name = d.get("name", "storage")
+                if name in self.storage_accounts:
+                    return [], [f"The storage account '{name}' already exists."]
+                self.storage_accounts[name] = {"rg": d.get("resource-group", ""), "containers": {}}
+                return [f"Storage account '{name}' created."], []
+            if cmd == "list":
+                if not self.storage_accounts:
+                    return ["(no storage accounts)"], []
+                return [f"{n}  {self.storage_accounts[n]['rg']}"
+                        for n in sorted(self.storage_accounts)], []
+            if cmd == "delete":
+                name = d.get("name", "")
+                if name in self.storage_accounts:
+                    del self.storage_accounts[name]
+                return [], []
+            return [], [f"az storage account: unknown command '{cmd}'"]
+        if sub == "container":
+            if len(args) < 2:
+                return [], ["usage: az storage container <create|list>"]
+            cmd = args[1]
+            d = _aws_flags(args[2:])
+            if cmd == "create":
+                acc = d.get("account-name", "")
+                name = d.get("name", "container")
+                if acc not in self.storage_accounts:
+                    return [], [f"The storage account '{acc}' was not found."]
+                self.storage_accounts[acc]["containers"][name] = {}
+                return [f"Container '{name}' created in account '{acc}'."], []
+            if cmd == "list":
+                acc = d.get("account-name", "")
+                if acc not in self.storage_accounts:
+                    return [], [f"The storage account '{acc}' was not found."]
+                return (sorted(self.storage_accounts[acc]["containers"])
+                        or ["(empty)"]), []
+            return [], [f"az storage container: unknown command '{cmd}'"]
+        return [], [f"az storage: unknown subcommand '{sub}'"]
+
+    def _network(self, args):
+        if not args:
+            return [], ["usage: az network <vnet|...> ..."]
+        sub = args[0]
+        if sub == "vnet":
+            if len(args) < 2:
+                return [], ["usage: az network vnet <create|list|subnet> ..."]
+            cmd = args[1]
+            d = _aws_flags(args[2:])
+            if cmd == "create":
+                name = d.get("name", "vnet")
+                self.vnets[name] = {"rg": d.get("resource-group", ""),
+                                    "subnets": set(),
+                                    "address": d.get("address-prefixes", "10.0.0.0/16")}
+                return [f"Virtual network '{name}' created ({self.vnets[name]['address']})."], []
+            if cmd == "list":
+                if not self.vnets:
+                    return ["(no VNets)"], []
+                return [f"{n}  {self.vnets[n]['address']}"
+                        for n in sorted(self.vnets)], []
+            if cmd == "subnet":
+                if len(args) < 3:
+                    return [], ["usage: az network vnet subnet <create|list> ..."]
+                scmd = args[2]
+                d = _aws_flags(args[3:])
+                vnet = d.get("vnet-name", "")
+                if vnet not in self.vnets:
+                    return [], [f"Virtual network '{vnet}' was not found."]
+                if scmd == "create":
+                    self.vnets[vnet]["subnets"].add(d.get("name", "subnet"))
+                    return [f"Subnet '{d.get('name', 'subnet')}' created in '{vnet}' "
+                            f"({d.get('address-prefix', '')})."], []
+                if scmd == "list":
+                    return sorted(self.vnets[vnet]["subnets"]) or ["(empty)"], []
+                return [], [f"az network vnet subnet: unknown command '{scmd}'"]
+            return [], [f"az network vnet: unknown command '{cmd}'"]
+        return [], [f"az network: unknown subcommand '{sub}'"]
+
+    def _aks(self, args):
+        if not args:
+            return [], ["usage: az aks <create|list|get-credentials>"]
+        cmd = args[0]
+        d = _aws_flags(args[1:])
+        if cmd == "create":
+            name = d.get("name", "cluster")
+            self.aks[name] = {"rg": d.get("resource-group", ""),
+                              "nodes": d.get("node-count", "1"),
+                              "kubeconfig": False}
+            return [f"AKS cluster '{name}' created ({self.aks[name]['nodes']} node(s))."], []
+        if cmd == "list":
+            if not self.aks:
+                return ["(no clusters)"], []
+            return [f"{n}  nodes={self.aks[n]['nodes']}"
+                    for n in sorted(self.aks)], []
+        if cmd == "get-credentials":
+            name = d.get("name", "")
+            if name not in self.aks:
+                return [], [f"The cluster '{name}' was not found."]
+            self.aks[name]["kubeconfig"] = True
+            return [f"Merged '{name}' as the current context — kubectl now points at it."], []
+        return [], [f"az aks: unknown command '{cmd}'"]
+
+    def _webapp(self, args):
+        if not args:
+            return [], ["usage: az webapp <create|list>"]
+        cmd = args[0]
+        d = _aws_flags(args[1:])
+        if cmd == "create":
+            name = d.get("name", "webapp")
+            self.webapps[name] = {"rg": d.get("resource-group", ""),
+                                  "url": f"https://{name}.azurewebsites.net"}
+            return [f"Web app '{name}' created — {self.webapps[name]['url']}"], []
+        if cmd == "list":
+            if not self.webapps:
+                return ["(no web apps)"], []
+            return [f"{n}  {self.webapps[n]['url']}" for n in sorted(self.webapps)], []
+        return [], [f"az webapp: unknown command '{cmd}'"]
+
+    def _functionapp(self, args):
+        if not args:
+            return [], ["usage: az functionapp <create|list>"]
+        cmd = args[0]
+        d = _aws_flags(args[1:])
+        if cmd == "create":
+            name = d.get("name", "fn")
+            self.functions[name] = {"rg": d.get("resource-group", ""),
+                                    "runtime": d.get("runtime", "python")}
+            return [f"Function app '{name}' created ({self.functions[name]['runtime']})."], []
+        if cmd == "list":
+            if not self.functions:
+                return ["(no function apps)"], []
+            return [f"{n}  {self.functions[n]['runtime']}" for n in sorted(self.functions)], []
+        return [], [f"az functionapp: unknown command '{cmd}'"]
+
+
 def _ddb_from_json(item):
     """DynamoDB low-level JSON ({\"S\": v}) → native Python dict."""
     out = {}
@@ -9609,6 +9848,7 @@ class CloudLab:
         self.pipeline = Pipeline(self.fs)
         self.k8s = K8sEnv(self.fs)
         self.helm = HelmEnv(self.fs)
+        self.az = AzEnv(self.fs)
         self.history = []
 
     def run(self, cmdline):
@@ -9628,6 +9868,8 @@ class CloudLab:
             return self.docker.run(rest)
         if cmd == "aws":
             return self.aws.run(rest)
+        if cmd == "az":
+            return self.az.run(rest)
         if cmd == "terraform":
             return self.tf.run(rest)
         if cmd in ("ansible-playbook", "ansible"):
@@ -12563,6 +12805,87 @@ DEV_LESSONS = [
     {"module": "Cost & Budgets", "kind": "info", "title": "FinOps is the habit",
      "say": "Watch the cost, set budgets, tear down what you're not using — that's how senior teams keep cloud bills sane.",
      "why": "FinOps is the discipline of cloud money: measure the spend, budget it, and kill idle resources (a stopped-but-not-terminated server still bills). The habit is worth more than any single command — the teams with sane bills are the ones that check the cost every week."},
+
+    # ==== Azure: The Second Cloud ==========================================
+    {"module": "Azure: The Second Cloud", "kind": "info", "title": "a second cloud",
+     "say": "You've driven AWS all course. Now meet Azure — a second cloud with the same ideas, different names.",
+     "why": "The concepts transfer, the CLI doesn't. Azure's tool is `az`, and its structure is `az <service> <command> --flags`. Everything is grouped under a resource group — Azure's unit of organization and cleanup. You already know the pattern; now you learn the vocabulary."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "create a resource group",
+     "verify": lambda c: c.startswith("az group create") and "prod" in c,
+     "cmd_hint": "az group create --name prod --location eastus",
+     "say": "Create a resource group called prod in eastus.",
+     "why": "A resource group is the logical container every Azure resource lives in. Name it, pick a region, and everything you build lands inside it — delete the group and the whole environment goes with it.",
+     "on_win": "prod is live. Everything you build now lands inside it."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "create a VM",
+     "verify": lambda c: c.startswith("az vm create") and "web" in c and "prod" in c,
+     "cmd_hint": "az vm create --name web --resource-group prod --image UbuntuLTS",
+     "say": "Provision a virtual machine called web in the prod group.",
+     "why": "az vm create is Azure's EC2 run-instances. It stands up a full virtual server and prints its id. Azure calls the machine size 'Standard_B1s' where AWS says 't3.micro' — same idea, different label.",
+     "on_win": "web is up. One command, a whole server."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "see your VMs",
+     "expect": ["az vm list"],
+     "cmd_hint": "az vm list",
+     "say": "List the VMs in your account.",
+     "why": "az vm list shows every VM and its state — the Azure version of `aws ec2 describe-instances`. It's how you confirm what's actually running (and what's still costing you).",
+     "on_win": "There's web, running. The bill is ticking — remember that."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "create a VNet",
+     "verify": lambda c: c.startswith("az network vnet create") and "vnet1" in c,
+     "cmd_hint": "az network vnet create --name vnet1 --resource-group prod --address-prefixes 10.0.0.0/16",
+     "say": "Create a virtual network called vnet1 with the address space 10.0.0.0/16.",
+     "why": "A VNet is Azure's VPC — your private, isolated slice of network. The --address-prefixes flag sets the CIDR range it can hand out. Everything private lives inside a VNet.",
+     "on_win": "vnet1 owns 10.0.0.0/16. That's your private address space."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "add a subnet",
+     "verify": lambda c: c.startswith("az network vnet subnet create") and "web" in c and "vnet1" in c,
+     "cmd_hint": "az network vnet subnet create --name web --vnet-name vnet1 --resource-group prod --address-prefix 10.0.1.0/24",
+     "say": "Add a subnet called web inside vnet1, taking 10.0.1.0/24.",
+     "why": "Subnets carve the VNet's address space into smaller segments, so you can isolate web servers from databases. Each subnet gets its own slice of the CIDR. This is the setup for a VNET mission: VNet → subnets → resources.",
+     "on_win": "web subnet carved out of vnet1. Now resources have a home."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "create a storage account",
+     "verify": lambda c: c.startswith("az storage account create") and "mystore" in c,
+     "cmd_hint": "az storage account create --name mystore --resource-group prod",
+     "say": "Create a storage account called mystore in prod.",
+     "why": "A storage account is the container for Azure's storage services — it's the account that holds blobs (files), tables, and queues. It's Azure's S3 gateway, one level up.",
+     "on_win": "mystore exists. Now it needs containers."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "create a blob container",
+     "verify": lambda c: c.startswith("az storage container create") and "images" in c and "mystore" in c,
+     "cmd_hint": "az storage container create --account-name mystore --name images",
+     "say": "Create a container called images inside the mystore account.",
+     "why": "Blob containers hold blobs (objects) — this is Azure's S3 bucket equivalent. The account holds the containers; the containers hold the blobs. Two levels where AWS has one.",
+     "on_win": "images is ready to hold files. That's Azure's object storage, fully wired."},
+
+    {"module": "Azure: The Second Cloud", "kind": "run", "title": "create a Kubernetes cluster",
+     "verify": lambda c: c.startswith("az aks create") and "cluster1" in c,
+     "cmd_hint": "az aks create --name cluster1 --resource-group prod --node-count 2",
+     "say": "Create a managed Kubernetes cluster called cluster1 with 2 nodes.",
+     "why": "AKS is Azure's managed Kubernetes (the equivalent of AWS EKS). One command stands up a full cluster. Then get-credentials points your kubectl at it — so the k8s skills from earlier in the course work against a real cloud cluster.",
+     "on_win": "cluster1 is up. Azure is running your Kubernetes for you."},
+
+    {"module": "Azure: The Second Cloud", "kind": "challenge", "title": "provision a VNet with two subnets",
+     "say": "From memory: create a resource group called azurelab, then a VNet azurelab-vnet with two subnets — app and db.",
+     "why": "This is the VNET setup pattern every Azure engineer does weekly: a group, a VNet, and subnets that separate the app tier from the data tier. When you can build it from memory, you can design an isolated network.",
+     "recall": "az group create → az network vnet create → az network vnet subnet create (twice).",
+     "hint": "az group create --name azurelab, then az network vnet create --name azurelab-vnet, then two az network vnet subnet create --vnet-name azurelab-vnet --name app / db.",
+     "tools": ["az group create --name azurelab", "az network vnet create --name azurelab-vnet",
+               "az network vnet subnet create --vnet-name azurelab-vnet"],
+     "verify_lab": lambda lab: "azurelab" in lab.az.resource_groups
+                               and "azurelab-vnet" in lab.az.vnets
+                               and {"app", "db"} <= lab.az.vnets["azurelab-vnet"]["subnets"],
+     "replay": ["az group create --name azurelab --location eastus",
+                "az network vnet create --name azurelab-vnet --resource-group azurelab --address-prefixes 10.20.0.0/16",
+                "az network vnet subnet create --name app --vnet-name azurelab-vnet --resource-group azurelab --address-prefix 10.20.1.0/24",
+                "az network vnet subnet create --name db --vnet-name azurelab-vnet --resource-group azurelab --address-prefix 10.20.2.0/24"],
+     "on_win": "A VNet with two isolated subnets, built from memory. That's real Azure networking."},
+
+    {"module": "Azure: The Second Cloud", "kind": "info", "title": "both clouds, one pattern",
+     "say": "AWS and Azure are two dialects of the same language: networks, servers, storage, and a CLI to drive them.",
+     "why": "The senior skill isn't memorizing both CLIs — it's recognizing the pattern (isolate → provision → connect → secure) and translating it across clouds. You now have the vocabulary for both: the concepts you mastered on AWS map one-to-one onto Azure, and vice versa."},
 ]
 
 
@@ -25085,6 +25408,16 @@ class TutorApp(App):
             s[f"budget {name}"] = f"${b['amount']}"
         for name, r in lab.helm.releases.items():
             s[f"release {name}"] = f"rev {r['revision']}"
+        for rg in sorted(lab.az.resource_groups):
+            s[f"az rg {rg}"] = ""
+        for name, vm in lab.az.vms.items():
+            s[f"az vm {name}"] = vm["state"]
+        for name in lab.az.storage_accounts:
+            s[f"az storage {name}"] = str(len(lab.az.storage_accounts[name]["containers"]))
+        for name, v in lab.az.vnets.items():
+            s[f"az vnet {name}"] = ",".join(sorted(v["subnets"])) or "(no subnets)"
+        for name in lab.az.aks:
+            s[f"az aks {name}"] = lab.az.aks[name]["nodes"] + " nodes"
         for k in lab.tf.resources:
             s[f"resource {k}"] = ""
         for h, st in lab.ansible.hosts.items():
