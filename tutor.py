@@ -5851,7 +5851,11 @@ class VimEditor(Static):
         # keep 3 lines of breathing room below the cursor so it never pins to the
         # very bottom edge while typing — the viewport pulls down a little early
         limit = max(1, vr - 3)
-        if self.cursor_row < self.scroll_top:
+        # line 1 must never scroll out of view while the cursor sits on it — pin
+        # the viewport to the top whenever the cursor is on the first line
+        if self.cursor_row == 0:
+            self.scroll_top = 0
+        elif self.cursor_row < self.scroll_top:
             self.scroll_top = self.cursor_row
         elif self.cursor_row >= self.scroll_top + limit:
             self.scroll_top = self.cursor_row - limit + 1
@@ -22695,9 +22699,9 @@ class TutorApp(App):
         (same idea, different values — never the answer), then syntax IDEAS."""
         starter = self._plan_template(c) + c.get("starter", "")
         lines = starter.split("\n") if starter else [""]
-        # a few blank lines to write on (kept small so line 1 + the hints fit in
-        # the editor without scrolling — a tall buffer hid line 1 behind the top)
-        for _ in range(4):
+        # one blank line to write on — kept minimal so line 1 + the hints always
+        # fit inside the editor viewport (a tall buffer scrolled line 1 off the top)
+        for _ in range(1):
             lines.append("")
         goal = self._goal_values(c)
         lines.append("# output should look like: "
