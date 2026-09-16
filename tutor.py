@@ -9952,6 +9952,54 @@ class HelmEnv:
         return [], [f"helm: unknown command '{cmd}'"]
 
 
+class PromEnv:
+    """Offline Prometheus: deterministic metric series + a PromQL subset
+    (rate/sum/avg/max/count). `run(rest)` takes the query AFTER 'promql'.
+    http_requests_total has a deliberate spike (40→150) so `rate`/`max` read
+    like a real incident."""
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.metrics = {
+            "http_requests_total": [10, 12, 11, 15, 40, 90, 120, 150, 45, 30, 28, 25],
+            "cpu_usage": [0.1, 0.2, 0.15, 0.85, 0.92, 0.7, 0.3, 0.12],
+            "memory_usage_bytes": [1.2e9, 1.3e9, 1.28e9, 1.8e9, 1.9e9, 1.5e9, 1.3e9, 1.25e9],
+            "request_latency_seconds": [0.01, 0.02, 0.01, 0.5, 1.8, 0.03, 0.02, 0.02],
+        }
+
+    def run(self, rest):
+        q = rest.strip()
+        if not q:
+            return [], ["usage: promql <metric> | rate(<metric>[5m]) | sum|avg|max|count(<metric>)"]
+        m = re.match(r'^(\w+)\(([\w:]+)(?:\[(\w+)\])?\)$', q)
+        if m:
+            fn, metric, window = m.group(1), m.group(2), m.group(3)
+            if metric not in self.metrics:
+                return [], [f"promql: metric '{metric}' not found"]
+            vals = self.metrics[metric]
+            if fn == "rate":
+                if not window:
+                    return [], ["promql: rate needs a range, e.g. rate(metric[5m])"]
+                span = {"1m": 60, "5m": 300, "10m": 600, "1h": 3600}.get(window, 300)
+                rate = round((max(vals) - min(vals)) / span, 3)
+                return [f"rate({metric}[{window}]) = {rate} /s"], []
+            if fn == "sum":
+                return [f"sum({metric}) = {round(sum(vals), 3)}"], []
+            if fn == "avg":
+                return [f"avg({metric}) = {round(sum(vals) / len(vals), 3)}"], []
+            if fn == "max":
+                return [f"max({metric}) = {max(vals)}"], []
+            if fn == "count":
+                return [f"count({metric}) = {len(vals)}"], []
+            return [], [f"promql: unknown function '{fn}' (rate, sum, avg, max, count)"]
+        if q in self.metrics:
+            out = [f"{q}:"]
+            for i, v in enumerate(self.metrics[q]):
+                out.append(f"  t{i:02d}  {v}")
+            return out, []
+        return [], [f"promql: unknown expression '{q}' (try rate/sum/avg/max/count)"]
+
+
 class CloudLab:
     """One offline 'developer environment': local bash + git + docker + AWS +
     terraform + ansible + CI/CD. `run(cmdline)` executes one line and returns
@@ -9968,6 +10016,7 @@ class CloudLab:
         self.k8s = K8sEnv(self.fs)
         self.helm = HelmEnv(self.fs)
         self.az = AzEnv(self.fs)
+        self.prom = PromEnv(self.fs)
         self.history = []
 
     def run(self, cmdline):
@@ -9997,6 +10046,8 @@ class CloudLab:
             return self.k8s.run(rest)
         if cmd == "helm":
             return self.helm.run(rest)
+        if cmd == "promql":
+            return self.prom.run(rest)
         if cmd == "ci":
             return self.pipeline.run(rest)
         if cmd == "serve":
@@ -13070,6 +13121,70 @@ DEV_LESSONS = [
     {"module": "Network: Lock It Down", "kind": "info", "title": "default deny, then allow",
      "say": "The pattern is always the same: start closed, open only what's needed, then audit. Security groups (AWS) and NSGs (Azure) are the same idea in two skins.",
      "why": "Networking security is a discipline, not a checkbox: default-deny, least-privilege ports, and a habit of auditing before you ship. You've now done it in both clouds — the muscle memory transfers, only the CLI spelling changes."},
+
+    # ==== Observe: Metrics & Logs ==========================================
+    {"module": "Observe: Metrics & Logs", "kind": "info", "title": "you can't fix what you can't see",
+     "say": "The app is running. Is it healthy? You can't know without looking. Now you'll query metrics and read logs — the two lenses of observability.",
+     "why": "Observability is the ability to answer 'what's happening inside?' from the outside. Metrics (numbers over time) tell you WHAT is wrong; logs (records of events) tell you WHY. The senior reflex: when something's off, you query the metric to spot it, then read the logs to explain it."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "run", "title": "see the raw metric",
+     "verify": lambda c: c.startswith("promql http_requests_total") and "(" not in c,
+     "cmd_hint": "promql http_requests_total",
+     "say": "Query the http_requests_total metric — the raw series.",
+     "why": "A metric is just a list of values over time. Querying it raw shows you the shape: flat, spiky, climbing. This is the first thing you look at — the raw signal, before any math.",
+     "on_win": "Look at that shape — mostly flat, then a huge spike in the middle."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "run", "title": "find the peak",
+     "verify": lambda c: c.startswith("promql max(http_requests_total)"),
+     "cmd_hint": "promql max(http_requests_total)",
+     "say": "Find the highest value — query the max of http_requests_total.",
+     "why": "max() picks the single highest point. Spotting the peak is the fastest way to size an incident: if requests hit 150 when normal is ~12, that's a 12x spike — the kind of thing that takes a server down.",
+     "on_win": "150 requests. Normal was ~12. That's the spike."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "run", "title": "the rate of change",
+     "verify": lambda c: c.startswith("promql rate(http_requests_total[5m])"),
+     "cmd_hint": "promql rate(http_requests_total[5m])",
+     "say": "Query the rate of http_requests_total over the last 5 minutes.",
+     "why": "rate() is the workhorse of PromQL: it turns a growing counter into a per-second rate over a window. Max tells you the peak; rate tells you how FAST things are changing. Both are how you spot trouble early.",
+     "on_win": "A per-second rate. Now you can see not just the spike, but its speed."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "run", "title": "average latency",
+     "verify": lambda c: c.startswith("promql avg(request_latency_seconds)"),
+     "cmd_hint": "promql avg(request_latency_seconds)",
+     "say": "Query the average request latency.",
+     "why": "avg() flattens a noisy series into one number. Latency is the user's experience — if it's slow, users feel it. Watching average latency is how you catch a slow app before anyone complains.",
+     "on_win": "The average is low — but remember, an average can hide a spike. Check max too."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "run", "title": "read the logs",
+     "verify": lambda c: c.startswith("journalctl -u web"),
+     "cmd_hint": "journalctl -u web",
+     "say": "Read the web service's logs.",
+     "why": "Metrics tell you something spiked; logs tell you WHY. journalctl -u reads one service's log stream — the requests, the errors, the 'listening on :8080'. When you know the metric is bad, this is where the answer lives.",
+     "on_win": "There's the log stream — 'listening on :8080', requests flowing. Now you can see the why."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "run", "title": "hit the endpoint",
+     "verify": lambda c: c.startswith("curl localhost:8080"),
+     "cmd_hint": "curl localhost:8080",
+     "say": "Check the app is actually answering — curl the endpoint.",
+     "why": "curl is the outside-in check: the app can have healthy metrics and still be down from the outside. curl localhost:8080 asks it directly and shows you the response. Metrics, logs, AND a live check — that's the full picture.",
+     "on_win": "200 OK. The app is up and answering."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "challenge", "title": "diagnose + alarm the spike",
+     "say": "From memory: spot the spike (query the max), then set a CloudWatch alarm called spike-alarm on http_requests_total with a threshold of 100.",
+     "why": "The full observability loop: query to SEE the problem, then arm an alarm so it wakes you up next time instead of you catching it by hand. Diagnose, then automate the diagnosis.",
+     "recall": "promql max(metric) finds the peak; aws cloudwatch put-metric-alarm arms the alert.",
+     "hint": "promql max(http_requests_total), then aws cloudwatch put-metric-alarm --alarm-name spike-alarm --metric-name http_requests_total --threshold 100.",
+     "tools": ["promql max(http_requests_total)",
+               "aws cloudwatch put-metric-alarm --alarm-name spike-alarm"],
+     "verify_lab": lambda lab: "spike-alarm" in lab.aws.cloudwatch_alarms
+                               and lab.aws.cloudwatch_alarms["spike-alarm"]["threshold"] == "100",
+     "replay": ["promql max(http_requests_total)",
+                "aws cloudwatch put-metric-alarm --alarm-name spike-alarm --metric-name http_requests_total --threshold 100"],
+     "on_win": "You saw the spike AND armed the alarm. That's the observability reflex."},
+
+    {"module": "Observe: Metrics & Logs", "kind": "info", "title": "metrics + logs = observability",
+     "say": "Query the metric to spot the problem, read the logs to explain it, curl to confirm it, alarm it so it pages you next time.",
+     "why": "Real observability has a third pillar — traces — that follows one request across services. But the core loop is this: metrics (what), logs (why), and an outside-in check (is it actually up). You now run all three, and you arm alarms so the system watches itself while you sleep."},
 ]
 
 
