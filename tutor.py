@@ -11636,6 +11636,56 @@ DEV_LESSONS = [
     {"module": "Edge, Events & Scale", "kind": "info", "title": "the full cloud, complete",
      "say": "That's the whole AWS toolbox: servers, storage, functions, databases, queues, metrics, load balancers, a CDN, a notification bus, an API gateway, and auto-scaling.",
      "why": "You've now run every major AWS service an engineer uses daily. The skill isn't memorizing flags — it's knowing which service solves which problem, then reaching for it. Servers compute, storage holds, functions run on demand, queues decouple, databases persist, metrics watch, balancers spread, the CDN caches, SNS notifies, API Gateway exposes, and Auto Scaling rightsizes. That's the whole cloud."},
+
+    # ==== Capstone: The Full Stack =========================================
+    {"module": "Capstone: The Full Stack", "kind": "info", "title": "build it all from memory",
+     "say": "Final exam: build a complete production stack from scratch, with no ghost. Every service you've learned, wired together.",
+     "why": "This is the whole point. No copy-paste, no hints until you ask — just the CLOUD panel on the right and everything you've practiced. Build the data layer, the compute layer, and the traffic layer. When all three are up, you've provisioned a real production architecture by hand."},
+
+    {"module": "Capstone: The Full Stack", "kind": "challenge", "title": "provision the data layer",
+     "recall": "Data first: a bucket for files (S3), a table for records (DynamoDB), a database for the app (RDS).",
+     "hint": "three services: aws s3 mb, aws dynamodb create-table, aws rds create-db-instance. Use the prod- names.",
+     "tools": ["aws s3 mb s3://prod-assets",
+               "aws dynamodb create-table --table-name prod-users",
+               "aws rds create-db-instance --db-instance-identifier prod-db"],
+     "verify_lab": lambda lab: ("prod-assets" in lab.aws.buckets
+                                and "prod-users" in lab.aws.dynamo_tables
+                                and "prod-db" in lab.aws.rds_instances),
+     "replay": ["aws s3 mb s3://prod-assets",
+                "aws dynamodb create-table --table-name prod-users",
+                "aws rds create-db-instance --db-instance-identifier prod-db --engine postgres"],
+     "on_win": "Data layer up: files, records, and a database. Three services, three commands."},
+
+    {"module": "Capstone: The Full Stack", "kind": "challenge", "title": "provision compute + messaging",
+     "recall": "Now the workhorse: a server to compute (EC2), a queue to pass work (SQS), a topic to notify (SNS).",
+     "hint": "aws ec2 run-instances (use t3.large), aws sqs create-queue, aws sns create-topic. prod- names again.",
+     "tools": ["aws ec2 run-instances --instance-type t3.large",
+               "aws sqs create-queue --queue-name prod-queue",
+               "aws sns create-topic --name prod-alerts"],
+     "verify_lab": lambda lab: (any(i.get("InstanceType") == "t3.large"
+                                and i["State"]["Name"] == "running"
+                                for i in lab.aws.instances.values())
+                                and "prod-queue" in lab.aws.sqs_queues
+                                and "prod-alerts" in lab.aws.sns_topics),
+     "replay": ["aws ec2 run-instances --instance-type t3.large",
+                "aws sqs create-queue --queue-name prod-queue",
+                "aws sns create-topic --name prod-alerts"],
+     "on_win": "Compute, queue, and topic are up. The system can now do work, hand it off, and tell the team."},
+
+    {"module": "Capstone: The Full Stack", "kind": "challenge", "title": "wire up the traffic",
+     "recall": "Last step: a load balancer in front (elbv2), and your running instance registered behind it.",
+     "hint": "aws elbv2 create-load-balancer, then aws elbv2 register-targets with your running instance id.",
+     "tools": ["aws elbv2 create-load-balancer --name prod-lb",
+               "aws elbv2 register-targets"],
+     "verify_lab": lambda lab: ("prod-lb" in lab.aws.elb
+                                and len(lab.aws.elb["prod-lb"]["targets"]) > 0),
+     "replay": ["aws elbv2 create-load-balancer --name prod-lb",
+                "aws elbv2 register-targets --target-group-arn app/prod-lb i-0001"],
+     "on_win": "Traffic wired. The load balancer is in front and your server is behind it — the full stack is live."},
+
+    {"module": "Capstone: The Full Stack", "kind": "info", "title": "you shipped a production stack",
+     "say": "You just provisioned a complete cloud architecture by hand: storage, a database, a server, a queue, a topic, and a load balancer in front of it all.",
+     "why": "That's the entire job, done from memory. Storage holds, the database persists, the server computes, the queue decouples, the topic notifies, and the load balancer spreads traffic. You didn't memorize flags — you learned which service solves which problem. That's what a cloud engineer is."},
 ]
 
 
