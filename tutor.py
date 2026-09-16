@@ -8061,6 +8061,10 @@ class AwsEnv:
         self.cloudwatch_metrics = {}  # "namespace/metric" -> list of value strings
         self.rds_instances = {}       # identifier -> {"engine","class","status"}
         self.elb = {}                 # lb name -> {"arn","targets":[]}
+        self.cloudfront = {}          # dist id -> {"origin","domain"}
+        self.apigateway = {}          # api name -> {"id","deployed"}
+        self.sns_topics = {}          # topic name -> {"arn","messages":[]}
+        self.asg = {}                 # asg name -> {"min","max","desired"}
 
     def run(self, rest):
         try:
@@ -8088,9 +8092,17 @@ class AwsEnv:
             return self._rds(parts[1:])
         if svc == "elbv2":
             return self._elb(parts[1:])
+        if svc == "cloudfront":
+            return self._cloudfront(parts[1:])
+        if svc == "apigateway":
+            return self._apigateway(parts[1:])
+        if svc == "sns":
+            return self._sns(parts[1:])
+        if svc == "autoscaling":
+            return self._autoscaling(parts[1:])
         if svc in ("--version", "version"):
             return ["aws-cli/2.15.0"], []
-        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam | sqs | cloudwatch | rds | elbv2"]
+        return [], [f"aws: error: argument command: Invalid choice, valid choices: s3 | ec2 | lambda | dynamodb | iam | sqs | cloudwatch | rds | elbv2 | cloudfront | apigateway | sns | autoscaling"]
 
     def _s3(self, args):
         if not args:
@@ -8402,6 +8414,104 @@ class AwsEnv:
             return [f"{name}  targets: {len(self.elb[name]['targets'])}"
                     for name in sorted(self.elb)], []
         return [], [f"aws elbv2: unknown command '{cmd}'"]
+
+    def _cloudfront(self, args):
+        """CDN: create-distribution / list-distributions."""
+        if not args:
+            return [], ["usage: aws cloudfront <command>"]
+        cmd = args[0]
+        if cmd == "create-distribution":
+            d = _aws_flags(args[1:])
+            origin = d.get("origin-domain-name", "bucket.s3.amazonaws.com")
+            n = len(self.cloudfront) + 1
+            iid = f"E{1000 + n}"
+            domain = f"d{1000 + n}.cloudfront.net"
+            self.cloudfront[iid] = {"origin": origin, "domain": domain}
+            return [f"Distribution {iid}  {domain}  ->  {origin}"], []
+        if cmd == "list-distributions":
+            if not self.cloudfront:
+                return ["Distributions: []"], []
+            return [f"{iid}  {d['domain']}  ->  {d['origin']}"
+                    for iid, d in sorted(self.cloudfront.items())], []
+        return [], [f"aws cloudfront: unknown command '{cmd}'"]
+
+    def _apigateway(self, args):
+        """HTTP API: create-rest-api / create-deployment / get-rest-apis."""
+        if not args:
+            return [], ["usage: aws apigateway <command>"]
+        cmd = args[0]
+        if cmd == "create-rest-api":
+            d = _aws_flags(args[1:])
+            name = d.get("name", "api")
+            self.apigateway[name] = {"id": f"api{len(self.apigateway) + 1}", "deployed": False}
+            return [f"REST API {self.apigateway[name]['id']} ({name})"], []
+        if cmd == "create-deployment":
+            d = _aws_flags(args[1:])
+            rid = d.get("rest-api-id", "")
+            for a in self.apigateway.values():
+                if a["id"] == rid:
+                    a["deployed"] = True
+                    return ["Deployed to stage: prod"], []
+            return [], ["An error occurred (NotFoundException)"]
+        if cmd == "get-rest-apis":
+            if not self.apigateway:
+                return ["items: []"], []
+            return [f"{a['id']}  {n}  {'deployed' if a['deployed'] else 'not deployed'}"
+                    for n, a in sorted(self.apigateway.items())], []
+        return [], [f"aws apigateway: unknown command '{cmd}'"]
+
+    def _sns(self, args):
+        """Notifications: create-topic / publish / list-topics."""
+        if not args:
+            return [], ["usage: aws sns <command>"]
+        cmd = args[0]
+        if cmd == "create-topic":
+            d = _aws_flags(args[1:])
+            name = d.get("name", "topic")
+            arn = f"arn:aws:sns:us-east-1:123456789012:{name}"
+            self.sns_topics[name] = {"arn": arn, "messages": []}
+            return [arn], []
+        if cmd == "publish":
+            d = _aws_flags(args[1:])
+            arn = d.get("topic-arn", "")
+            name = arn.split(":")[-1]
+            if name not in self.sns_topics:
+                return [], ["An error occurred (NotFound)"]
+            body = d.get("message", "")
+            self.sns_topics[name]["messages"].append(body)
+            return [f"MessageId: {len(self.sns_topics[name]['messages'])}"], []
+        if cmd == "list-topics":
+            if not self.sns_topics:
+                return ["Topics: []"], []
+            return [a["arn"] for _, a in sorted(self.sns_topics.items())], []
+        return [], [f"aws sns: unknown command '{cmd}'"]
+
+    def _autoscaling(self, args):
+        """Scale: create-auto-scaling-group / describe-auto-scaling-groups / set-desired-capacity."""
+        if not args:
+            return [], ["usage: aws autoscaling <command>"]
+        cmd = args[0]
+        if cmd == "create-auto-scaling-group":
+            d = _aws_flags(args[1:])
+            name = d.get("auto-scaling-group-name", "asg")
+            self.asg[name] = {"min": d.get("min-size", "1"),
+                              "max": d.get("max-size", "1"),
+                              "desired": d.get("desired-capacity", "1")}
+            a = self.asg[name]
+            return [f"AutoScalingGroup {name}  min {a['min']}  max {a['max']}  desired {a['desired']}"], []
+        if cmd == "describe-auto-scaling-groups":
+            if not self.asg:
+                return ["AutoScalingGroups: []"], []
+            return [f"{n}  min {a['min']}  max {a['max']}  desired {a['desired']}"
+                    for n, a in sorted(self.asg.items())], []
+        if cmd == "set-desired-capacity":
+            d = _aws_flags(args[1:])
+            name = d.get("auto-scaling-group-name", "")
+            dc = d.get("desired-capacity", "")
+            if name in self.asg:
+                self.asg[name]["desired"] = dc
+            return [], []
+        return [], [f"aws autoscaling: unknown command '{cmd}'"]
 
 
 def _aws_flags(args):
@@ -11468,6 +11578,64 @@ DEV_LESSONS = [
     {"module": "Queues, Metrics & Databases", "kind": "info", "title": "the whole system, one stack",
      "say": "Put it together: the queue moves work, the database stores data, metrics watch the health, the load balancer spreads the load — and EC2 does the computing.",
      "why": "Now you've touched every layer of a production stack: servers (EC2), storage (S3), queues (SQS), databases (RDS), metrics (CloudWatch), and traffic (ELB). A senior engineer reaches for the right one at the right moment. That's the whole game."},
+
+    # ==== Edge, Events & Scale =============================================
+    {"module": "Edge, Events & Scale", "kind": "info", "title": "the last four pieces",
+     "say": "Four final services finish the picture: a CDN for speed, a topic for alerts, an API gateway for endpoints, and auto-scaling for capacity.",
+     "why": "CloudFront caches your site at the edge so it loads fast everywhere. SNS broadcasts a message to everyone subscribed. API Gateway turns your functions into clean HTTP endpoints. Auto Scaling adds and removes servers as traffic rises and falls. These four are what take a working stack to a production-grade one."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "put a CDN in front",
+     "verify": lambda c: c.startswith("aws cloudfront create-distribution") and "cli-bucket" in c,
+     "cmd_hint": "aws cloudfront create-distribution --origin-domain-name cli-bucket.s3.amazonaws.com",
+     "say": "Create a CloudFront distribution in front of your cli-bucket.",
+     "why": "CloudFront is Amazon's CDN — it copies your content to servers near your users so pages load fast from anywhere. create-distribution points it at your bucket, and it hands back a domain ending in cloudfront.net.",
+     "on_win": "Your site now has a fast edge in front of it. The cloudfront.net domain is your public face."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "make an alert topic",
+     "verify": lambda c: c.startswith("aws sns create-topic") and "alerts" in c,
+     "cmd_hint": "aws sns create-topic --name alerts",
+     "say": "Create an SNS topic called alerts.",
+     "why": "SNS is the notification bus. A topic is a channel — anything subscribed to it gets every message you publish. create-topic makes the channel and returns its ARN, the address you publish to.",
+     "on_win": "The alerts topic exists. Publish to it and every subscriber gets the message at once."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "send the alert",
+     "verify": lambda c: c.startswith("aws sns publish") and "deploy" in c,
+     "cmd_hint": "aws sns publish --topic-arn arn:aws:sns:us-east-1:123456789012:alerts --message deploy-succeeded",
+     "say": "Publish a deploy-succeeded message to the alerts topic.",
+     "why": "publish sends one message to the topic, and SNS fans it out to everyone subscribed. This is how your deploy pipeline tells the team 'it shipped' — one publish, many ears.",
+     "on_win": "The alert went out. One publish reached every subscriber — that's the whole point of a topic."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "build an API",
+     "verify": lambda c: c.startswith("aws apigateway create-rest-api") and "api" in c,
+     "cmd_hint": "aws apigateway create-rest-api --name api",
+     "say": "Create a REST API called api.",
+     "why": "API Gateway turns your functions into clean HTTP endpoints people can call over the internet. create-rest-api makes the API shell and prints its id — that id is how you deploy it next.",
+     "on_win": "Your API shell exists. Next you deploy it so it actually answers requests."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "ship the API",
+     "verify": lambda c: c.startswith("aws apigateway create-deployment") and "api1" in c,
+     "cmd_hint": "aws apigateway create-deployment --rest-api-id api1",
+     "say": "Deploy the API using its id, api1.",
+     "why": "create-deployment publishes your API to a stage so it's live. Until you deploy, the API is just a definition; after, it answers real requests. The id api1 is the one create-rest-api printed.",
+     "on_win": "The API is live. Definition made, then deployed — that's the two-step pattern."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "auto-scale your servers",
+     "verify": lambda c: c.startswith("aws autoscaling create-auto-scaling-group") and "web" in c,
+     "cmd_hint": "aws autoscaling create-auto-scaling-group --auto-scaling-group-name web --min-size 1 --max-size 3 --desired-capacity 2",
+     "say": "Create an auto-scaling group called web that keeps between one and three servers, aiming for two.",
+     "why": "Auto Scaling watches your traffic and adds or removes servers to match it. min-size is the floor, max-size the ceiling, desired-capacity the target right now. It's how a site survives a traffic spike without paying for idle servers all night.",
+     "on_win": "Your group will keep between one and three servers. Traffic rises, it scales up; traffic falls, it scales back."},
+
+    {"module": "Edge, Events & Scale", "kind": "run", "title": "check the group",
+     "expect": ["aws autoscaling describe-auto-scaling-groups"],
+     "cmd_hint": "aws autoscaling describe-auto-scaling-groups",
+     "say": "Describe your auto-scaling groups.",
+     "why": "describe-auto-scaling-groups shows each group's min, max, and current desired count. Check here to confirm your capacity settings are what you think they are.",
+     "on_win": "There's the web group with its min, max, and desired. Your scaling policy is on paper now."},
+
+    {"module": "Edge, Events & Scale", "kind": "info", "title": "the full cloud, complete",
+     "say": "That's the whole AWS toolbox: servers, storage, functions, databases, queues, metrics, load balancers, a CDN, a notification bus, an API gateway, and auto-scaling.",
+     "why": "You've now run every major AWS service an engineer uses daily. The skill isn't memorizing flags — it's knowing which service solves which problem, then reaching for it. Servers compute, storage holds, functions run on demand, queues decouple, databases persist, metrics watch, balancers spread, the CDN caches, SNS notifies, API Gateway exposes, and Auto Scaling rightsizes. That's the whole cloud."},
 ]
 
 
@@ -23241,6 +23409,14 @@ class TutorApp(App):
             s[f"db {ident}"] = db["engine"]
         for name, lb in lab.aws.elb.items():
             s[f"lb {name}"] = str(len(lb["targets"])) + " targets"
+        for iid, d in lab.aws.cloudfront.items():
+            s[f"cdn {iid}"] = d["domain"]
+        for name, a in lab.aws.apigateway.items():
+            s[f"api {name}"] = "deployed" if a["deployed"] else "not deployed"
+        for name, t in lab.aws.sns_topics.items():
+            s[f"topic {name}"] = str(len(t["messages"]))
+        for name, a in lab.aws.asg.items():
+            s[f"asg {name}"] = f"desired {a['desired']}"
         for k in lab.tf.resources:
             s[f"resource {k}"] = ""
         for h, st in lab.ansible.hosts.items():
