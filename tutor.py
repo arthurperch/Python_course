@@ -19438,6 +19438,7 @@ class TutorApp(App):
     #command-bar Button:hover { background: #45475a; color: #ffffff; }
     #command-bar Button.-primary { background: #1e6b3f; }
     #command-bar Button.-success { background: #1e6b3f; }
+    #command-bar Button.-warning { background: #4a4320; color: #fbbf24; }
     #cmd { width: 1fr; display: none; }
     #cmd.visible { display: block; }
     #cmd.flash { border: tall yellow; background: #4d4000; }
@@ -20251,6 +20252,7 @@ class TutorApp(App):
                 yield Button("run", id="task-run", variant="default")
                 yield Button("submit", id="task-check", variant="primary")
                 yield Button("step", id="task-step", variant="default")
+                yield Button("review", id="task-review", variant="warning")
                 yield Button("next", id="task-continue", variant="success", classes="hidden")
                 yield Static("", id="wildmenu")
                 yield CommandInput(placeholder=":  (w = save, !python3 % / submit = run+submit, q = quit · Tab = autocomplete)", id="cmd")
@@ -21779,6 +21781,11 @@ class TutorApp(App):
             return
         if event.button.id == "task-step":
             self.action_step()
+            return
+        if event.button.id == "task-review":
+            # the REVIEW button is the mouse-friendly path to F7 code review —
+            # identical to pressing F7
+            self.action_review()
             return
         if event.button.id == "lab-run":
             self._run_lab()
@@ -31654,6 +31661,16 @@ class TutorApp(App):
     def action_review(self):
         if self.mode != "challenge":
             return
+        # force the voice ON (unmuted, full volume) for the review even when the
+        # user has it turned down — then restore their settings when it ends.
+        # Only capture the original settings once, so re-triggering the review
+        # doesn't overwrite the saved values with the forced ones.
+        if not getattr(self, "_review_tts_forced", False):
+            self._saved_voice_muted = _VOICE_MUTED
+            self._saved_voice_vol = _VOICE_VOL
+            self._review_tts_forced = True
+        set_voice_mute(False)
+        set_voice_volume(1.0)
         self._start_review()
 
     def action_quick_check(self):
@@ -32076,6 +32093,11 @@ class TutorApp(App):
         self._lesson_gen += 1  # discard any in-flight synth/capture
         self._stop_lesson()
         _kill_piper()
+        # restore the user's own voice settings if the review forced them on
+        if getattr(self, "_review_tts_forced", False):
+            set_voice_mute(self._saved_voice_muted)
+            set_voice_volume(self._saved_voice_vol)
+            self._review_tts_forced = False
         self._lesson_on = False
         self.query_one("#lesson", Static).remove_class("visible")
         self._enter_editor()
