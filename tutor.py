@@ -6888,9 +6888,11 @@ class ShellFS:
             return self._ps(args)
         if cmd == "kill":
             return self._kill(args)
+        if cmd == "curl":
+            return self._curl(args)
         if cmd in ("man", "help", "--help"):
             return ["commands:  pwd  ls  mkdir  cd  touch  cat  echo  head  tail  wc  grep  sed  "
-                    "awk  find  tar  export  env  ps  kill  python3  mv  cp  rm  chmod  "
+                    "awk  find  tar  export  env  ps  kill  curl  python3  mv  cp  rm  chmod  "
                     "whoami  clear  history  (also:  cmd1 && cmd2   and   cmd1 ; cmd2)"], []
         if cmd.startswith("./") or cmd.startswith("/"):
             return self._run_executable(cmd)
@@ -7346,6 +7348,19 @@ class ShellFS:
             else:
                 errs.append(f"bash: kill: ({a}) - No such process")
         return [], errs
+
+    def _curl(self, args):
+        """Simulated HTTP client (offline): localhost URLs return a running app's
+        response; any other URL returns a canned page. Teaches the browser ->
+        localhost:port loop without a real network."""
+        url = next((a for a in args if not a.startswith("-")), "")
+        if not url:
+            return [], ["curl: try 'curl <url>'"]
+        if "localhost" in url or "127.0.0.1" in url:
+            return ["HTTP/1.1 200 OK", "Content-Type: text/html", "",
+                    "<h1>hello</h1>", "<p>your app is running</p>"], []
+        return [f"HTTP/1.1 200 OK", f"Content-Type: text/html", "",
+                f"<!doctype html><title>{url}</title>"], []
 
 
 # ============================================================================
@@ -11785,6 +11800,81 @@ DEV_LESSONS = [
     {"module": "Recall: The Whole Toolkit", "kind": "info", "title": "the toolkit, owned",
      "say": "That's the whole toolkit recalled from memory: bash, terraform, ansible, docker, python — every command you reach for daily.",
      "why": "You didn't just learn commands — you learned to recall them on demand. That's the difference between following a tutorial and being an engineer. When the next problem shows up, you won't reach for a cheatsheet; you'll reach for the tool and type it."},
+
+    # ==== IaC: One Command, Whole Stack ====================================
+    {"module": "IaC: One Command, Whole Stack", "kind": "info", "title": "the whole stack, one file",
+     "say": "Now the payoff: describe your ENTIRE infrastructure in one file, and one command builds all of it.",
+     "why": "This is the real power of infrastructure-as-code. One file holds the bucket, the server, and the role — and a single terraform apply brings the whole stack up. Change the file, re-apply, and the cloud matches. No clicking, no drift, no guesswork."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "write", "title": "write the whole stack",
+     "file": "stack.tf",
+     "content": "resource \"aws_s3_bucket\" \"prod_static\" {\n  bucket = \"prod-static\"\n  acl    = \"private\"\n}\n\nresource \"aws_instance\" \"prod_web\" {\n  ami           = \"ami-123\"\n  instance_type = \"t3.micro\"\n}\n\nresource \"aws_iam_role\" \"prod_app\" {\n  name = \"prod-app-role\"\n}\n",
+     "lines": [["aws_s3_bucket", "storage — an S3 bucket for static files"],
+              ["aws_instance", "compute — a server to run the app"],
+              ["aws_iam_role", "permissions — a role to grant access"]],
+     "say": "Write the whole stack into stack dot t f: a bucket, a server, and a role, all in one file.",
+     "why": "Each block declares one piece: the bucket (storage), the instance (compute), and the role (permissions). Three blocks, one file — that's your entire production architecture written down.",
+     "on_win": "The whole stack is now one file. Storage, compute, and permissions, declared together."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "run", "title": "initialize",
+     "expect": ["terraform init"],
+     "cmd_hint": "terraform init",
+     "say": "Initialize terraform.",
+     "why": "terraform init downloads providers and prepares the directory — the once-per-project first step before plan or apply.",
+     "on_win": "Initialized. Now terraform can read your stack.tf."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "run", "title": "see what it will build",
+     "expect": ["terraform plan"],
+     "cmd_hint": "terraform plan",
+     "say": "Plan the build to preview what terraform will create.",
+     "why": "terraform plan reads stack.tf and shows you every resource it's about to make — three new things, listed before anything happens. Always look before you apply.",
+     "on_win": "Three resources queued. That's the whole stack, previewed."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "run", "title": "build it all with one command",
+     "expect": ["terraform apply"],
+     "cmd_hint": "terraform apply",
+     "say": "Apply the plan to build everything at once.",
+     "why": "terraform apply turns the plan into reality — one command provisions the bucket, the server, and the role. Watch the CLOUD panel fill up: that's the whole stack, built from one file.",
+     "on_win": "One command, the whole stack. The bucket, server, and role are all live — from a file."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "challenge", "title": "tear it down, bring it back",
+     "say": "Now prove you own it: destroy the stack, then rebuild it from the file — from memory.",
+     "why": "The whole point of IaC: your infrastructure is reproducible. Destroy it, and the file still knows how to rebuild it. This is the disaster-recovery superpower.",
+     "recall": "terraform destroy clears it; terraform plan recomputes; terraform apply rebuilds.",
+     "hint": "three commands in order: destroy, then plan, then apply.",
+     "tools": ["terraform destroy", "terraform plan", "terraform apply"],
+     "verify_lab": lambda lab: {"aws_s3_bucket.prod_static", "aws_instance.prod_web", "aws_iam_role.prod_app"} <= set(lab.tf.resources),
+     "replay": ["terraform destroy", "terraform plan", "terraform apply"],
+     "on_win": "Destroyed and rebuilt from the file. Your infrastructure is reproducible — that's the whole IaC promise."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "write", "title": "provision every server",
+     "file": "provision.yml",
+     "content": "- name: provision web servers\n  hosts: web\n  tasks:\n    - name: ensure nginx installed\n      apt:\n        name: nginx\n    - name: copy the homepage\n      copy:\n        dest: /var/www/html/index.html\n        content: \"<h1>hello</h1>\"\n\n- name: provision the database\n  hosts: db\n  tasks:\n    - name: ensure postgres installed\n      apt:\n        name: postgres\n",
+     "lines": [["hosts: web", "the web group gets nginx and a homepage"],
+              ["hosts: db", "the db group gets postgres"],
+              ["apt:", "apt installs a package"],
+              ["copy:", "copy drops a file onto the server"]],
+     "say": "Write one playbook, provision dot y m l, that configures BOTH server groups — the web group and the database group.",
+     "why": "Two plays, one file: the first installs nginx and drops a homepage on the web servers, the second installs postgres on the database. One playbook describes every server's end state.",
+     "on_win": "One playbook, every server. The whole fleet's configuration, written down."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "run", "title": "configure everything at once",
+     "expect": ["ansible-playbook provision.yml"],
+     "cmd_hint": "ansible-playbook provision.yml",
+     "say": "Run the playbook to configure every server in one command.",
+     "why": "ansible-playbook provision.yml walks the whole playbook — nginx on the web group, postgres on the db group — in a single command. Idempotent too: run it again and it just confirms everything's already done.",
+     "on_win": "Every server configured with one command. The fleet matches the playbook."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "run", "title": "test it on localhost",
+     "expect": ["curl localhost:8080", "curl http://localhost:8080"],
+     "cmd_hint": "curl localhost:8080",
+     "say": "Test your running app by fetching localhost port 8080.",
+     "why": "This is the browser test, in terminal form: when a service runs locally, you reach it at localhost and a port. curl localhost:8080 is exactly what your browser does when you type that address — it returns the page. (Offline here, so the response is simulated, but the loop is real: deploy, then hit localhost to see it live.)",
+     "on_win": "A 200 and a page back. Deploy, then test on localhost — that's the real-world check before anything ships."},
+
+    {"module": "IaC: One Command, Whole Stack", "kind": "info", "title": "IaC is the whole job",
+     "say": "You've now done the full IaC loop: describe everything in files, build it with one command, tear it down and rebuild, and test it on localhost.",
+     "why": "Infrastructure-as-code is the discipline that makes the cloud reproducible: files describe the system, commands make it real, and the same files rebuild it identically anywhere. Terraform builds the machines, Ansible configures them, and curl proves they work. That's how real teams ship, every day."},
 ]
 
 
