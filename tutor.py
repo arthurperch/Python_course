@@ -97,6 +97,47 @@ CAT_FRAMES = [
 ]
 CAT_STYLE = "bold #ff9d00"
 
+# ── menu banner art ────────────────────────────────────────────────────────
+# "TUTOR" in thick block letters — animated through random colors on the menu.
+_TUTOR_LETTERS = {
+    "T": ["█████", "  █  ", "  █  ", "  █  ", "  █  ", "  █  "],
+    "U": ["█   █", "█   █", "█   █", "█   █", "█   █", " ███ "],
+    "O": [" ███ ", "█   █", "█   █", "█   █", "█   █", " ███ "],
+    "R": ["████ ", "█   █", "████ ", "█ █  ", "█  █ ", "█   █"],
+}
+_TUTOR_ART = [" ".join(_TUTOR_LETTERS[c][r] for c in "TUTOR") for r in range(6)]
+_TUTOR_COLORS = ["#f9a8d4", "#ff9d00", "#4ade80", "#60a5fa",
+                 "#c084fc", "#f472b6", "#22d3ee", "#a3e635"]
+
+# The bash greeting's skull art (banner-art.txt), shrunk ~50% like bash does.
+_BASH_ART_RAW = """\
+      :+sMs.
+  `:ddNMd-                         -o--`
+ -sMMMMh:                          `+N+``
+ yMMMMMs`     .....-/-...           `mNh/
+ yMMMMMmh+-`:sdmmmmmmMmmmmddy+-``./ddNMMm
+ yNMMNMMMMNdyyNNMMMMMMMMMMMMMMMhyshNmMMMm
+ :yMMMMMMMMMNdooNMMMMMMMMMMMMMMMMNmy:mMMd
+  +MMMMMMMMMmy:sNMMMMMMMMMMMMMMMMMMMmshs-
+  :hNMMMMMMN+-+MMMMMMMMMMMMMMMMMMMMMMMs.
+ .omysmNNhy/+yNMMMMMMMMMMNMMMMMMMMMNdNNy-
+ /hMM:::::/hNMMMMMMMMMMMm/-yNMMMMMMN.mMNh`
+.hMMMMdhdMMMMMMMMMMMMMMmo  `sMMMMMMN mMMm-
+:dMMMMMMMMMMMMMMMMMMMMMdo+  oMMMMMMN`smMNo`
+/dMMMMMMMMMMMMMMMMMMMMMNd/` :yMMMMMN:-hMMM.
+:dMMMMMMMMMMMMMMMMMMMMMNh`  oMMMMMMNo/dMNN`
+:hMMMMMMMMMMMMMMMMMMMMMMNs--sMMMMMMMNNmy++`
+ sNMMMMMMMMMMMMMMMMMMMMMMMmmNMMMMMMNho::o.
+ :yMMMMMMMMMMMMMNho+sydNNNNNNNmysso/` -//
+  /dMMMMMMMMMMMMMs-  ````````..``
+   .oMMMMMMMMMMMMNs`               ./y:`
+     +dNMMNMMMMMMMmy`          ``./ys.
+      `/hMMMMMMMMMMMNo-``    `.+yy+-`
+        `-/hmNMNMMMMMMmmddddhhy/-`
+            `-+oooyMMMdsoo+/:.
+"""
+_BASH_ART = [ln[::2] for ln in _BASH_ART_RAW.splitlines()[::2]]
+
 # Challenges are grouped by difficulty. Each challenge:
 #   expect = substrings that must appear in the (lowercased) OUTPUT
 #   need   = substrings that must appear in the CODE (a technique to use)
@@ -20415,6 +20456,7 @@ class TutorApp(App):
         self._sync_settings_checkboxes()
         self._sync_name_field()
         self._sync_back_button()
+        self._start_menu_anim()
 
     def _show_challenge(self):
         self.mode = "challenge"
@@ -21566,13 +21608,31 @@ class TutorApp(App):
         self.query_one("#menu-preview-inner", Static).update(t)
 
     def _banner_text(self):
-        # plain text header — no ASCII art (the animated cat was removed)
         t = Text()
-        t.append("PYTHON TUTOR", style="bold #f9a8d4")
+        # title — bold thick
+        t.append("Cracked Programmer", style="bold #f9a8d4")
         name = self.p.get("name", "")
         if name:
             t.append("  ·  ", style="dim")
             t.append(f"welcome back, {name}", style="bold #ff9d00")
+        t.append("\n")
+        # big "TUTOR" block art (animated random color) + the bash skull (yellow)
+        tutor_color = random.choice(_TUTOR_COLORS)
+        tutor_h = len(_TUTOR_ART)
+        tutor_w = len(_TUTOR_ART[0])
+        bash_h = len(_BASH_ART)
+        h = max(tutor_h, bash_h)
+        top = (h - tutor_h) // 2  # center TUTOR against the taller bash art
+        for row in range(h):
+            t.append("  ", style="")
+            if top <= row < top + tutor_h:
+                t.append(_TUTOR_ART[row - top], style="bold " + tutor_color)
+            else:
+                t.append(" " * tutor_w, style="")
+            t.append("    ", style="")
+            if row < bash_h:
+                t.append(_BASH_ART[row], style="#fbbf24")
+            t.append("\n")
         return t
 
     def _start_menu_anim(self):
@@ -21588,7 +21648,7 @@ class TutorApp(App):
     def _menu_anim_tick(self):
         if not self.is_mounted:
             return
-        self._menu_frame = (self._menu_frame + 1) % len(CAT_FRAMES)
+        self._menu_frame += 1
         try:
             self.query_one("#menu-banner", Static).update(self._banner_text())
         except Exception:
