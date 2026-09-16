@@ -19472,7 +19472,7 @@ class TutorApp(App):
     #dev-explain-summary { width: 100%; height: auto; }
     #dev-explain-cmd { width: 100%; height: auto; }
     #dev-explain-legend { width: 100%; height: auto; }
-    TokenChip { height: 1; padding: 0 1; }
+    TokenChip { width: auto; height: 1; padding: 0 1; }
     TokenChip:hover { background: $surface; }
     #dev-expl-detail { layer: overlay; width: 60%; height: auto; max-height: 72%; border: tall $accent; background: #0d1117; padding: 1 2; display: none; align-horizontal: center; align-vertical: middle; overflow: auto; }
     #dev-expl-detail.visible { display: block; }
