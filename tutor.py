@@ -5862,11 +5862,9 @@ class VimEditor(Static):
             if i > self.scroll_top:
                 t.append("\n")
             line = self.buffer[i]
-            # relative line numbers like LazyVim (current line = its number, others = distance)
-            if i == self.cursor_row:
-                num = str(i + 1)
-            else:
-                num = str(abs(i - self.cursor_row))
+            # absolute line numbers (1, 2, 3…) — relative numbers read as "line 0"
+            # and confuse beginners who then think the cursor is on a hidden line
+            num = str(i + 1)
             t.append(f"{num:>2} ", style="dim")
             if i == self.cursor_row:
                 col = min(self.cursor_col, len(line))
@@ -19455,7 +19453,7 @@ class TutorApp(App):
     #editor-label.normal { background: #313244; }
     #editor-label.insert { background: #1e6b3f; }
     #editor { height: 1fr; min-height: 8; padding: 0 1; background: #1e1e2e; }
-    #output-scroll { height: 4; border-top: solid #313244; background: #11111b; }
+    #output-scroll { height: 6; border-top: solid #313244; background: #11111b; }
     #out-drag { height: 1; background: #313244; }
     #out-drag:hover { background: $accent; }
     #output { height: auto; padding: 0 1; }
@@ -22892,7 +22890,7 @@ class TutorApp(App):
                 "primary" if self._lab_show_lab else "default")
         except Exception:
             pass
-        keys = "ctrl+t toggle · ctrl+h ← left · ctrl+l → right"
+        keys = "ctrl+t toggle · ctrl+h/l move"
         try:
             self.query_one("#lab-tabs-hint", Static).update(
                 Text.from_markup(f"[dim]{keys}[/]"))
@@ -31154,8 +31152,8 @@ class TutorApp(App):
         except Exception:
             pass
 
-    def _autosize_console(self, scroll_id: str, renderable, base: int = 4,
-                          maxh: int = 16) -> None:
+    def _autosize_console(self, scroll_id: str, renderable, base: int = 6,
+                          maxh: int = 22) -> None:
         """Grow a console to fit its output (small when empty, expands on print,
         capped so it never eats the whole screen)."""
         try:
