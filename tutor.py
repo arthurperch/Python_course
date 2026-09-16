@@ -5874,20 +5874,23 @@ class VimEditor(Static):
                     line_body = line
                 before = highlight_line(line_body[:col])
                 after = highlight_line(line_body[col + 1:])
-                # the character under the cursor — or a blank cell if we're past EOL,
-                # so the cursor is ALWAYS visible even on an empty line
+                # the character under the cursor — or a FULL BLOCK on a blank cell,
+                # so the cursor is ALWAYS visible on an empty line (a trailing
+                # space's background gets trimmed and the block vanishes)
                 ch = line_body[col] if col < len(line_body) else " "
+                blank = (ch == " ")
+                if blank:
+                    ch = "█"
                 # cursorline: subtle bg on the whole current line (red-tinted if flagged)
                 hl = "on #3a1a1a" if (i + 1) in self.hint_lines else "on #2b2b2b"
                 before.stylize(hl)
                 after.stylize(hl)
                 if self.mode == "insert":
-                    # nvim insert mode = a solid GREEN block (Bean wants a block
-                    # cursor while typing, never a thin underline)
-                    cur_style = "black on #22c55e bold"
+                    # nvim insert mode = a solid GREEN block
+                    cur_style = "#22c55e bold" if blank else "black on #22c55e bold"
                 else:
-                    # nvim normal mode = a solid block, always visible even on a blank cell
-                    cur_style = "black on #e6e6e6 bold"
+                    # nvim normal mode = a solid block
+                    cur_style = "#e6e6e6 bold" if blank else "black on #e6e6e6 bold"
                 t.append_text(before)
                 t.append(ch, style=cur_style)
                 t.append_text(after)
@@ -21647,31 +21650,29 @@ class TutorApp(App):
 
     def _banner_text(self):
         t = Text()
-        # big "TUTOR" block art (animated random color) on the left; the
-        # center-right holds pacman pellets + the title + the compact skull.
+        # big "TUTOR" block art (animated random color) on the left; the pellets +
+        # "Cracked Programmer" sit IN FRONT of (to the left of) the skull.
         tutor_color = random.choice(_TUTOR_COLORS)
         tutor_h = len(_TUTOR_ART)
         tutor_w = len(_TUTOR_ART[0])
-        right = []
-        # the skull (yellow) sits at the top of the right block
-        for ln in _BASH_ART:
-            right.append(Text(ln, style="#fbbf24"))
-        # gap, then the pacman pellets + title near the bottom of the frame
-        right.append(Text(""))
+        front = []
         pm = Text()
         for i in range(5):
             if i:
                 pm.append("  ", style="")
             pm.append("●", style="bold " + random.choice(_TUTOR_COLORS))
-        right.append(pm)
+        front.append(pm)
         title = Text()
         title.append("Cracked Programmer", style="bold #f9a8d4")
+        front.append(title)
         name = self.p.get("name", "")
         if name:
-            title.append("  ·  ", style="dim")
-            title.append(f"welcome back, {name}", style="bold #ff9d00")
-        right.append(title)
-        h = max(tutor_h, len(right))
+            wb = Text()
+            wb.append(f"welcome back, {name}", style="dim")
+            front.append(wb)
+        skull = [Text(ln, style="#fbbf24") for ln in _BASH_ART]
+        front_w = max((len(x.plain) for x in front), default=0)
+        h = max(tutor_h, len(skull), len(front))
         top = (h - tutor_h) // 2
         for row in range(h):
             t.append("  ", style="")
@@ -21680,8 +21681,17 @@ class TutorApp(App):
             else:
                 t.append(" " * tutor_w, style="")
             t.append("    ", style="")
-            if row < len(right):
-                t.append_text(right[row])
+            if row < len(front):
+                f = front[row]
+                t.append_text(f)
+                pad = front_w - len(f.plain)
+                if pad > 0:
+                    t.append(" " * pad, style="")
+            else:
+                t.append(" " * front_w, style="")
+            t.append("  ", style="")
+            if row < len(skull):
+                t.append_text(skull[row])
             t.append("\n")
         return t
 
@@ -22045,25 +22055,26 @@ class TutorApp(App):
                 self._render_menu()
 
     def _scroll_to_top(self):
-        """Smooth-jump the active page to the top (menu list, else the editor)."""
+        """Jump the active list/editor UP one page."""
         try:
             if self.mode == "menu":
-                self.query_one("#menu-list", VerticalScroll).scroll_home(animate=True)
+                self.query_one("#menu-list", VerticalScroll).scroll_page_up(animate=True)
             else:
                 ed = self.query_one("#editor", VimEditor)
-                ed.scroll_top = 0
+                ed.scroll_top = max(0, ed.scroll_top - ed.visible_rows)
                 ed._redraw()
         except Exception:
             pass
 
     def _scroll_to_bottom(self):
-        """Smooth-jump the active page to the bottom (menu list, else the editor)."""
+        """Jump the active list/editor DOWN one page."""
         try:
             if self.mode == "menu":
-                self.query_one("#menu-list", VerticalScroll).scroll_end(animate=True)
+                self.query_one("#menu-list", VerticalScroll).scroll_page_down(animate=True)
             else:
                 ed = self.query_one("#editor", VimEditor)
-                ed.scroll_top = max(0, len(ed.buffer) - ed.visible_rows)
+                ed.scroll_top = min(max(0, len(ed.buffer) - ed.visible_rows),
+                                    ed.scroll_top + ed.visible_rows)
                 ed._redraw()
         except Exception:
             pass
