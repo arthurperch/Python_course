@@ -8297,6 +8297,7 @@ class AwsEnv:
         self.cloudwatch_metrics = {}  # "namespace/metric" -> list of value strings
         self.cloudwatch_alarms = {}   # alarm name -> {"metric","threshold","state"}
         self.rds_instances = {}       # identifier -> {"engine","class","status"}
+        self.db_snapshots = {}        # snapshot -> {"source","engine"}
         self.elb = {}                 # lb name -> {"arn","targets":[]}
         self.cloudfront = {}          # dist id -> {"origin","domain"}
         self.apigateway = {}          # api name -> {"id","deployed"}
@@ -8716,6 +8717,47 @@ class AwsEnv:
             ident = d.get("db-instance-identifier", "")
             self.rds_instances.pop(ident, None)
             return [], []
+        if cmd == "create-db-snapshot":
+            d = _aws_flags(args[1:])
+            snap = d.get("db-snapshot-identifier", "snap")
+            src = d.get("db-instance-identifier", "")
+            if src not in self.rds_instances:
+                return [], [f"An error occurred (DBInstanceNotFound): {src}"]
+            self.db_snapshots[snap] = {"source": src, "engine": self.rds_instances[src]["engine"]}
+            return [f"DBSnapshot {snap} of {src} creating..."], []
+        if cmd == "describe-db-snapshots":
+            if not self.db_snapshots:
+                return ["DBSnapshots: []"], []
+            return [f"{s}  from {d['source']}  {d['engine']}"
+                    for s, d in sorted(self.db_snapshots.items())], []
+        if cmd == "restore-db-instance-from-db-snapshot":
+            d = _aws_flags(args[1:])
+            ident = d.get("db-instance-identifier", "db-restored")
+            snap = d.get("db-snapshot-identifier", "")
+            if snap not in self.db_snapshots:
+                return [], [f"An error occurred (DBSnapshotNotFound): {snap}"]
+            self.rds_instances[ident] = {"engine": self.db_snapshots[snap]["engine"],
+                                          "class": "db.t3.micro", "status": "available",
+                                          "restored_from": snap}
+            return [f"DBInstance {ident} restoring from snapshot {snap}..."], []
+        if cmd == "create-db-instance-read-replica":
+            d = _aws_flags(args[1:])
+            ident = d.get("db-instance-identifier", "db-replica")
+            src = d.get("source-db-instance-identifier", "")
+            if src not in self.rds_instances:
+                return [], [f"An error occurred (DBInstanceNotFound): {src}"]
+            self.rds_instances[ident] = {"engine": self.rds_instances[src]["engine"],
+                                          "class": self.rds_instances[src]["class"],
+                                          "status": "available", "replica_of": src}
+            return [f"DBInstance {ident} read replica of {src} creating..."], []
+        if cmd == "modify-db-instance":
+            d = _aws_flags(args[1:])
+            ident = d.get("db-instance-identifier", "")
+            if ident not in self.rds_instances:
+                return [], [f"An error occurred (DBInstanceNotFound): {ident}"]
+            if "db-instance-class" in d:
+                self.rds_instances[ident]["class"] = d["db-instance-class"]
+            return [f"DBInstance {ident} modified."], []
         return [], [f"aws rds: unknown command '{cmd}'"]
 
     def _elb(self, args):
@@ -13185,6 +13227,77 @@ DEV_LESSONS = [
     {"module": "Observe: Metrics & Logs", "kind": "info", "title": "metrics + logs = observability",
      "say": "Query the metric to spot the problem, read the logs to explain it, curl to confirm it, alarm it so it pages you next time.",
      "why": "Real observability has a third pillar — traces — that follows one request across services. But the core loop is this: metrics (what), logs (why), and an outside-in check (is it actually up). You now run all three, and you arm alarms so the system watches itself while you sleep."},
+
+    # ==== Databases: Backups & Scale =======================================
+    {"module": "Databases: Backups & Scale", "kind": "info", "title": "the data is the business",
+     "say": "A server can be rebuilt in minutes. A database, if it's lost, is gone forever. Now you'll learn the three things that keep a database safe: backups, replicas, and scaling.",
+     "why": "The data IS the business — code can be re-cloned, but customer records, orders, and money cannot. So senior engineers build three habits around databases: snapshot (a point-in-time backup), replica (a live standby for reads and failover), and scale (a bigger instance when it gets slow). This module runs all three."},
+
+    {"module": "Databases: Backups & Scale", "kind": "run", "title": "create the database",
+     "verify": lambda c: c.startswith("aws rds create-db-instance") and "prod-db" in c,
+     "cmd_hint": "aws rds create-db-instance --db-instance-identifier prod-db --engine postgres --db-instance-class db.t3.micro",
+     "say": "Create a managed Postgres database called prod-db.",
+     "why": "create-db-instance stands up a managed database: the engine (Postgres, MySQL…), a size (db.t3.micro), and a name you'll use for everything else. AWS runs it, patches it, and — crucially — lets you snapshot it.",
+     "on_win": "prod-db is up. Now protect it."},
+
+    {"module": "Databases: Backups & Scale", "kind": "run", "title": "snapshot it",
+     "verify": lambda c: c.startswith("aws rds create-db-snapshot") and "snap1" in c and "prod-db" in c,
+     "cmd_hint": "aws rds create-db-snapshot --db-snapshot-identifier snap1 --db-instance-identifier prod-db",
+     "say": "Take a point-in-time backup: snapshot prod-db as snap1.",
+     "why": "A snapshot is a frozen copy of the database at this instant. If someone runs a bad migration and wipes a table, the snapshot is your undo. You snapshot before any risky change — the database equivalent of 'save before you edit'.",
+     "on_win": "snap1 is a frozen copy of prod-db. A bad day is now recoverable."},
+
+    {"module": "Databases: Backups & Scale", "kind": "run", "title": "see the snapshots",
+     "expect": ["aws rds describe-db-snapshots"],
+     "cmd_hint": "aws rds describe-db-snapshots",
+     "say": "List your snapshots.",
+     "why": "describe-db-snapshots is the backup inventory — what you have to restore from. Before you touch anything risky, you check this to confirm a recent snapshot exists. A backup you haven't verified might as well not exist.",
+     "on_win": "snap1 is there, from prod-db. You're covered."},
+
+    {"module": "Databases: Backups & Scale", "kind": "run", "title": "restore from a snapshot",
+     "verify": lambda c: c.startswith("aws rds restore-db-instance-from-db-snapshot") and "prod-db-2" in c and "snap1" in c,
+     "cmd_hint": "aws rds restore-db-instance-from-db-snapshot --db-instance-identifier prod-db-2 --db-snapshot-identifier snap1",
+     "say": "Restore prod-db-2 from the snap1 snapshot.",
+     "why": "Restore turns a snapshot back into a live database. This is disaster recovery in one command: new instance, same data, from the moment you snapshotted. It's also how you clone a database for testing — restore a snapshot and you have a full copy.",
+     "on_win": "prod-db-2 is a live copy of prod-db at snapshot time."},
+
+    {"module": "Databases: Backups & Scale", "kind": "run", "title": "add a read replica",
+     "verify": lambda c: c.startswith("aws rds create-db-instance-read-replica") and "prod-db-ro" in c and "prod-db" in c,
+     "cmd_hint": "aws rds create-db-instance-read-replica --db-instance-identifier prod-db-ro --source-db-instance-identifier prod-db",
+     "say": "Create a read replica called prod-db-ro off prod-db.",
+     "why": "A read replica is a live, read-only copy that stays in sync. Reads go to the replica, writes go to the primary — so your database handles more traffic, and if the primary dies you can promote the replica. This is how databases scale and survive.",
+     "on_win": "prod-db-ro is following prod-db. Reads can now scale out."},
+
+    {"module": "Databases: Backups & Scale", "kind": "run", "title": "scale it up",
+     "verify": lambda c: c.startswith("aws rds modify-db-instance") and "prod-db" in c and "db.t3.large" in c,
+     "cmd_hint": "aws rds modify-db-instance --db-instance-identifier prod-db --db-instance-class db.t3.large",
+     "say": "Scale prod-db up to a larger instance class.",
+     "why": "When the database gets slow, you either scale out (add replicas) or scale up (a bigger instance). modify-db-instance swaps in more CPU/RAM. This is the 'turn it up' knob for a database that's outgrown its size.",
+     "on_win": "prod-db is bigger now. Scale up is done — no downtime needed."},
+
+    {"module": "Databases: Backups & Scale", "kind": "challenge", "title": "backup, replica, scale — from memory",
+     "say": "From memory: create a database app-db (mysql), snapshot it as app-snap, add a read replica app-ro, then scale app-db up to db.t3.large.",
+     "why": "This is the full database-safety loop, in order: build it, back it up, replicate it for reads, scale it for load. When you can run it from memory, you can keep a database safe under pressure.",
+     "recall": "create-db-instance → create-db-snapshot → create-db-instance-read-replica → modify-db-instance.",
+     "hint": "create app-db, snapshot app-snap, read replica app-ro, then modify app-db to db.t3.large.",
+     "tools": ["aws rds create-db-instance --db-instance-identifier app-db",
+               "aws rds create-db-snapshot --db-snapshot-identifier app-snap",
+               "aws rds create-db-instance-read-replica --db-instance-identifier app-ro",
+               "aws rds modify-db-instance --db-instance-identifier app-db"],
+     "verify_lab": lambda lab: "app-db" in lab.aws.rds_instances
+                               and "app-snap" in lab.aws.db_snapshots
+                               and "app-ro" in lab.aws.rds_instances
+                               and lab.aws.rds_instances["app-ro"].get("replica_of") == "app-db"
+                               and lab.aws.rds_instances["app-db"]["class"] == "db.t3.large",
+     "replay": ["aws rds create-db-instance --db-instance-identifier app-db --engine mysql",
+                "aws rds create-db-snapshot --db-snapshot-identifier app-snap --db-instance-identifier app-db",
+                "aws rds create-db-instance-read-replica --db-instance-identifier app-ro --source-db-instance-identifier app-db",
+                "aws rds modify-db-instance --db-instance-identifier app-db --db-instance-class db.t3.large"],
+     "on_win": "Backed up, replicated, and scaled — from memory. The database is safe."},
+
+    {"module": "Databases: Backups & Scale", "kind": "info", "title": "backup, replicate, scale, migrate",
+     "say": "Snapshot before risky changes, replicate for reads and failover, scale when it slows — and migrate with a plan.",
+     "why": "The fourth habit is migration: changing the schema. The safe pattern is snapshot → apply the change → verify → if it breaks, restore. You now have every piece of that loop. Real production databases run on exactly these four verbs: backup, replicate, scale, migrate."},
 ]
 
 
@@ -25691,6 +25804,8 @@ class TutorApp(App):
             s[f"alarm {name}"] = a["state"]
         for ident, db in lab.aws.rds_instances.items():
             s[f"db {ident}"] = db["engine"]
+        for snap, d in lab.aws.db_snapshots.items():
+            s[f"snapshot {snap}"] = d["source"]
         for name, lb in lab.aws.elb.items():
             s[f"lb {name}"] = str(len(lb["targets"])) + " targets"
         for iid, d in lab.aws.cloudfront.items():
