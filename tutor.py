@@ -5894,11 +5894,12 @@ class VimEditor(Static):
                 before.stylize(hl)
                 after.stylize(hl)
                 if self.mode == "insert":
-                    # nvim insert mode = a solid GREEN block
-                    cur_style = "#22c55e bold" if blank else "black on #22c55e bold"
+                    # nvim insert mode = a solid GREEN block (fg+bg so the cell
+                    # fills regardless of how the font draws the █ glyph)
+                    cur_style = "#22c55e on #22c55e bold" if blank else "black on #22c55e bold"
                 else:
-                    # nvim normal mode = a solid block
-                    cur_style = "#e6e6e6 bold" if blank else "black on #e6e6e6 bold"
+                    # nvim normal mode = a solid white block
+                    cur_style = "#ffffff on #ffffff bold" if blank else "black on #ffffff bold"
                 t.append_text(before)
                 t.append(ch, style=cur_style)
                 t.append_text(after)
