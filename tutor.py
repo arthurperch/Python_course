@@ -14422,10 +14422,15 @@ def _slot(seed: str) -> int:
 
 def _mk_q(q, choices, ans, concept, level, why, say, again, deeper=None):
     """One quiz question. `again`/`deeper` are the alternative explanations the
-    retrain loop speaks after a wrong answer — each deeper than the last."""
+    retrain loop speaks after a wrong answer — each deeper than the last.
+    Both fall back to `why` so a question never carries a None explanation
+    (the retrain TTS does `speak("Incorrect. " + teach)`, which crashes on
+    None)."""
+    again = again or why
+    deeper = deeper or again
     return {"q": q, "choices": choices, "ans": ans, "concept": concept,
             "level": level, "why": why, "say": say, "again": again,
-            "deeper": deeper or again}
+            "deeper": deeper}
 
 
 def _place(choices, slot, correct):
