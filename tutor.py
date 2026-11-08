@@ -16941,6 +16941,347 @@ INTERVIEW_QUESTIONS = [
        "1 TB (10^12) ÷ 2^30 ≈ 931 GiB — same bytes, different units.",
        "TB is decimal, GiB is binary — same disk.",
        "The drive holds 1,000,000,000,000 bytes. The OS divides by 1024³ (GiB), giving ~931. No space is missing — it's a unit-labeling mismatch between decimal TB and binary GiB."),
+
+    # ---- ROLE TRACKS — Linux Systems / Network / Azure (each concept has
+    # exactly 2 wordings, so the bank grows toward 150 base questions) -------- #
+    _Q("A server boots to an emergency shell. Which log do you check first?",
+       ["journalctl -b -1 (the previous boot's journal)", "the DNS cache", "the firewall rules", "/etc/passwd"],
+       0, "linux-boot", 1,
+       "The previous boot's journal shows what failed during that boot — the starting point for a boot problem.",
+       "journalctl -b -1 = what the last boot saw.",
+       "For a boot failure, look at the boot that failed: journalctl -b -1 shows its logs, including the service or mount that aborted the boot."),
+    _Q("The system drops into initramfs with 'unable to mount root'. Where's the problem?",
+       ["the root filesystem can't be found — wrong device/initramfs config", "the CPU is bad", "the hostname is wrong", "a cron job failed"],
+       0, "linux-boot", 1,
+       "'unable to mount root' means the kernel couldn't find or mount the root FS — device path, driver, or initramfs.",
+       "can't mount root = root device/driver/initramfs problem.",
+       "initramfs loads the drivers to mount the real root. If it can't, the root device is wrong, the needed driver/module is missing from the initramfs, or the filesystem is corrupt."),
+    _Q("A filesystem shows 'No space left on device' but df says only 60% full. Why?",
+       ["you're out of inodes, not blocks", "df is lying", "the disk is encrypted", "the filesystem is read-only"],
+       0, "linux-disk", 2,
+       "df -i shows inode exhaustion — many tiny files use up inodes while blocks remain free.",
+       "60% full but 'no space' → check inodes (df -i).",
+       "Blocks and inodes are two separate limits. Millions of tiny files can exhaust inodes long before blocks fill. df -i is the diagnostic."),
+    _Q("df -i shows 100% inode usage. What's the likely cause and fix?",
+       ["too many small files (logs, caches) — find and clean them", "the CPU is pegged", "the network is down", "a service needs a restart"],
+       0, "linux-disk", 2,
+       "Inode exhaustion comes from many small files. Find the directory with the most and clean it.",
+       "inodes full = too many small files.",
+       "Log rotation that isn't running, or a cache directory exploding with tiny files, is the classic cause. find <dir> -type f | wc -l to locate, then clean up."),
+    _Q("Load average is 8 on a 2-core box, but CPU is idle. What does that mean?",
+       ["processes are stuck waiting (often on I/O), not consuming CPU", "the CPU is broken", "the box needs more RAM", "nothing is wrong"],
+       0, "linux-process", 2,
+       "Load counts runnable + uninterruptible processes — a high load with idle CPU means processes blocked on I/O or locks.",
+       "high load + idle CPU = blocked on I/O/locks.",
+       "Load average isn't CPU %: it counts processes runnable or in uninterruptible sleep. High load with idle CPU means threads waiting on disk I/O, network, or a lock."),
+    _Q("A process is 'D' state (uninterruptible sleep) and won't respond to kill -9. Why?",
+       ["it's blocked in a kernel syscall, usually I/O — it clears when the I/O completes", "it's a zombie", "kill -9 is the wrong signal", "the process is already dead"],
+       0, "linux-process", 2,
+       "D-state means blocked in the kernel (usually disk I/O). Signals are delivered after the syscall returns.",
+       "D state = stuck in kernel I/O; wait for the disk.",
+       "A process in uninterruptible sleep is inside a kernel call it can't be interrupted from — typically waiting on a slow or dead storage device. Fix the I/O, the process unwinds."),
+    _Q("A systemd unit has 'After=network.target' but still fails to bind the port at boot. What's the real fix?",
+       ["network.target means interfaces exist, not that they're configured — use After=network-online.target", "remove the After= line", "add a sleep", "disable the unit"],
+       0, "linux-service", 2,
+       "network.target ≠ network ready. Services that need a configured network use network-online.target.",
+       "network.target = present; network-online.target = configured.",
+       "network.target is reached when network *management* starts, not when addresses exist. A service that binds needs network-online.target (and Wants=network-online.target)."),
+    _Q("You want a service to restart automatically if it crashes, with a small delay. Which unit directives?",
+       ["Restart=on-failure and RestartSec=5", "KillMode=none", "ExecStop=/bin/true", "ConditionPathExists=!"],
+       0, "linux-service", 1,
+       "Restart=on-failure + RestartSec set the retry policy and delay.",
+       "Restart=on-failure, RestartSec=5.",
+       "Restart= controls when systemd restarts a unit; RestartSec= sets the delay between attempts. on-failure avoids restart loops on a clean stop."),
+    _Q("A VLAN is configured but a host on VLAN 30 can't reach another subnet. Which layer do you check first?",
+       ["the router/SVI — inter-VLAN traffic must be routed, and the SVI or gateway must exist", "the switch's spanning tree", "the host's MAC", "the cable color"],
+       0, "net-vlan", 2,
+       "Different VLANs are different subnets — crossing them needs a router (an SVI or a router with sub-interfaces).",
+       "VLANs don't route; an SVI/gateway does.",
+       "VLAN 30 is its own broadcast domain. To reach another subnet, traffic must go through a router — an SVI on the switch or a router-on-a-stick — which needs an address in each VLAN and a route."),
+    _Q("An access port and a trunk port differ how?",
+       ["access carries one VLAN untagged; trunk carries many VLANs tagged (802.1Q)", "they're identical", "access is faster", "trunk is for Wi-Fi"],
+       0, "net-vlan", 1,
+       "Access = one VLAN, untagged. Trunk = many VLANs, each tagged with 802.1Q.",
+       "access = one untagged VLAN; trunk = many tagged VLANs.",
+       "An access port belongs to a single VLAN and strips tagging. A trunk carries multiple VLANs between switches, each frame tagged so the far end knows its VLAN."),
+    _Q("Two routes to the same prefix: one from eBGP (AD 20), one from OSPF (AD 110). Which is installed?",
+       ["the eBGP route — lower administrative distance", "the OSPF route", "both, load-balanced", "neither"],
+       0, "net-bgp", 2,
+       "Lower AD wins for the same prefix: eBGP (20) beats OSPF (110).",
+       "lower AD wins — eBGP 20 < OSPF 110.",
+       "Administrative distance ranks route sources. For the identical prefix, the router installs the route from the source with the lowest AD."),
+    _Q("BGP's AS path attribute is used primarily to…",
+       ["prevent routing loops and pick shorter paths", "encrypt routes", "assign IP addresses", "set link speed"],
+       0, "net-bgp", 2,
+       "The AS path lists every AS a route crossed — loops are rejected, and shorter paths are preferred.",
+       "AS path = the route's trail; loops + length.",
+       "BGP prepends its own AS as a route passes, so a route that already lists your AS is a loop and dropped. Shorter paths are generally preferred."),
+    _Q("A stateless firewall ACL differs from a stateful firewall how?",
+       ["stateless checks each packet alone; stateful tracks connections and auto-allows replies", "they're the same thing", "stateful is slower", "stateless is newer"],
+       0, "net-acl", 2,
+       "Stateful remembers established connections so return traffic needs no extra rule; stateless evaluates every packet in isolation.",
+       "stateful = remembers; stateless = each packet alone.",
+       "A stateless ACL needs rules for both directions of every flow. A stateful firewall tracks sessions and permits established replies automatically."),
+    _Q("You need to allow return traffic for an outbound HTTPS request through a stateless ACL. What's required?",
+       ["an explicit rule permitting the reply (high source ports), since stateless won't remember the session", "nothing — replies are automatic", "only a DNS rule", "disable the ACL"],
+       0, "net-acl", 2,
+       "Stateless has no session memory — you must write the reply rule yourself (e.g. allow established/related or the ephemeral port range).",
+       "stateless = you write both directions.",
+       "Because each packet is judged alone, a stateless ACL can't infer that a reply belongs to an earlier request. You add the return-path rule explicitly."),
+    _Q("A layer-7 load balancer can do what a layer-4 one cannot?",
+       ["route by URL path, headers, or cookies", "forward TCP faster", "handle more connections", "work at the network layer"],
+       0, "net-lb", 1,
+       "L7 inspects application data (HTTP path/headers), so it can route by content; L4 only sees IP+port.",
+       "L7 = sees the URL; L4 = sees IP+port.",
+       "An L4 LB balances on IP/port tuples. An L7 LB terminates the HTTP/TLS and can route on path, host header, cookies, or content."),
+    _Q("Which load-balancing method sends each client consistently to the same backend?",
+       ["sticky sessions / source-IP hashing", "round-robin", "least connections", "random"],
+       0, "net-lb", 1,
+       "Sticky sessions (or source-IP affinity) keep one client on one backend across requests.",
+       "sticky = same client, same backend.",
+       "Round-robin and least-connections spread every request independently. Sticky sessions pin a client to a backend — needed when the backend keeps session state locally."),
+    _Q("An IPsec tunnel's two phases do what?",
+       ["IKE phase 1 authenticates and builds the secure channel; phase 2 builds the actual traffic SAs", "phase 1 encrypts data", "phase 2 sets the password", "they're for DNS"],
+       0, "net-vpn", 2,
+       "Phase 1 = authenticated control channel (IKE SA); phase 2 = the data SAs that carry traffic.",
+       "phase 1 = the channel; phase 2 = the traffic tunnel.",
+       "IKE phase 1 negotiates a protected channel to talk over; phase 2 negotiates the ESP SAs that actually encrypt/authenticate the traffic."),
+    _Q("ESP in tunnel mode encrypts…",
+       ["the whole original IP packet, wrapped in a new IP header", "only the port number", "only the MAC", "nothing"],
+       0, "net-vpn", 2,
+       "Tunnel mode encrypts the entire original IP packet and adds a new outer header.",
+       "ESP tunnel = the whole packet is encrypted.",
+       "In tunnel mode the original packet (header + payload) is encrypted and encapsulated behind a new IP header, hiding the real source and destination."),
+    _Q("Two Azure VNets need to talk. What connects them?",
+       ["VNet peering", "a VPN to the internet", "DNS", "a load balancer"],
+       0, "azure-vnet", 1,
+       "VNet peering links two VNets directly over the Azure backbone — no gateway needed.",
+       "peering = VNet-to-VNet.",
+       "VNet peering connects two VNets in the same or different regions over Azure's backbone, so resources reach each other on private IPs."),
+    _Q("An Azure resource needs to access a storage account without any stored credentials. What do you use?",
+       ["a managed identity (system- or user-assigned)", "a hardcoded access key", "a password in a config file", "a shared secret in the app"],
+       0, "azure-vnet", 1,
+       "Managed identities let a resource authenticate to Azure services with no credentials in code.",
+       "managed identity = no stored credentials.",
+       "A managed identity is an Azure AD identity tied to a resource. Grant it a role on the storage account and the resource authenticates automatically — no keys to leak."),
+
+    # ---- ROLE TRACKS — Kubernetes / SRE / Security / GPU / DevOps ----------- #
+    _Q("A pod keeps restarting. Which probe will tell you whether it's ready to serve traffic vs alive?",
+       ["readiness says 'serve traffic'; liveness says 'restart me'", "they're the same thing", "liveness handles DNS", "readiness kills the pod"],
+       0, "k8s-probe", 2,
+       "Readiness controls whether traffic is sent; liveness controls whether the container should be restarted.",
+       "readiness = route to me; liveness = keep me alive.",
+       "A failing liveness probe triggers a restart. A failing readiness probe removes the pod from the Service's endpoints but leaves it running — they serve different purposes."),
+    _Q("A Service has no endpoints even though pods are running. What's the most likely cause?",
+       ["a selector mismatch between the Service and the pods' labels", "the cluster is full", "the pods are too fast", "DNS is down"],
+       0, "k8s-probe", 2,
+       "A Service routes by label selector — no endpoints means no pods match its selector (or the pods aren't ready).",
+       "no endpoints = selector mismatch or not ready.",
+       "The Service matches pods by labels. If the selector doesn't match the pod labels — or the pods' readiness probe fails — the endpoint list is empty."),
+    _Q("A Deployment scales replicas 3→5 but pods stay at 3. What limits it?",
+       ["a resource quota or the HPA overriding your manual scale", "the node's hostname", "the namespace color", "nothing, it's instant"],
+       0, "k8s-hpa", 2,
+       "A ResourceQuota caps the namespace, or the HorizontalPodAutoscaler re-scales to its own target.",
+       "quota or HPA overrides manual scale.",
+       "Two common causes: a namespace ResourceQuota that caps pods, or an HPA that immediately reconciles the replica count back to its target based on load."),
+    _Q("The HPA targets 70% CPU but the pod has no CPU request set. What happens?",
+       ["the HPA can't compute utilization — pods need CPU requests to be autoscaled", "it scales to infinity", "it uses RAM instead", "it sets requests automatically"],
+       0, "k8s-hpa", 2,
+       "HPA computes CPU % from the pod's request; without a request it has no denominator.",
+       "no CPU request = HPA can't autoscale.",
+       "The autoscaler needs a target utilization, which requires the pod to declare a CPU request. Without it, HPA reports it can't compute the metric."),
+    _Q("A pod's data must survive node restarts and be writable by one pod at a time. Which volume?",
+       ["a PersistentVolumeClaim bound to a ReadWriteOnce volume", "emptyDir", "a ConfigMap", "a secret"],
+       0, "k8s-pvc", 1,
+       "A PVC requests durable storage; ReadWriteOnce gives one writer and survives the pod.",
+       "PVC = durable; RWO = one writer.",
+       "emptyDir dies with the pod. A PersistentVolumeClaim binds to a PersistentVolume (e.g. a disk) that outlives the pod; ReadWriteOnce means a single node mounts it read-write."),
+    _Q("Why do you usually NOT use hostPath for critical state?",
+       ["it's tied to one node — the pod breaks if rescheduled elsewhere", "it's encrypted", "it's too fast", "it's read-only by default"],
+       0, "k8s-pvc", 1,
+       "hostPath pins data to a specific node's disk; rescheduling the pod elsewhere loses it.",
+       "hostPath = stuck to one node.",
+       "hostPath mounts a path on the node's own disk. If the pod is rescheduled to another node, that path isn't there — fine for node-level tools, wrong for app state."),
+    _Q("A Deployment update goes bad and you must recover. What's the cleanest rollback?",
+       ["kubectl rollout undo deployment/<name>", "delete the cluster", "kubectl delete pods", "manually edit each pod"],
+       0, "k8s-rollout", 1,
+       "kubectl rollout undo reverts to the previous ReplicaSet — the one-command rollback.",
+       "rollout undo = back to the last good version.",
+       "Deployments keep a history of ReplicaSets. rollout undo steps back to the previous revision instantly; rollout history shows the versions available."),
+    _Q("A rolling update with maxUnavailable=0 means…",
+       ["no pod goes down during the update — new pods come up first", "the update is instant", "all pods restart at once", "the update is paused forever"],
+       0, "k8s-rollout", 2,
+       "maxUnavailable=0 guarantees zero downtime by replacing pods only after new ones are ready.",
+       "maxUnavailable=0 = zero downtime.",
+       "With maxUnavailable=0, Kubernetes never drops below the desired count: it adds the new version, waits until it's ready, then retires old pods."),
+    _Q("An SLO of 99.9% monthly availability means…",
+       ["about 43 minutes of allowed downtime per month", "zero downtime ever", "43 hours of downtime", "99.9 requests per second"],
+       0, "sre-slo", 1,
+       "99.9% over a month ≈ 43 minutes of allowed unavailability (the error budget).",
+       "99.9% = ~43 min/month of error budget.",
+       "The error budget is the downtime your SLO tolerates: 0.1% of a month ≈ 43 minutes. Stay within it and you can ship; exceed it and you freeze changes."),
+    _Q("What's the difference between an SLO and an SLA?",
+       ["an SLO is an internal target; an SLA is a contractual promise with consequences", "they're identical", "SLA is internal", "SLO has legal penalties"],
+       0, "sre-slo", 2,
+       "SLO = internal reliability goal; SLA = the customer-facing contract with penalties if missed.",
+       "SLO = goal; SLA = contract.",
+       "You set SLOs to drive engineering. An SLA is the external agreement (often with credits if breached) that your SLOs are designed to comfortably satisfy."),
+    _Q("During an incident, what do you do FIRST?",
+       ["stop the bleeding — mitigate and stop user impact before root-causing", "find who to blame", "write the postmortem", "immediately roll back everything"],
+       0, "sre-incident", 1,
+       "Mitigate first: restore service, then investigate the root cause without time pressure.",
+       "mitigate, then investigate.",
+       "The first priority is stopping user harm — often a rollback, traffic shift, or failover. Root-cause analysis comes after service is restored."),
+    _Q("A blameless postmortem focuses on…",
+       ["the system and process failures that allowed the incident, not individual fault", "firing the engineer", "who typed the command", "the fastest fix"],
+       0, "sre-incident", 1,
+       "Blameless postmortems study contributing causes and process gaps so the same class of failure can't recur.",
+       "blameless = fix the system, not the person.",
+       "Humans make errors; systems should absorb them. A blameless review asks what process, tooling, or safety net was missing — not who to punish."),
+    _Q("What's a burn rate, and why alert on it?",
+       ["how fast you're consuming the error budget — it catches a fast slide toward SLO breach", "the CPU temperature", "the request rate", "the disk usage"],
+       0, "sre-burnrate", 2,
+       "Burn rate = error budget consumed per unit time. A high burn rate means you'll breach the SLO soon.",
+       "burn rate = error budget draining too fast.",
+       "If you burn 2% of the monthly budget in an hour, you're heading for breach. Multi-window burn-rate alerts (short + long) catch both fast and slow failures."),
+    _Q("You've burned 50% of the error budget in one day. What's the response?",
+       ["freeze risky changes and focus on reliability until the burn rate is back to normal", "ship faster", "ignore it", "lower the SLO mid-month"],
+       0, "sre-burnrate", 2,
+       "Heavy burn means stop risk-taking (freeze releases) and stabilize, or you breach the SLO.",
+       "burned the budget → freeze and stabilize.",
+       "The error budget is your change budget. Burn it fast and the correct move is to stop shipping risk and spend the time on reliability."),
+    _Q("What is 'toil' in SRE?",
+       ["manual, repetitive, automatable work with no enduring value", "hard technical work", "writing docs", "on-call itself"],
+       0, "sre-toil", 1,
+       "Toil is manual, repetitive work that scales with the system and could be automated.",
+       "toil = repetitive manual work worth automating.",
+       "Toil is the work you have to do over and over by hand — restarting, clicking, re-running — that could be automated. SRE's job is to engineer it away."),
+    _Q("The best response to growing toil is…",
+       ["automate or eliminate it, and measure how much engineering time it consumes", "hire more people to do it", "accept it as normal", "defer it forever"],
+       0, "sre-toil", 1,
+       "Reduce toil by automating it — and track it, because toil that isn't measured keeps growing.",
+       "automate the toil away.",
+       "If toil is unbounded, adding headcount just adds toil-doers. The goal is to automate it and free engineers for work that improves the system."),
+    _Q("An attacker supplies a URL in a request and the server fetches it. What's the risk?",
+       ["SSRF — the server reaches internal services on the attacker's behalf", "SQL injection", "a race condition", "nothing"],
+       0, "sec-ssrf", 2,
+       "Server-Side Request Forgery: a server fetching a user-supplied URL can be made to hit internal-only endpoints.",
+       "SSRF = the server fetches for the attacker.",
+       "If your server fetches a URL the user controls, they can point it at localhost or the internal network — reading metadata services, hitting admin endpoints, exfiltrating data."),
+    _Q("Which defense most effectively stops SSRF?",
+       ["an allow-list of permitted hosts/URLs and blocking internal ranges", "longer URLs", "more RAM", "a bigger timeout"],
+       0, "sec-ssrf", 2,
+       "Validate against an allow-list and refuse private/link-local/loopback targets.",
+       "allow-list the fetch targets.",
+       "Blocklists are brittle (people forget ranges). The robust fix is an allow-list of exactly what the server may fetch, and blocking 127.0.0.0/8, 169.254.0.0/16, and 10/8, 172.16/12, 192.168/16."),
+    _Q("What does a parameterized query prevent?",
+       ["SQL injection — user input can't be interpreted as SQL", "password reuse", "DNS poisoning", "buffer overflow"],
+       0, "sec-sqli", 1,
+       "Parameterized queries separate code from data, so input is always treated as a value, never SQL.",
+       "parameterize = input can't become SQL.",
+       "The fix is to send the SQL structure and the values separately. The database then never parses user input as code, so injection is structurally impossible."),
+    _Q("Which input is the classic SQL injection probe?",
+       ["' OR '1'='1", "SELECT * FROM help", "help;", "admin:admin"],
+       0, "sec-sqli", 1,
+       "' OR '1'='1 changes the query's WHERE clause to always be true.",
+       "' OR '1'='1 — the always-true probe.",
+       "Dropping a quote plus an always-true condition reveals whether input is concatenated into SQL: if the app returns everything, it's vulnerable."),
+    _Q("Zero-trust networking assumes…",
+       ["no implicit trust by location — every request is authenticated and authorized", "the LAN is safe", "the firewall blocks everything", "only VPN users matter"],
+       0, "sec-zero-trust", 2,
+       "Zero trust means treat every request as untrusted regardless of network position.",
+       "zero trust = no free pass for being 'inside'.",
+       "The old perimeter model trusted anything inside the LAN. Zero trust requires identity, authorization, and encryption on every request — inside or out."),
+    _Q("Which practice best embodies least privilege?",
+       ["grant only the permissions each identity needs, for as long as it needs them", "give everyone admin for speed", "use one shared root account", "disable all logging"],
+       0, "sec-zero-trust", 1,
+       "Least privilege = minimal permissions, granted just-in-time and revoked when done.",
+       "least privilege = the minimum, just-in-time.",
+       "Least privilege shrinks the blast radius of a compromise: an identity can only do what its role requires, nothing more."),
+    _Q("Where should secrets like DB passwords live in production?",
+       ["a secret manager (Vault, KMS, cloud secret store), not in code or env files", "in the git repo", "hardcoded in the app", "in a shared spreadsheet"],
+       0, "sec-secrets", 1,
+       "Secrets belong in a secrets manager with access control and rotation — never in source.",
+       "secrets in a vault, not in git.",
+       "Anything committed or hardcoded leaks eventually. A secret manager centralizes them with audit, access control, and rotation."),
+    _Q("Why rotate secrets regularly?",
+       ["to limit the window a leaked credential stays usable", "to annoy developers", "to make them longer", "because compliance requires deleting them"],
+       0, "sec-secrets", 1,
+       "Rotation bounds how long a stolen credential remains valid.",
+       "rotation shrinks the stolen-credential window.",
+       "If a key leaks, its useful life ends when it rotates. Regular (ideally automatic) rotation limits the damage window."),
+    _Q("CUDA cores are optimized for…",
+       ["thousands of simple parallel operations at once", "single-threaded sequential code", "fast disk I/O", "network routing"],
+       0, "gpu-cuda", 1,
+       "A GPU is a massively parallel processor — thousands of cores doing simple math simultaneously.",
+       "GPU = many cores, one simple job each.",
+       "A GPU trades per-core complexity for core count: thousands of lightweight cores run the same instruction across many data elements (SIMT), which is why it dominates matrix math."),
+    _Q("Why is a GPU far faster than a CPU for matrix multiplication?",
+       ["it runs thousands of multiply-adds in parallel, while a CPU has few cores", "higher clock speed", "more RAM", "faster disks"],
+       0, "gpu-cuda", 1,
+       "Matrix math is embarrassingly parallel; the GPU's thousands of cores do it all at once.",
+       "parallelism, not clock speed.",
+       "A matrix multiply is many independent multiply-adds. The GPU's massive core count does them simultaneously; the CPU's few fast cores do them one at a time."),
+    _Q("VRAM is needed for…",
+       ["holding model weights and activations on the GPU", "the operating system", "storing logs", "network buffers"],
+       0, "gpu-vram", 2,
+       "VRAM holds the model and its working data on-card, so the GPU never waits on system RAM.",
+       "VRAM = the model lives on the card.",
+       "Weights, activations, and gradients must sit in VRAM for the GPU to access them at full speed. Spilling to system RAM over PCIe is a massive slowdown."),
+    _Q("A model 'doesn't fit in VRAM'. Which is the correct fix, not a workaround?",
+       ["shard or quantize the model, or use a larger GPU", "add more system RAM", "add faster disks", "buy more CPUs"],
+       0, "gpu-vram", 2,
+       "VRAM is the constraint — shard across GPUs, quantize to fewer bits, or get more VRAM.",
+       "VRAM-bound → shard/quantize/bigger GPU.",
+       "System RAM and disk can't substitute for VRAM bandwidth. The real fixes are model parallelism, quantization, or a GPU with more memory."),
+    _Q("Two identical GPUs give very different benchmark results. What do you check first?",
+       ["PCIe link width, thermals/throttling, and whether one card is in a slower slot", "the wallpaper", "the monitor", "the keyboard"],
+       0, "gpu-benchmark", 2,
+       "Same model, different results → check the environment: PCIe width, cooling/throttling, power limits.",
+       "same GPU, different score → check link + thermals.",
+       "Benchmarks are only comparable under identical conditions. A card in an x1 slot, a thermally-throttled card, or a power-limit difference will skew the result."),
+    _Q("What makes a GPU benchmark result trustworthy?",
+       ["controlled, repeatable conditions and a before/after baseline on the same workload", "running it once", "the highest number", "the vendor's marketing"],
+       0, "gpu-benchmark", 2,
+       "A valid result needs a controlled setup, a stable baseline, and repeatability.",
+       "trust = controlled + repeatable.",
+       "A single run with unknown conditions proves nothing. You need the same workload, same settings, a recorded baseline, and enough runs to rule out noise."),
+    _Q("A GPU reporting PCIe x1 instead of x16 means…",
+       ["it's running at a fraction of its bandwidth — often a reseating or slot problem", "it's overclocked", "it's a better card", "nothing"],
+       0, "gpu-pcie", 2,
+       "x1 vs x16 is a huge bandwidth cut — usually a card not fully seated, a bad riser, or the wrong slot.",
+       "x1 instead of x16 = bandwidth starved.",
+       "PCIe width is negotiated per link. A card that dropped to x1 is starved for data — reseat it, check the riser, or move it to a full-width slot."),
+    _Q("Which GPU workload is most sensitive to PCIe bandwidth?",
+       ["frequent CPU↔GPU data transfers (small batches, data loading)", "one large matrix multiply", "a single inference", "idle time"],
+       0, "gpu-pcie", 2,
+       "Workloads that shuttle data over the bus (data loading, small batches) feel a narrow PCIe link most.",
+       "frequent transfers = PCIe-bound.",
+       "A compute-bound kernel that keeps everything on-card doesn't care about PCIe. But constant host↔device transfers (data loading, small-batch training) bottleneck on the bus."),
+    _Q("You run terraform plan and it shows a change to a resource nobody touched. What is this?",
+       ["drift — the real environment changed outside Terraform, and plan is correcting it", "a bug in your code", "the state is perfect", "terraform is guessing"],
+       0, "tf-drift", 2,
+       "Drift: someone changed a resource out-of-band; plan shows the diff to bring it back to the declared state.",
+       "plan showing unexpected change = drift.",
+       "Terraform compares the desired state to reality. An unexpected diff means reality drifted — someone edited the console, or a manual change happened. Plan reveals it."),
+    _Q("How do you safely handle drift on a critical resource?",
+       ["read the plan, understand the change, and decide to apply or fix the source — never blind-apply", "terraform apply -auto-approve", "delete the state file", "ignore it"],
+       0, "tf-drift", 2,
+       "Investigate the drift first; apply only when you understand what and why it changed.",
+       "read the plan before applying.",
+       "A drift diff can destroy a manually-applied fix. Understand what changed and why before you let Terraform reconcile it — otherwise apply could undo something important."),
+    _Q("A deploy breaks prod and users are affected. What's the first recovery move?",
+       ["roll back to the last known-good version, then investigate", "start a long debugging session on prod", "wait to see if it self-heals", "delete the monitoring"],
+       0, "devops-rollback", 1,
+       "Recover first: roll back to the last good release, then debug in a safe environment.",
+       "roll back, then debug.",
+       "Restoring service comes before understanding the bug. Roll back (blue/green, canary, or a git revert), confirm users are healthy, then reproduce and fix offline."),
+    _Q("What makes a rollback safe rather than risky?",
+       ["it's tested, one-command, and reversible (versioned artifacts/immutable images)", "editing files live on the server", "a rollback nobody has run before", "praying"],
+       0, "devops-rollback", 2,
+       "A safe rollback is rehearsed, one command, and points at a known-good immutable artifact.",
+       "safe rollback = tested + one command.",
+       "If the rollback path has never been exercised, it's not a plan — it's a hope. Immutable images and versioned deploys make 'go back' a deterministic command."),
     ]
 
 
@@ -17230,6 +17571,44 @@ INTERVIEW_SCENARIOS = [
 def _iv_pick_scenario():
     """One scenario, chosen at random (the learner can cycle with `s`)."""
     return random.choice(INTERVIEW_SCENARIOS)
+
+
+# Role tracks: each role maps to a list of concept prefixes. A question belongs
+# to a role if its concept equals a prefix or starts with "<prefix>-". "All"
+# (prefixes=None) matches everything. Roles overlap by design — a concept can
+# appear in several tracks without duplicating progress (mastery keys on the
+# concept, not the role).
+INTERVIEW_ROLES = [
+    ("All", None),
+    ("Linux Systems", ["linux", "systemctl", "systemd", "journalctl", "chmod",
+                       "chown", "ps", "kill", "ssh", "bash", "permission",
+                       "boot", "disk", "process", "service"]),
+    ("Cloud & AWS", ["aws", "azure", "cloud", "ec2", "s3", "lambda", "rds",
+                     "iam", "vpc", "dynamo", "sqs", "sns", "blob", "rg"]),
+    ("Network Engineer", ["net", "dns", "routing", "subnet", "vlan", "ospf",
+                          "bgp", "tcp", "ipv6", "mac", "arp", "nat",
+                          "firewall", "stp", "packet", "lpm", "sprint", "acl",
+                          "lb", "vpn"]),
+    ("DevOps & CI/CD", ["git", "ansible", "tf", "terraform", "cicd", "ci",
+                        "docker", "jenkins", "pipeline", "devops", "dev-iac"]),
+    ("Platform / Kubernetes", ["k8s", "kubernetes", "pod", "svc", "deploy",
+                               "probe", "hpa", "pvc", "rollout", "helm"]),
+    ("SRE & Observability", ["sre", "observ", "prometheus", "latency", "units",
+                             "incident", "toil", "slo", "burn"]),
+    ("Identity & Security", ["identity", "security", "rbac", "vault", "ssrf",
+                             "sql", "leastpriv", "sec", "dev-leastpriv",
+                             "dev-secrets", "fin-security", "fin-encryption"]),
+    ("GPU / AI Infra", ["gpu", "cuda", "pcie", "dcgm", "nvidia", "vram",
+                        "benchmark"]),
+    ("General & Compliance", ["fin", "dev", "behavioral", "teamwork", "career"]),
+]
+
+
+def _iv_role_match(concept: str, prefixes) -> bool:
+    """Does `concept` belong to a role defined by `prefixes`?  None = all."""
+    if prefixes is None:
+        return True
+    return any(concept == p or concept.startswith(p + "-") for p in prefixes)
 
 
 # =========================================================================== #
@@ -20916,6 +21295,9 @@ class TutorApp(App):
         self._iv_on = False           # INTERVIEW PREP overlay open
         self._iv_mode = "mc"          # "mc" | "card" | "scenario" (company sim)
         self._iv_scenario = None      # active INTERVIEW_SCENARIOS entry
+        self._iv_conf = None          # per-question confidence: "know"|"unsure"|"guess"
+        self._iv_conf_wrong: list = []  # confidently-wrong concepts this session
+        self._iv_role = 0             # index into INTERVIEW_ROLES (the track)
         self._iv_pool: list = []      # questions for the current round
         self._iv_i = 0                # index into _iv_pool
         self._iv_pick = None          # mc: the option the learner has selected
@@ -30057,6 +30439,7 @@ class TutorApp(App):
             self._iv_mode = mode
         if self._iv_mode == "scenario":
             self._iv_scenario = _iv_pick_scenario()
+        self._iv_role = self.p.get("iv_role", 0) % len(INTERVIEW_ROLES)
         self._iv_on = True
         self._iv_pool = self._iv_build_pool()
         self._iv_i = 0
@@ -30064,6 +30447,8 @@ class TutorApp(App):
         self._iv_flipped = False
         self._iv_review = []
         self._iv_wrong = []
+        self._iv_conf = None
+        self._iv_conf_wrong = []
         self._iv_n = 0
         self._iv_right = 0
         self._iv_done = False
@@ -30083,17 +30468,25 @@ class TutorApp(App):
         Scenario mode plays one company's diagnostic chain, in order."""
         if self._iv_mode == "scenario":
             return list((self._iv_scenario or {}).get("nodes", []))
+        _role_name, prefixes = INTERVIEW_ROLES[self._iv_role]
         by_concept = {}
         for q in INTERVIEW_QUESTIONS:
-            by_concept.setdefault(q["concept"], []).append(q)
+            if _iv_role_match(q["concept"], prefixes):
+                by_concept.setdefault(q["concept"], []).append(q)
+        cw = set(self.p.get("iv_confident_wrong", {}).keys())
         weak = set(self.p.get("iv_weak", {}).keys())
-        pool_weak, pool_rest = [], []
+        pool_cw, pool_weak, pool_rest = [], [], []
         for concept, qs in by_concept.items():
             q = random.choice(qs)   # one of the 2 variants, chosen at random
-            (pool_weak if concept in weak else pool_rest).append(q)
-        random.shuffle(pool_weak)
-        random.shuffle(pool_rest)
-        return pool_weak + pool_rest
+            if concept in cw:
+                pool_cw.append(q)
+            elif concept in weak:
+                pool_weak.append(q)
+            else:
+                pool_rest.append(q)
+        for pool in (pool_cw, pool_weak, pool_rest):
+            random.shuffle(pool)
+        return pool_cw + pool_weak + pool_rest
 
     def _iv_cur(self):
         if not self._iv_pool:
@@ -30169,11 +30562,18 @@ class TutorApp(App):
             self._iv_answer(int(k) - 1)
         elif self._iv_pick is None and k in ("a", "b", "c", "d"):
             self._iv_answer("abcd".index(k))
+        elif self._iv_pick is None and k in ("k", "u", "t"):
+            self._iv_conf = {"k": "know", "u": "unsure", "t": "guess"}[k]
+            self._iv_render()
         elif self._iv_pick is None and self._iv_mode == "mc" and k == "f":
             self._iv_mode = "card"
             self._iv_flipped = False
             self._iv_render()
             self._iv_speak_current()
+        elif self._iv_pick is None and self._iv_mode == "mc" and k == "n":
+            self._iv_role = (self._iv_role + 1) % len(INTERVIEW_ROLES)
+            self.p["iv_role"] = self._iv_role
+            self._iv_begin("mc")
         elif self._iv_pick is None and k == "s":
             self._iv_begin("scenario")
 
@@ -30207,6 +30607,10 @@ class TutorApp(App):
             self._iv_wrong.append(q["concept"])
             if self._iv_mode != "scenario":
                 self._iv_review.append(q)
+            if self._iv_conf == "know":
+                cw = self.p.setdefault("iv_confident_wrong", {})
+                cw[q["concept"]] = cw.get(q["concept"], 0) + 1
+                self._iv_conf_wrong.append(q["concept"])
             self._iv_msg = (f"✗ the answer is {q['choices'][q['ans']]} — "
                             f"{q['why']}")
             self._iv_msg_kind = "retrain"
@@ -30251,6 +30655,7 @@ class TutorApp(App):
                 save_progress(self.p)
         self._iv_pick = None
         self._iv_flipped = False
+        self._iv_conf = None
         self._iv_render()
         self._iv_speak_current()
 
@@ -30289,7 +30694,12 @@ class TutorApp(App):
             t.append(" INTERVIEW PREP ", style="bold #11111b on #7dd3fc")
             mode = "multiple choice" if self._iv_mode == "mc" else "flashcards"
             t.append(f"  {mode} ", style="bold #7dd3fc")
+            role_name = INTERVIEW_ROLES[self._iv_role][0]
+            if role_name != "All":
+                t.append(f"·  {role_name} ", style="bold #c792ea")
         t.append(f"·  {self._iv_right}/{self._iv_n} right ", style="#d5d5d5")
+        if self._iv_conf:
+            t.append(f"·  conf: {self._iv_conf} ", style="bold #c792ea")
         if self._iv_done:
             pct = (100 * self._iv_right // self._iv_n) if self._iv_n else 0
             t.append(f"·  {pct}% ", style="bold #22c55e")
@@ -30337,6 +30747,12 @@ class TutorApp(App):
                          style="dim")
             else:
                 t.append("Perfect run — every answer right.", style="#d5d5d5")
+            if self._iv_conf_wrong:
+                cw = sorted(set(self._iv_conf_wrong))
+                t.append("\n\nconfidently wrong (you were sure): ",
+                         style="bold #ff5555")
+                t.append(", ".join(cw), style="#ff5555")
+                t.append("\n", style="#ff5555")
             t.append("\n\nEnter — start a fresh round   ·   Esc — menu", style="dim")
             self.query_one("#iv-question", Static).update(t)
             return
@@ -30450,7 +30866,7 @@ class TutorApp(App):
                 t.append("next question in a moment — any key to skip", style="bold #22c55e")
         else:
             if self._iv_pick is None:
-                t.append("1-4 — answer   ·   f — flashcards   ·   s — scenario   ·   Esc — menu",
+                t.append("1-4 — answer   ·   k/u/t — know/unsure/guess   ·   n — track   ·   f — flashcards   ·   s — scenario   ·   Esc — menu",
                          style="bold #7dd3fc")
             else:
                 t.append("next question in a moment — any key to skip", style="bold #22c55e")
