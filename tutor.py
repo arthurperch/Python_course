@@ -16865,6 +16865,82 @@ INTERVIEW_QUESTIONS = [
        "GitOps: the repo is the single source of truth, so every change is a reviewed commit and rollback is a previous revision.",
        "Repo-as-truth = every change reviewed + reversible. That's the auditor's evidence.",
        "Direct server edits have no review trail and no rollback. GitOps makes both structural: you can't change prod except through a reviewed commit, and you can't get stuck because a revert exists in history."),
+
+    # ---- UNITS & ESTIMATION — bits↔bytes, transfer time, growth, percentiles,
+    # allocated vs used. Every concept has exactly 2 wordings (the interview
+    # variant mechanic). Real numbers, so the learner internalizes the 125 MB/s
+    # reality check and the decimal-vs-binary trap. --------------------------- #
+    _Q("A 1 Gbps link transfers roughly how many megabytes per second, before overhead?",
+       ["125 MB/s", "8 MB/s", "1000 MB/s", "1 GB/s"], 0, "units-bits", 0,
+       "1 Gbps = 1000 Mbps ÷ 8 bits per byte = 125 MB/s.",
+       "Divide by 8 — 1000 Mbps is 125 MB/s.",
+       "Network speed is in bits, files are in bytes. 1 Gbps is 1000 megabits per second; divide by 8 and you get 125 megabytes per second — and that's before protocol overhead."),
+    _Q("Why does a 'gigabit' connection never actually move 1 GB in one second?",
+       ["a gigabit is 1/8 of a gigabyte, and overhead eats more", "it's broken", "because of the firewall", "GB and Gb are the same thing"],
+       0, "units-bits", 0,
+       "A gigabit (Gb) is 1/8 of a gigabyte (GB) — 1 Gbps ≈ 125 MB/s, and real protocols add overhead on top.",
+       "Gb ≠ GB: bits vs bytes, 8 to 1.",
+       "'Gb' is bits, 'GB' is bytes. A 1 Gbps link moves ~125 MB/s best case; TCP/IP + framing overhead drops it further. That's the whole reason a 1 GB file takes ~10+ seconds, not 1."),
+    _Q("Roughly how long to move 100 GB over a 1 Gbps link at full speed (ignore overhead)?",
+       ["about 800 seconds (~13 minutes)", "about 10 seconds", "about 8 hours", "about 1 second"],
+       0, "units-transfer", 1,
+       "100 GB ÷ 125 MB/s = 800 s.",
+       "100,000 MB ÷ 125 MB/s ≈ 800 s.",
+       "Estimate before you wait: 1 Gbps ≈ 125 MB/s, so 100 GB (100,000 MB) takes 100,000 ÷ 125 = 800 seconds ≈ 13 minutes — and more with overhead."),
+    _Q("A 500 Mbps link carries a 10 GB backup. How long, at full speed?",
+       ["about 160 seconds", "about 20 seconds", "about 5 seconds", "about 1600 seconds"],
+       0, "units-transfer", 1,
+       "500 Mbps = 62.5 MB/s; 10,000 MB ÷ 62.5 = 160 s.",
+       "500 Mbps = 62.5 MB/s → 160 seconds.",
+       "500 Mbps ÷ 8 = 62.5 MB/s. 10 GB = 10,000 MB, so 10,000 ÷ 62.5 = 160 seconds. Half the speed, double the time — same 8:1 logic."),
+    _Q("Storage grows 2% per month, compounding. 10 TB today. About how much in 12 months?",
+       ["~12.7 TB", "~10.2 TB", "~20 TB", "~14 TB"],
+       0, "units-storage", 1,
+       "10 × 1.02¹² ≈ 12.68 TB.",
+       "Compounding: 1.02 to the 12th is ~1.27.",
+       "Growth compounds: 1.02^12 ≈ 1.268, so 10 TB becomes ~12.7 TB. A flat 2%×12 would give 12.4 TB — compounding adds a little more, and it only accelerates."),
+    _Q("An app logs 5 GB per day. How much storage does a 30-day retention window need?",
+       ["150 GB", "5 GB", "30 GB", "600 GB"],
+       0, "units-storage", 1,
+       "5 GB/day × 30 days = 150 GB.",
+       "5 × 30 = 150 GB.",
+       "Simple arithmetic that catches people off guard: 5 GB/day × 30 days = 150 GB, and you budget headroom on top for spikes and index overhead."),
+    _Q("p50 latency is 100 ms but p99 is 800 ms. What does that tell you?",
+       ["a long tail — most requests are fast, the worst 1% are slow", "everything is slow", "the median is wrong", "the system is healthy"],
+       0, "units-latency", 2,
+       "The median is fine but the tail is heavy: 1% of requests are far slower.",
+       "p50 fast + p99 slow = a tail problem.",
+       "p50 is the median, p99 the worst 1%. A big gap means the average hides a slow tail — usually contention, GC pauses, or retries — so you optimize the tail, not the median."),
+    _Q("p50 is 10 ms but p99 is 2 seconds. Where do you look first?",
+       ["the slow tail — something stalls a small fraction of requests", "the median request", "the network cable", "nothing, 10 ms is fine"],
+       0, "units-latency", 2,
+       "A 2s p99 against a 10ms p50 means rare requests stall — chase the tail.",
+       "huge p50↔p99 gap = rare stalls, not the average.",
+       "A 200× gap between median and p99 means a small fraction of requests block on something — lock contention, cold cache, a slow dependency. The median can't show you that."),
+    _Q("A volume shows 1 TB allocated but only 200 GB used. Which number matters for capacity planning?",
+       ["both — usage (200 GB) plus its growth rate, not the allocation", "the 1 TB allocation", "neither", "only the 200 GB, forever"],
+       0, "units-allocated", 1,
+       "Allocated is the ceiling; used is what you consume. Plan on used + growth.",
+       "allocated is the limit, used is the reality.",
+       "Allocated ≠ used. The 1 TB is your ceiling, but the 200 GB used — and how fast it's growing — is what tells you when you'll actually run out."),
+    _Q("Kubernetes shows memory requests at 80% but actual usage at 30%. What's going on?",
+       ["the workloads are over-provisioned — requests exceed real usage", "the cluster is out of memory", "the metrics are broken", "usage will soon hit 80%"],
+       0, "units-allocated", 1,
+       "Requests are the reservation, usage is the reality — 80% reserved vs 30% used means over-provisioning.",
+       "requests = reserved, usage = real.",
+       "A request is a reservation, not consumption. 80% requested but 30% used means the team reserved far more than they need — the cluster looks full while sitting mostly idle."),
+    _Q("How many bytes are in 1 KiB?",
+       ["1024 bytes", "1000 bytes", "8 bytes", "1024 kilobytes"],
+       0, "units-iec", 0,
+       "1 KiB (kibibyte) = 2¹⁰ = 1024 bytes.",
+       "KiB = 1024, KB = 1000.",
+       "Binary vs decimal: KiB = 2^10 = 1024 bytes; KB = 10^3 = 1000 bytes. OSes and networking have historically mixed them, which is exactly why disk labels confuse people."),
+    _Q("A disk is sold as 1 TB but the OS shows ~931 GiB. Why?",
+       ["marketing TB is 10¹² bytes; the OS measures in 2³⁰ GiB", "the disk is defective", "the OS is wrong", "931 GiB is 931 × 1024 TB"],
+       0, "units-iec", 0,
+       "1 TB (10^12) ÷ 2^30 ≈ 931 GiB — same bytes, different units.",
+       "TB is decimal, GiB is binary — same disk.",
+       "The drive holds 1,000,000,000,000 bytes. The OS divides by 1024³ (GiB), giving ~931. No space is missing — it's a unit-labeling mismatch between decimal TB and binary GiB."),
     ]
 
 
@@ -17328,6 +17404,199 @@ LINUX_MISSIONS = [
           "idiom": "cat index.html",
           "check": lambda fs, out: any("welcome" in l for l in out)},
      ]},
+]
+
+
+# =========================================================================== #
+# EVIDENCE-FIRST INCIDENTS — a scored diagnostic conversation against a broken
+# ShellFS. The learner walks the Evidence-First loop: state a hypothesis,
+# choose a diagnostic command, interpret its output, apply the smallest
+# justified fix, then verify the result. Hypothesis/diagnostic/interpret/verify
+# are multiple-choice; the fix is typed and graded by OUTCOME. Wrong answers are
+# explained and never block. Reuses the LinuxDrillTrainer as a third mode
+# (menu slot -8, `i` from the done screen). Each phase carries a `phase` label
+# so the goal panel can name the step ("HYPOTHESIS", "DIAGNOSTIC", …).
+# =========================================================================== #
+
+INCIDENTS = [
+    {
+        "id": "web-down-reboot",
+        "name": "Web down after reboot",
+        "intro": "The web service came back after a reboot, but it's not running. "
+                 "Diagnose it, fix it, and prove it survives the next reboot.",
+        "setup": lambda fs: (
+            fs.services.__getitem__("web").__setitem__("state", "stopped"),
+            fs.services.__getitem__("web").__setitem__("enabled", False),
+            fs.services.__getitem__("web").__setitem__("logs", [
+                "web: failed at boot — unit not enabled",
+            ]),
+        ),
+        "phases": [
+            {"phase": "HYPOTHESIS", "kind": "what", "concept": "systemctl",
+             "q": "The web service is down after a reboot. What's your leading "
+                  "hypothesis?",
+             "choices": ["the service isn't enabled, so it never started at boot",
+                         "the disk is full",
+                         "the TLS certificate expired",
+                         "DNS is broken"],
+             "ans": 0,
+             "why": "A service that's fine before a reboot and gone after points "
+                    "straight at boot configuration — if it isn't enabled, "
+                    "nothing starts it.",
+             "say": "fine before reboot, gone after → check 'enabled'."},
+            {"phase": "DIAGNOSTIC", "kind": "what", "concept": "systemctl",
+             "q": "Which command gathers the discriminating evidence?",
+             "choices": ["systemctl status web",
+                         "ls /tmp",
+                         "ping 8.8.8.8",
+                         "df -h"],
+             "ans": 0,
+             "why": "systemctl status reports the unit's current state AND "
+                    "whether it's enabled — exactly the two things you need to "
+                    "test the hypothesis.",
+             "say": "status shows state + enabled/disabled."},
+            {"phase": "INTERPRET", "kind": "what", "concept": "systemctl",
+             "q": "systemctl status web → 'inactive (dead)', loaded, disabled. "
+                  "What does that establish?",
+             "choices": ["the unit exists but isn't running or enabled — a boot "
+                         "config problem, not a crash",
+                         "the unit is missing entirely",
+                         "the service crashed on a bad request",
+                         "the port is blocked"],
+             "ans": 0,
+             "why": "'inactive (dead)' + 'disabled' means the unit was never "
+                    "started at boot. It's a config gap, not a runtime failure.",
+             "say": "inactive + disabled = never started, not crashed."},
+            {"phase": "FIX", "kind": "do", "concept": "systemctl",
+             "prompt": "apply the smallest fix: start the service AND make it "
+                       "start at boot — one line",
+             "hint": "systemctl enable turns on boot; systemctl start runs it now",
+             "idiom": "systemctl enable web && systemctl start web",
+             "check": lambda fs, out: fs.services["web"]["enabled"]
+                 and fs.services["web"]["state"] == "running"},
+            {"phase": "VERIFY", "kind": "what", "concept": "systemctl",
+             "q": "How do you prove it's fixed AND survives the next reboot?",
+             "choices": ["systemctl is-enabled web (enabled) + status shows "
+                         "active (running)",
+                         "just trust it",
+                         "ping the server",
+                         "delete the service"],
+             "ans": 0,
+             "why": "Verification needs both halves: running now, and enabled so "
+                    "the next boot starts it. is-enabled + status give you both.",
+             "say": "verify now (running) and later (enabled)."},
+        ],
+    },
+    {
+        "id": "script-permission",
+        "name": "Script won't run",
+        "intro": "./deploy.sh returns 'Permission denied'. Diagnose why, fix it, "
+                 "and prove the script runs.",
+        "setup": lambda fs: fs.files.__setitem__(
+            fs._resolve("deploy.sh"), "#!/bin/bash\necho deployed\n"),
+        "phases": [
+            {"phase": "HYPOTHESIS", "kind": "what", "concept": "chmod",
+             "q": "./deploy.sh says 'Permission denied'. What's your hypothesis?",
+             "choices": ["the file isn't marked executable",
+                         "the script has a syntax error",
+                         "the disk is full",
+                         "the network is down"],
+             "ans": 0,
+             "why": "'Permission denied' on a script you're trying to run is "
+                    "almost always a missing execute bit — not a code bug.",
+             "say": "permission denied on a script → missing x bit."},
+            {"phase": "DIAGNOSTIC", "kind": "what", "concept": "chmod",
+             "q": "Which command shows the evidence?",
+             "choices": ["ls -l deploy.sh",
+                         "cat deploy.sh",
+                         "ps aux",
+                         "df -h"],
+             "ans": 0,
+             "why": "ls -l prints the permission bits — you can SEE whether the "
+                    "x bit is set.",
+             "say": "ls -l shows the rwx bits."},
+            {"phase": "INTERPRET", "kind": "what", "concept": "chmod",
+             "q": "ls -l → -rw-r--r-- (no x anywhere). What does that establish?",
+             "choices": ["no execute permission — chmod +x will fix it",
+                         "the file is empty",
+                         "the file is owned by root",
+                         "the file is a directory"],
+             "ans": 0,
+             "why": "-rw-r--r-- has no x bit for anyone, so the shell refuses to "
+                    "execute it. Add +x and it runs.",
+             "say": "no x bit = not executable."},
+            {"phase": "FIX", "kind": "do", "concept": "chmod",
+             "prompt": "make deploy.sh runnable",
+             "hint": "chmod +x adds the execute bit",
+             "idiom": "chmod +x deploy.sh",
+             "check": lambda fs, out: fs._resolve("deploy.sh") in fs.executable},
+            {"phase": "VERIFY", "kind": "what", "concept": "chmod",
+             "q": "What proves the fix worked?",
+             "choices": ["./deploy.sh runs and prints 'deployed'",
+                         "the file still exists",
+                         "ls shows the file",
+                         "the file is writable"],
+             "ans": 0,
+             "why": "Proof is execution: run the script and see it do its thing.",
+             "say": "run it — output is the proof."},
+        ],
+    },
+    {
+        "id": "runaway-process",
+        "name": "Runaway process",
+        "intro": "The host is slow and one process is eating the CPU. Find it, "
+                 "stop it, and prove it's gone.",
+        "setup": lambda fs: fs.processes.__setitem__(999, "python3 miner.py"),
+        "phases": [
+            {"phase": "HYPOTHESIS", "kind": "what", "concept": "ps",
+             "q": "The host is slow. What's your hypothesis?",
+             "choices": ["a runaway process is consuming CPU",
+                         "the disk is failing",
+                         "the network is saturated",
+                         "the time is wrong"],
+             "ans": 0,
+             "why": "A sudden slowdown with no other symptoms is most often one "
+                    "misbehaving process hogging CPU.",
+             "say": "slow host → find the CPU hog."},
+            {"phase": "DIAGNOSTIC", "kind": "what", "concept": "ps",
+             "q": "Which command finds the culprit?",
+             "choices": ["ps aux",
+                         "ls /home",
+                         "systemctl status web",
+                         "cat /etc/hosts"],
+             "ans": 0,
+             "why": "ps lists running processes — you spot the one eating CPU by "
+                    "name and PID.",
+             "say": "ps = who's running right now."},
+            {"phase": "INTERPRET", "kind": "what", "concept": "kill",
+             "q": "ps shows PID 999 running 'python3 miner.py'. What does that "
+                  "establish?",
+             "choices": ["PID 999 is the CPU hog — kill it",
+                         "the miner is a legitimate service",
+                         "nothing is wrong",
+                         "the PID is wrong"],
+             "ans": 0,
+             "why": "A 'miner' you didn't start is a red flag — the PID identifies "
+                    "exactly what to stop.",
+             "say": "name + PID = the thing to kill."},
+            {"phase": "FIX", "kind": "do", "concept": "kill",
+             "prompt": "stop the runaway process",
+             "hint": "kill takes a PID",
+             "idiom": "kill 999",
+             "check": lambda fs, out: 999 not in fs.processes},
+            {"phase": "VERIFY", "kind": "what", "concept": "kill",
+             "q": "What proves it's gone?",
+             "choices": ["ps no longer shows PID 999 (or kill again reports "
+                         "'no such process')",
+                         "the host rebooted",
+                         "the miner printed 'done'",
+                         "the network came back"],
+             "ans": 0,
+             "why": "Confirm with ps that the PID is gone — a second kill "
+                    "returning 'no such process' is the same proof.",
+             "say": "re-check ps — gone is gone."},
+        ],
+    },
 ]
 
 
@@ -20680,6 +20949,8 @@ class TutorApp(App):
         self._ld_mission = None       # current mission dict
         self._ld_mission_i = 0
         self._ld_mission_sel = 0      # which mission is next (cycles)
+        self._ld_incident = None      # current INCIDENTS dict (evidence-first)
+        self._ld_incident_sel = 0     # which incident is next (cycles)
         self._ld_pick = None          # WHAT drill: chosen option
         self._ld_adv_timer = None
         self._ld_gen = 0
@@ -30188,9 +30459,9 @@ class TutorApp(App):
 
     # -- LINUX DRILLS ------------------------------------------------------ #
     def _ld_begin(self, mode=None):
-        """Open the LINUX DRILLS overlay. `mode` = "drill" (default) or
-        "mission"."""
-        if mode in ("drill", "mission"):
+        """Open the LINUX DRILLS overlay. `mode` = "drill" (default),
+        "mission", or "incident" (evidence-first)."""
+        if mode in ("drill", "mission", "incident"):
             self._ld_mode = mode
         self._ld_on = True
         self._ld_fs = ShellFS()
@@ -30213,6 +30484,9 @@ class TutorApp(App):
         self.query_one("#ld", LinuxDrillTrainer).focus()
         self._ld_stop_pause()
         self._stop_menu_anim()
+        if self._ld_mode == "incident":
+            self._ld_start_incident()
+            return
         self._ld_setup_current()
         self._ld_render()
         self._ld_speak_prompt()
@@ -30230,13 +30504,19 @@ class TutorApp(App):
             if 0 <= self._ld_mission_i < len(steps):
                 return steps[self._ld_mission_i]
             return None
+        if self._ld_mode == "incident" and self._ld_incident:
+            phases = self._ld_incident["phases"]
+            if 0 <= self._ld_mission_i < len(phases):
+                return phases[self._ld_mission_i]
+            return None
         if 0 <= self._ld_i < len(self._ld_pool):
             return self._ld_pool[self._ld_i]
         return None
 
     def _ld_setup_current(self):
-        """Reset the fs for a fresh DO drill (drill mode); missions share one fs."""
-        if self._ld_mode == "mission":
+        """Reset the fs for a fresh DO drill (drill mode); missions/incidents
+        share one fs."""
+        if self._ld_mode in ("mission", "incident"):
             return
         task = self._ld_current()
         if task is None or task.get("kind") == "what":
@@ -30294,6 +30574,8 @@ class TutorApp(App):
                 self._ld_begin()
             elif k == "m":
                 self._ld_start_mission()
+            elif k == "i":
+                self._ld_start_incident()
             return
         task = self._ld_current()
         if task is None:
@@ -30430,6 +30712,22 @@ class TutorApp(App):
             self._ld_render()
             self._ld_speak_prompt()
             return
+        if self._ld_mode == "incident" and self._ld_incident:
+            self._ld_mission_i += 1
+            if self._ld_mission_i >= len(self._ld_incident["phases"]):
+                self._ld_msg = (f"🏁 incident '{self._ld_incident['name']}' resolved — "
+                                f"{self._ld_right}/{self._ld_n} phases correct. "
+                                "press i for another, m for missions, or Esc")
+                self._ld_msg_kind = "win"
+                self._ld_incident = None
+                self._ld_done = True
+                save_progress(self.p)
+                self._celebrate()
+            else:
+                self._ld_attempts = 0
+            self._ld_render()
+            self._ld_speak_prompt()
+            return
         # drill mode
         self._ld_i += 1
         if self._ld_i >= len(self._ld_pool):
@@ -30469,6 +30767,29 @@ class TutorApp(App):
         if self.voice_on:
             speak(m["intro"])
 
+    def _ld_start_incident(self):
+        """Launch an evidence-first incident (cycle through INCIDENTS)."""
+        if not INCIDENTS:
+            return
+        m = INCIDENTS[self._ld_incident_sel % len(INCIDENTS)]
+        self._ld_incident_sel += 1
+        self._ld_mode = "incident"
+        self._ld_incident = m
+        self._ld_mission_i = 0
+        self._ld_fs = ShellFS()
+        if m.get("setup"):
+            m["setup"](self._ld_fs)
+        self._ld_history = []
+        self._ld_attempts = 0
+        self._ld_n = 0
+        self._ld_right = 0
+        self._ld_done = False
+        self._ld_msg = ""
+        self._ld_msg_kind = ""
+        self._ld_render()
+        if self.voice_on:
+            speak(m["intro"])
+
     def _ld_exit(self):
         self._ld_stop_pause()
         save_progress(self.p)
@@ -30492,6 +30813,8 @@ class TutorApp(App):
         t.append(" LINUX DRILLS ", style="bold #11111b on #7ee787")
         if self._ld_mode == "mission" and self._ld_mission:
             t.append(f"  mission: {self._ld_mission['name']} ", style="bold #7ee787")
+        elif self._ld_mode == "incident" and self._ld_incident:
+            t.append(f"  incident: {self._ld_incident['name']} ", style="bold #7ee787")
         t.append(f"·  {self._ld_right}/{self._ld_n} ", style="#d5d5d5")
         if self._ld_review:
             t.append(f"·  {len(self._ld_review)} to re-ask ", style="bold #fbbf24")
@@ -30502,7 +30825,7 @@ class TutorApp(App):
         if self._ld_done:
             t.append("Session complete. ", style="bold #22c55e")
             t.append(f"{self._ld_right}/{self._ld_n} right.\n", style="#f0f0f5")
-            t.append("\nEnter — new round   ·   m — missions   ·   Esc — menu", style="dim")
+            t.append("\nEnter — new round   ·   m — missions   ·   i — incidents   ·   Esc — menu", style="dim")
             self.query_one("#ld-goal", Static).update(t)
             return
         task = self._ld_current()
@@ -30516,11 +30839,22 @@ class TutorApp(App):
                 st = "bold #22c55e" if i < self._ld_mission_i else ("bold #7ee787" if i == self._ld_mission_i else "dim")
                 t.append(f"{mark} ", style=st)
             t.append(f"  ({self._ld_mission_i + 1}/{total})\n\n", style="dim")
-        if task.get("kind") == "what":
+        elif self._ld_mode == "incident" and self._ld_incident:
+            total = len(self._ld_incident["phases"])
+            for i in range(total):
+                mark = "✓" if i < self._ld_mission_i else ("▸" if i == self._ld_mission_i else "·")
+                st = "bold #22c55e" if i < self._ld_mission_i else ("bold #7ee787" if i == self._ld_mission_i else "dim")
+                t.append(f"{mark} ", style=st)
+            t.append(f"  phase {self._ld_mission_i + 1}/{total}\n\n", style="dim")
+        if task.get("phase"):
+            t.append(f"{task['phase']}:\n\n", style="bold #ffa657")
+        elif task.get("kind") == "what":
             t.append("WHAT IS IT?\n\n", style="bold #ffa657")
-            t.append(task["q"], style="bold #f0f0f5")
         else:
             t.append("DO THIS:\n\n", style="bold #ffa657")
+        if task.get("kind") == "what":
+            t.append(task["q"], style="bold #f0f0f5")
+        else:
             t.append(task["prompt"], style="bold #f0f0f5")
         if self._ld_msg:
             style = ("bold #22c55e" if self._ld_msg_kind == "win"
@@ -30581,7 +30915,7 @@ class TutorApp(App):
             t.append("   ·   ", style="dim")
             t.append("graded by result, not exact wording", style="dim")
             if self._ld_mode == "drill":
-                t.append("   ·   m — missions", style="dim")
+                t.append("   ·   m — missions   ·   i — incidents", style="dim")
         self.query_one("#ld-foot", Static).update(t)
 
     # -- RECALL GYM -------------------------------------------------------- #
