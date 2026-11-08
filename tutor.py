@@ -16074,6 +16074,319 @@ NET_QUESTIONS += _gen_net_questions3()
 
 
 # =========================================================================== #
+# SUBNET SPRINT + PACKET PATH + ROUTING DECISIONS — the hands-on networking
+# practice layer.  Subnetting is drilled in BOTH directions (address → subnet
+# AND required hosts → prefix), packet travel is traced hop-by-hop
+# (MAC/IP/port), and forwarding is predicted from routing tables
+# (longest-prefix + administrative distance).  Every question reuses the _Q
+# schema so it flows through the same lessons, EXTRA DRILLS and TODAY'S REVIEW
+# queues as the rest of the NETWORK+ course.  Deterministic: no randomness —
+# the worked examples and distractor offsets are fixed, so replays are stable.
+# =========================================================================== #
+
+# (address, prefix) — canonical "block size" worked examples.  Network/broadcast
+# /usable-range are all computed from the address + prefix at import time, so
+# the numbers stay internally consistent no matter what examples get added.
+_SUBNET_SPRINT = [
+    ("192.168.10.77", 27),   # block 32: net .64, bcast .95, usable .65-.94
+    ("172.16.5.130", 26),    # block 64: net .128, bcast .191
+    ("10.20.0.45", 28),      # block 16: net .32, bcast .47
+    ("192.168.1.200", 25),   # block 128: net .128, bcast .255
+    ("10.10.10.100", 29),    # block 8: net .96, bcast .103
+    ("172.16.0.33", 30),     # block 4: net .32, bcast .35
+]
+
+# required hosts → smallest prefix (usable = 2^(32-p) − 2 must fit)
+_SUBNET_HOSTS_PREFIX = [
+    (2, 30), (5, 29), (12, 28), (25, 27), (50, 26), (60, 26),
+    (100, 25), (120, 25), (200, 24), (250, 24),
+]
+
+# the /24–/30 memory table: prefix, last mask octet, block size, usable hosts
+_SUBNET_TABLE = [
+    (24, 0, 256, 254), (25, 128, 128, 126), (26, 192, 64, 62),
+    (27, 224, 32, 30), (28, 240, 16, 14), (29, 248, 8, 6), (30, 252, 4, 2),
+]
+
+# every prefix the hosts table can produce (stable order for distractors)
+_SUBNET_ALL_PREFIXES = [30, 29, 28, 27, 26, 25, 24]
+
+
+def _gen_subnet_sprint() -> list:
+    qs = []
+    for ip, prefix in _SUBNET_SPRINT:
+        size = 2 ** (32 - prefix)
+        mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+        n = _ip_to_int(ip)
+        net = n & mask
+        bcast = net | (~mask & 0xFFFFFFFF)
+        first = net + 1
+        last = bcast - 1
+        nip = _int_to_ip(net)
+        bip = _int_to_ip(bcast)
+        fip = _int_to_ip(first)
+        lip = _int_to_ip(last)
+        next_net = _int_to_ip(net + size)
+        prev_net = _int_to_ip(net - size) if net - size >= 0 else next_net
+        flat_net = _int_to_ip(n & 0xFFFFFF00)  # the /24 net — "forgot to subnet"
+        # 1 — network address (block boundary at or below the host)
+        c, i = _place([bip, next_net, flat_net], _slot(f"snet{ip}{prefix}"), nip)
+        qs.append(_mk_q(
+            f"Subnet {ip}/{prefix} — what is the NETWORK address?",
+            c, i, "sprint-net", 1,
+            f"Block size {size}: the network is the block boundary at or below "
+            f"{ip} → {nip}.",
+            f"The network address is {nip}.",
+            f"Find the block: /{prefix} = {size} addresses. {ip}'s last octet "
+            f"lands inside the {size}-block at {nip} — network IDs always sit "
+            f"on a block boundary."))
+        # 2 — broadcast (network + block − 1)
+        c, i = _place([nip, lip, prev_net], _slot(f"sbcast{ip}{prefix}"), bip)
+        qs.append(_mk_q(
+            f"Subnet {ip}/{prefix} — what is the BROADCAST address?",
+            c, i, "sprint-bcast", 1,
+            f"Broadcast = network + block − 1 = {bip}.",
+            f"The broadcast is {bip}.",
+            f"Broadcast is the last address in the block: {nip} + {size} − 1 "
+            f"= {bip} — the 'all hosts, please listen' address."))
+        # 3 — usable range (network + 1 through broadcast − 1)
+        correct = f"{fip} – {lip}"
+        c, i = _place([f"{nip} – {bip}", f"{fip} – {bip}", f"{nip} – {lip}"],
+                      _slot(f"srange{ip}{prefix}"), correct)
+        qs.append(_mk_q(
+            f"Subnet {ip}/{prefix} — which range can hosts actually use?",
+            c, i, "sprint-range", 1,
+            f"First usable {fip}, last usable {lip} — the network and "
+            f"broadcast addresses are reserved.",
+            f"Usable hosts run {fip} through {lip}.",
+            f"Lose the network ({nip}) and broadcast ({bip}); hosts may use "
+            f"{fip} through {lip}."))
+
+    # reverse direction: required hosts → prefix
+    for hosts, prefix in _SUBNET_HOSTS_PREFIX:
+        size = 2 ** (32 - prefix)
+        usable = size - 2
+        wrongs = [f"/{p}" for p in _SUBNET_ALL_PREFIXES if p != prefix]
+        wrongs = wrongs[(_slot(f"shp{hosts}") * 2) % 4:][:3]
+        c, i = _place(wrongs, _slot(f"shp{hosts}"), f"/{prefix}")
+        qs.append(_mk_q(
+            f"You need {hosts} hosts on one subnet (plus network and "
+            f"broadcast). Smallest prefix?",
+            c, i, "sprint-hosts", 1,
+            f"/{prefix}: 2^{32 - prefix} = {size} addresses, {usable} usable — "
+            f"fits {hosts} with the least waste.",
+            f"Use /{prefix}.",
+            f"Add 2 for network + broadcast ({hosts + 2} addresses), round up "
+            f"to a power of two ({size}), and that's 2^{32 - prefix} → /{prefix}."))
+
+    # mask ↔ block-size memory table (the "each extra bit halves the block" rule)
+    for prefix, last_oct, block, usable in _SUBNET_TABLE:
+        wrongs = [str(b) for p, lo, b, u in _SUBNET_TABLE if b != block]
+        wrongs = wrongs[(_slot(f"stbl{prefix}") * 2) % 4:][:3]
+        c, i = _place(wrongs, _slot(f"stbl{prefix}"), str(block))
+        qs.append(_mk_q(
+            f"/{prefix} subnets step in blocks of how many addresses?",
+            c, i, "sprint-mask", 1,
+            f"/{prefix} block size = 2^{32 - prefix} = {block} (mask ends "
+            f".{last_oct}).",
+            f"Block size {block}.",
+            f"Every extra prefix bit halves the block. /{prefix} → "
+            f"2^{32 - prefix} = {block} addresses, {usable} usable."))
+
+    # /31 and /32 — the exceptions to "subtract two"
+    qs.append(_mk_q(
+        "How many usable host addresses does a /31 give?",
+        ["0", "2", "4", "1"], 1, "sprint-except", 2,
+        "A /31 is point-to-point: both addresses are usable (no network or "
+        "broadcast).",
+        "Two — /31 drops the broadcast rule.",
+        "RFC 3021 lets a /31 use both addresses on a point-to-point link, so "
+        "the usual 'subtract 2' rule does not apply."))
+    qs.append(_mk_q(
+        "What is a /32 in a routing table?",
+        ["a route to exactly one host", "a whole /24", "an unusable subnet",
+         "a broadcast route"], 0, "sprint-except", 2,
+        "A /32 names a single host — one specific address.",
+        "A /32 is one host, exactly.",
+        "A /32 route matches a single IP (think a VPN peer or a loopback). "
+        "It is the most specific route possible."))
+    return qs
+
+
+# ---- PACKET PATH — trace MAC / IP / port hop by hop ------------------------ #
+# The pasted-content rule to teach: "remote destination, local next hop."  A
+# frame always addresses the NEXT NIC's MAC while the packet keeps the far
+# host's IP; routers rewrite the frame each hop, NAT rewrites the IP at the
+# edge.  Concept family `packet-*`, surfaced through the troubleshooting,
+# routing, arp and nat topics.
+_PACKET_PATH_QS = [
+    _Q("Two PCs on the SAME LAN — 192.168.1.10 sends to 192.168.1.20. The "
+       "frame's destination MAC is…",
+       ["192.168.1.20's MAC", "the gateway's MAC", "192.168.1.20's IP",
+        "ff:ff:ff:ff:ff:ff"], 0, "packet-mac", 1,
+       "On one LAN, delivery is by MAC — the frame goes straight to the "
+       "destination NIC.",
+       "Same LAN → destination MAC is the target's own MAC.",
+       "Frames move by MAC inside a LAN, so the frame's destination MAC is "
+       "the actual host. The IP header names the end host end-to-end; the MAC "
+       "only names the next NIC."),
+    _Q("That same frame's destination IP is…",
+       ["192.168.1.20", "192.168.1.10", "the gateway's IP",
+        "no IP — frames are MAC-only"], 0, "packet-ip", 1,
+       "The IP header carries the end-to-end destination — 192.168.1.20 — "
+       "unchanged.",
+       "Destination IP stays 192.168.1.20 the whole way.",
+       "IP addresses the journey, MAC addresses the next hop. The packet "
+       "inside the frame keeps its destination IP even as the frame's MAC "
+       "changes at each hop."),
+    _Q("192.168.1.10 sends to 8.8.8.8 (a DIFFERENT network). The first "
+       "frame's destination MAC is…",
+       ["the default gateway's MAC", "8.8.8.8's MAC", "192.168.1.10's own "
+        "MAC", "the DNS server's MAC"], 0, "packet-gw", 1,
+       "Off-LAN traffic is framed to the gateway — the MAC of the router that "
+       "will carry it onward.",
+       "Different network → the frame goes to the gateway.",
+       "A host cannot MAC-address a device off its LAN. It frames the packet "
+       "to its default gateway, whose MAC it learns via ARP; the router then "
+       "re-frames it toward the destination."),
+    _Q("Still 192.168.1.10 → 8.8.8.8. The packet's destination IP is…",
+       ["8.8.8.8", "the gateway's IP", "192.168.1.10", "255.255.255.255"],
+       0, "packet-gw", 1,
+       "The destination IP stays 8.8.8.8 — only the frame's MAC is rewritten "
+       "to the gateway.",
+       "Destination IP is still 8.8.8.8.",
+       "The router forwards based on the IP, which never changes on the way "
+       "out. Only the link-layer (MAC) header is rewritten hop by hop."),
+    _Q("At each router hop, what changes?",
+       ["the MAC addresses in the frame", "the destination IP", "the source "
+        "port", "nothing at all"], 0, "packet-hop", 1,
+       "Routers rewrite the frame's source/destination MAC each hop; the IP "
+       "addresses stay.",
+       "MACs are rewritten, IPs survive.",
+       "Each hop re-frames the packet for the next link — a new source MAC "
+       "(this router) and destination MAC (next hop). The IP source and "
+       "destination are the end hosts and persist to arrival."),
+    _Q("How does 192.168.1.10 learn its gateway's MAC address?",
+       ["ARP broadcast — 'who has 192.168.1.1?'", "DNS lookup", "DHCP",
+        "a static route"], 0, "packet-arp", 1,
+       "ARP: the host broadcasts 'who has the gateway IP?' and the gateway "
+       "answers with its MAC.",
+       "ARP — 'who has this IP? tell me your MAC'.",
+       "ARP resolves IP→MAC on a LAN. The host broadcasts a request for the "
+       "gateway's MAC, caches the reply, and can then frame packets to it."),
+    _Q("With NAT, as a private packet leaves the edge router, what changes?",
+       ["the source IP (private → public)", "the destination IP", "the MAC "
+        "of the destination", "the TCP port always"], 0, "packet-nat", 1,
+       "NAT rewrites the source IP from private to public, and remaps it back "
+       "for the reply.",
+       "NAT swaps the source IP to the public one.",
+       "NAT translates the private source address to the router's public IP "
+       "(and often the port). The destination IP is unchanged; replies are "
+       "mapped back to the original private host."),
+    _Q("A browser loads https://example.com. What is the correct order?",
+       ["DNS → TCP handshake → TLS handshake → HTTP", "HTTP → DNS → TLS → "
+        "TCP", "TCP → DNS → TLS → HTTP", "TLS → DNS → TCP → HTTP"],
+       0, "packet-order", 1,
+       "Resolve the name (DNS), open the connection (TCP), secure it (TLS), "
+       "then speak HTTP.",
+       "Name, connect, secure, talk.",
+       "You cannot connect to an address you do not have yet: DNS first. Then "
+       "TCP's SYN/SYN-ACK/ACK, then the TLS handshake over that TCP, then the "
+       "HTTP request rides inside."),
+    _Q("In a TCP connection to an HTTPS server, the client's source port is…",
+       ["a random ephemeral port (e.g. 52000)", "443", "80", "22"],
+       0, "packet-port", 1,
+       "The client picks an ephemeral high port; the destination port is 443.",
+       "Source = random high port, destination = 443.",
+       "Servers listen on well-known ports (443 for HTTPS). Clients pick a "
+       "temporary high source port so many simultaneous connections can be "
+       "told apart."),
+    _Q("Which is the destination port when you open https://example.com?",
+       ["443", "80", "52000", "22"], 0, "packet-port", 1,
+       "HTTPS = 443. (HTTP would be 80.)",
+       "443 — HTTPS.",
+       "The destination port names the service on the server: 443 is HTTPS, "
+       "80 is plain HTTP. The client's own port is the random ephemeral one."),
+]
+
+# ---- ROUTING DECISIONS — predict forwarding from a table ------------------- #
+# "Most specific installed route" is the rule: longest-prefix match forwards,
+# administrative distance only chooses between sources for the SAME prefix.
+_ROUTING_QS = [
+    _Q("A routing table has routes for 10.0.0.0/16, 10.1.0.0/24 and "
+       "10.1.2.0/27. A packet to 10.1.2.5 uses…",
+       ["the /27 — most specific match", "the /16 — first match", "the /24 — "
+        "middle match", "the default route"], 0, "lpm", 1,
+       "Longest-prefix match: the /27 is the most specific and wins.",
+       "Most specific wins — /27.",
+       "Forwarding picks the route with the LONGEST matching prefix. /27 is "
+       "more specific than /24 and /16, so it carries 10.1.2.5."),
+    _Q("Two routes to the SAME prefix, learned from OSPF and a static route. "
+       "Which is installed?",
+       ["the static — lower administrative distance", "the OSPF — learned "
+        "dynamically", "both — load balanced", "neither"],
+       0, "routing-ad", 2,
+       "Administrative distance breaks ties between SOURCES for the same "
+       "prefix: static (AD 1) beats OSPF (AD 110).",
+       "Lower AD wins — static.",
+       "AD ranks route sources: connected 0, static 1, eBGP 20, OSPF 110. For "
+       "the same prefix, the lowest AD is installed."),
+    _Q("A broad /16 route and a specific /27 route are BOTH installed. Which "
+       "forwards traffic?",
+       ["the /27 — specificity beats administrative distance", "the /16 — "
+        "broader coverage", "whichever has lower AD", "the one learned first"],
+       0, "routing-ad", 2,
+       "Longest-prefix match decides forwarding; AD only chooses between "
+       "routes to the SAME prefix.",
+       "Specificity wins; AD only breaks same-prefix ties.",
+       "AD never makes a broad route beat a more-specific installed route. "
+       "Forwarding is always longest-prefix-first."),
+    _Q("What does the default route 0.0.0.0/0 do?",
+       ["catches any destination no more-specific route matches", "routes "
+        "only to 0.0.0.0", "is the most specific route", "broadcasts"],
+       0, "lpm", 1,
+       "0.0.0.0/0 matches every address but is the LEAST specific, so it is "
+       "the last resort.",
+       "The /0 is the catch-all — used only when nothing more specific fits.",
+       "A default route has prefix length 0, matching everything, but "
+       "longest-prefix match means any more-specific route beats it. It is "
+       "the 'everything else goes here' route."),
+    _Q("Two OSPF routes to the same prefix have equal AD. What decides?",
+       ["OSPF metric (cost)", "the router ID alphabetically", "the MAC "
+        "address", "the default route"], 0, "lpm-metric", 2,
+       "Same AD + same prefix → the protocol's metric (OSPF cost — the sum of "
+       "link costs) picks the winner.",
+       "When AD ties, the metric decides.",
+       "AD picks the source; the metric picks among routes from that source. "
+       "OSPF uses cost (lower is better); BGP uses its own ordered "
+       "attributes."),
+    _Q("A reply can return by a different path than the request took. This "
+       "is…",
+       ["asymmetric routing", "split horizon", "a routing loop", "ECMP "
+        "always"], 0, "asymmetric", 2,
+       "Asymmetric routing: the return path differs from the forward path. "
+       "Legal, but it can confuse stateful firewalls.",
+       "Asymmetric routing — there and back by different roads.",
+       "Nothing guarantees symmetry unless you engineer it. Forward and "
+       "reverse paths are chosen independently at each router, so a reply "
+       "often takes another road."),
+    _Q("BGP picks a path in a fixed order. Which comes FIRST?",
+       ["weight", "AS path length", "local preference", "MED"],
+       0, "bgp-order", 2,
+       "The decision starts with highest weight, then local preference, then "
+       "shortest AS path, then MED.",
+       "Weight, then local pref, then AS path, then MED.",
+       "The BGP decision is a cascade: weight (highest wins), local "
+       "preference, prefer eBGP over iBGP, shortest AS path, lowest origin, "
+       "MED, and more tie-breakers after."),
+]
+
+NET_QUESTIONS += _gen_subnet_sprint()
+NET_QUESTIONS += _PACKET_PATH_QS
+NET_QUESTIONS += _ROUTING_QS
+
+
+# =========================================================================== #
 # INTERVIEW PREP — senior/junior cloud & DevOps interview questions, as
 # multiple-choice AND flashcards. Each concept has 2 wordings (variants); the
 # trainer picks one at random so re-asks are never identical. Same _Q schema as
@@ -17050,12 +17363,16 @@ NET_TOPIC_CONCEPTS = {
     "cabling": ["cables", "speeds", "rj45", "fiber", "wifi", "wifi-join"],
     "subnetting": ["masks", "hosts", "block-size", "borrow-bits",
                    "valid-range", "netid", "broadcast", "subnet-def",
-                   "hosts62", "hosts28", "mask24", "network-host", "slash31"],
+                   "hosts62", "hosts28", "mask24", "network-host", "slash31",
+                   "sprint-net", "sprint-bcast", "sprint-range",
+                   "sprint-hosts", "sprint-mask", "sprint-except"],
     "tcp-udp": ["tcp-udp", "tcp-reliable", "tcp-handshake", "tcp-seq",
                 "web-tcp", "smtp", "ping"],
     "routing": ["router-role", "gateway", "def-route", "ip-route-cmd",
                 "traceroute", "hop", "ospf-metric", "igp", "arp-gateway",
-                "mtu", "arp", "ip-neigh", "ping-c", "ping-time"],
+                "mtu", "arp", "ip-neigh", "ping-c", "ping-time",
+                "lpm", "routing-ad", "lpm-metric", "asymmetric",
+                "packet-gw", "packet-hop"],
     "vlans": ["vlan", "vlan-layer", "trunk", "intervlan", "vlan-subnet"],
     "nat": ["nat", "private-ranges", "rfc1918", "link-local", "ip-classify"],
     "firewall": ["stateful", "proxy", "ids", "portsec", "dmz"],
@@ -17063,11 +17380,13 @@ NET_TOPIC_CONCEPTS = {
     "wifi-sec": ["wpa2", "wpa3", "ssid", "wifi", "wifi-join", "dot1x"],
     "troubleshooting": ["ping", "ping-time", "ping-c", "traceroute", "ss",
                         "ip-route-cmd", "ip-neigh", "dig", "bottom-up",
-                        "mtu", "ip-s"],
+                        "mtu", "ip-s", "packet-mac", "packet-ip",
+                        "packet-arp", "packet-nat", "packet-order",
+                        "packet-port"],
     "ospf": ["ospf-dr", "ospf-mcast", "ospf-area0", "ospf-metric", "ospf-lsa",
              "ospf-cost", "igp"],
     "bgp": ["bgp-weight", "ebgp", "aspath", "localpref", "med", "underlay",
-            "anycast"],
+            "anycast", "bgp-order"],
     "stp": ["stp", "stp-root", "stp-states", "stp-ports", "stp-priority",
             "lacp"],
     "ipv6": ["ipv6-bits", "ipv6-format", "ipv6-linklocal", "slaac", "ndp",
