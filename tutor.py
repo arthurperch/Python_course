@@ -17611,6 +17611,34 @@ def _iv_role_match(concept: str, prefixes) -> bool:
     return any(concept == p or concept.startswith(p + "-") for p in prefixes)
 
 
+# The 7-stage curriculum: each stage lists its subjects, the completion task
+# that proves it, the stages it builds on, and which tutor track covers it.
+# Shown in the journey map; prerequisites are guidance (soft, not a hard lock).
+CURRICULUM = [
+    ("Foundations", "Terminal, files, editor, Git, basic Python",
+     "Build and troubleshoot a small command-line tool", ["—"],
+     "PYTHON · VIM · BUILD STUFF"),
+    ("Systems", "Bash, Linux, processes, services, permissions, storage",
+     "Repair and document a broken server", ["Foundations"],
+     "LINUX DRILLS · BUILD STUFF"),
+    ("Networking", "Addressing, switching, routing, DNS, TCP/TLS, firewalls",
+     "Build and diagnose a segmented network", ["Systems"],
+     "NETWORK+"),
+    ("Automation", "APIs, JSON, YAML, Ansible, Terraform",
+     "Provision repeatable infrastructure", ["Systems", "Networking"],
+     "CLOUD & DEVOPS (terraform/ansible)"),
+    ("Cloud", "Azure first, then AWS/GCP comparisons",
+     "Deploy a monitored app with restricted access", ["Automation"],
+     "CLOUD & DEVOPS (aws/azure)"),
+    ("Platforms", "Containers, Kubernetes, CI/CD, observability",
+     "Deploy, upgrade, troubleshoot and recover workloads", ["Cloud"],
+     "CLOUD & DEVOPS (k8s/cicd)"),
+    ("Specialization", "Identity/security, advanced networking, GPU infra",
+     "Complete a substantial independent project", ["Platforms"],
+     "INTERVIEW PREP · MINI PROJECTS"),
+]
+
+
 # =========================================================================== #
 # LINUX DRILLS — quick TTS-driven bash drills ("make this" / "what is this"),
 # verified by OUTCOME not command string. `check(fs, out)` inspects ShellFS
@@ -17977,6 +18005,45 @@ INCIDENTS = [
         ],
     },
 ]
+
+
+# =========================================================================== #
+# INCIDENT CAMPAIGN — a fictional organization whose environment develops
+# across a sequence of shifts. Unlike standalone INCIDENTS (each on a fresh
+# ShellFS), a campaign shares ONE filesystem across episodes, so the learner
+# sees persistent consequences: what they fixed in shift 1 is the environment
+# shift 2 grows out of. Each episode reuses the INCIDENTS phase schema
+# (hypothesis -> diagnostic -> interpret -> fix -> verify). Run with `c` from
+# the LINUX DRILLS done screen.
+# =========================================================================== #
+
+CAMPAIGN = {
+    "org": "Northwind Health — a fictional healthcare SaaS",
+    "story": "You're the founding infrastructure engineer. Over three shifts you "
+             "bring the company's portal to life. The environment persists: "
+             "what you fix stays fixed, and each shift's failure grows out of "
+             "the last.",
+    "episodes": [
+        {"name": "Shift 1 — the portal is down after a reboot",
+         "intro": "The portal you stood up yesterday didn't come back after the "
+                  "nightly reboot. Get it running and make it survive the next "
+                  "one.",
+         "setup": lambda fs: (fs.services["web"].__setitem__("state", "stopped"),
+                              fs.services["web"].__setitem__("enabled", False)),
+         "phases": INCIDENTS[0]["phases"]},
+        {"name": "Shift 2 — the deploy script won't run",
+         "intro": "The portal is up — nice work last shift. Now the deploy "
+                  "script the team relies on returns 'Permission denied'.",
+         "setup": lambda fs: fs.files.__setitem__(
+             fs._resolve("deploy.sh"), "#!/bin/bash\necho deployed\n"),
+         "phases": INCIDENTS[1]["phases"]},
+        {"name": "Shift 3 — something is mining on the box",
+         "intro": "The portal is live and deploys work. But the box is suddenly "
+                  "slow — a process you never started is eating the CPU.",
+         "setup": lambda fs: fs.processes.__setitem__(999, "python3 miner.py"),
+         "phases": INCIDENTS[2]["phases"]},
+    ],
+}
 
 
 # =========================================================================== #
@@ -21333,6 +21400,9 @@ class TutorApp(App):
         self._ld_mission_sel = 0      # which mission is next (cycles)
         self._ld_incident = None      # current INCIDENTS dict (evidence-first)
         self._ld_incident_sel = 0     # which incident is next (cycles)
+        self._ld_campaign = None      # CAMPAIGN dict when running the campaign
+        self._ld_campaign_i = 0       # current episode index
+        self._ld_campaign_fs = None   # the shared fs across campaign episodes
         self._ld_pick = None          # WHAT drill: chosen option
         self._ld_adv_timer = None
         self._ld_gen = 0
@@ -22023,8 +22093,15 @@ class TutorApp(App):
                              "resume: " + (self._dev_checkpoint_label() if not dev_done else "done")))
         t.append_text(_track("BUILD STUFF", build_step, len(SHELL_LESSONS), "#7ee787"))
         t.append_text(_track("NETWORK+", 1 if net_done else 0, 1, "#ffa657",
-                             "5 modules · 563 questions" if not net_done else "done"))
+                             f"{len(NET_MODULES)} modules · {len(NET_QUESTIONS)} questions" if not net_done else "done"))
         t.append_text(_track("VIM / NEOVIM", 1 if vim_done else 0, 1, "#d8b4fe"))
+        t.append("\n")
+        # ---- the 7-stage curriculum --------------------------------------
+        t.append("CURRICULUM — 7 stages (prereqs are guidance)\n", style="bold #facc15")
+        for name, subjects, task, prereqs, track in CURRICULUM:
+            t.append(f"  {name}: ", style="bold #cdd6f4")
+            t.append(f"{task}\n", style="#a6adc8")
+            t.append(f"       {track}  ·  builds on {', '.join(prereqs)}\n", style="dim")
         t.append("\n")
         # ---- the python path --------------------------------------------
         t.append("PYTHON PATH\n", style="bold #facc15")
@@ -30992,6 +31069,8 @@ class TutorApp(App):
                 self._ld_start_mission()
             elif k == "i":
                 self._ld_start_incident()
+            elif k == "c":
+                self._ld_start_campaign()
             return
         task = self._ld_current()
         if task is None:
@@ -31131,11 +31210,26 @@ class TutorApp(App):
         if self._ld_mode == "incident" and self._ld_incident:
             self._ld_mission_i += 1
             if self._ld_mission_i >= len(self._ld_incident["phases"]):
-                self._ld_msg = (f"🏁 incident '{self._ld_incident['name']}' resolved — "
-                                f"{self._ld_right}/{self._ld_n} phases correct. "
-                                "press i for another, m for missions, or Esc")
+                # episode complete — advance the campaign, or finish
+                if (self._ld_campaign and self._ld_campaign_i + 1
+                        < len(self._ld_campaign["episodes"])):
+                    self._ld_campaign_i += 1
+                    self._ld_load_episode(
+                        self._ld_campaign["episodes"][self._ld_campaign_i])
+                    return
+                if self._ld_campaign:
+                    self._ld_msg = (f"🏁 campaign complete — "
+                                    f"{self._ld_campaign['org']}. "
+                                    "press c to replay, m for missions, i for "
+                                    "incidents, or Esc")
+                else:
+                    self._ld_msg = (f"🏁 incident '{self._ld_incident['name']}' "
+                                    f"resolved — {self._ld_right}/{self._ld_n} "
+                                    f"phases correct. press i for another, "
+                                    f"c for campaign, m for missions, or Esc")
                 self._ld_msg_kind = "win"
                 self._ld_incident = None
+                self._ld_campaign = None
                 self._ld_done = True
                 save_progress(self.p)
                 self._celebrate()
@@ -31184,17 +31278,35 @@ class TutorApp(App):
             speak(m["intro"])
 
     def _ld_start_incident(self):
-        """Launch an evidence-first incident (cycle through INCIDENTS)."""
+        """Launch a standalone evidence-first incident (cycle through
+        INCIDENTS). Each incident runs on a FRESH ShellFS."""
         if not INCIDENTS:
             return
         m = INCIDENTS[self._ld_incident_sel % len(INCIDENTS)]
         self._ld_incident_sel += 1
         self._ld_mode = "incident"
-        self._ld_incident = m
-        self._ld_mission_i = 0
+        self._ld_campaign = None
         self._ld_fs = ShellFS()
-        if m.get("setup"):
-            m["setup"](self._ld_fs)
+        self._ld_load_episode(m)
+
+    def _ld_start_campaign(self):
+        """Launch the incident campaign: a shared environment across episodes."""
+        eps = CAMPAIGN.get("episodes", []) if CAMPAIGN else []
+        if not eps:
+            return
+        self._ld_mode = "incident"
+        self._ld_campaign = CAMPAIGN
+        self._ld_campaign_i = 0
+        self._ld_fs = ShellFS()       # ONE fs shared across all episodes
+        self._ld_load_episode(eps[0])
+
+    def _ld_load_episode(self, episode):
+        """Load one incident/campaign episode onto the current fs and reset the
+        per-episode counters."""
+        self._ld_incident = episode
+        self._ld_mission_i = 0
+        if episode.get("setup"):
+            episode["setup"](self._ld_fs)
         self._ld_history = []
         self._ld_attempts = 0
         self._ld_n = 0
@@ -31204,7 +31316,7 @@ class TutorApp(App):
         self._ld_msg_kind = ""
         self._ld_render()
         if self.voice_on:
-            speak(m["intro"])
+            speak(episode["intro"])
 
     def _ld_exit(self):
         self._ld_stop_pause()
@@ -31230,7 +31342,12 @@ class TutorApp(App):
         if self._ld_mode == "mission" and self._ld_mission:
             t.append(f"  mission: {self._ld_mission['name']} ", style="bold #7ee787")
         elif self._ld_mode == "incident" and self._ld_incident:
-            t.append(f"  incident: {self._ld_incident['name']} ", style="bold #7ee787")
+            if self._ld_campaign:
+                t.append(f"  {self._ld_campaign['org']} ", style="bold #7ee787")
+                t.append(f"· shift {self._ld_campaign_i + 1}/{len(self._ld_campaign['episodes'])} ",
+                         style="bold #7ee787")
+            else:
+                t.append(f"  incident: {self._ld_incident['name']} ", style="bold #7ee787")
         t.append(f"·  {self._ld_right}/{self._ld_n} ", style="#d5d5d5")
         if self._ld_review:
             t.append(f"·  {len(self._ld_review)} to re-ask ", style="bold #fbbf24")
@@ -31241,7 +31358,7 @@ class TutorApp(App):
         if self._ld_done:
             t.append("Session complete. ", style="bold #22c55e")
             t.append(f"{self._ld_right}/{self._ld_n} right.\n", style="#f0f0f5")
-            t.append("\nEnter — new round   ·   m — missions   ·   i — incidents   ·   Esc — menu", style="dim")
+            t.append("\nEnter — new round   ·   m — missions   ·   i — incidents   ·   c — campaign   ·   Esc — menu", style="dim")
             self.query_one("#ld-goal", Static).update(t)
             return
         task = self._ld_current()
@@ -31331,7 +31448,7 @@ class TutorApp(App):
             t.append("   ·   ", style="dim")
             t.append("graded by result, not exact wording", style="dim")
             if self._ld_mode == "drill":
-                t.append("   ·   m — missions   ·   i — incidents", style="dim")
+                t.append("   ·   m — missions   ·   i — incidents   ·   c — campaign", style="dim")
         self.query_one("#ld-foot", Static).update(t)
 
     # -- RECALL GYM -------------------------------------------------------- #
