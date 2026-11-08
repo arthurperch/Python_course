@@ -16869,6 +16869,294 @@ INTERVIEW_QUESTIONS = [
 
 
 # =========================================================================== #
+# INTERVIEW SIMULATOR — fictional company scenarios with a TTS interviewer
+# persona and a branching "what do you check next" diagnostic conversation.
+# Each node is one interviewer question with four actions; the correct action
+# advances the investigation and reveals the diagnostic RESULT it establishes
+# (the Evidence-First loop: name -> route -> port -> protocol -> permission).
+# Wrong answers are explained and never block.  Reuses the InterviewTrainer
+# (menu slot -7, TTS, mastery) as a third "scenario" mode.
+# =========================================================================== #
+
+INTERVIEW_SCENARIOS = [
+    {
+        "id": "medsol-portal",
+        "company": "MedSol Health",
+        "industry": "healthcare · HIPAA",
+        "stack": "Azure VMs · nginx · Postgres · private VNet · Azure DNS",
+        "priority": "uptime + compliance",
+        "persona": "engineering manager",
+        "title": "The patient portal is unreachable this morning",
+        "intro": "Patients are calling. The portal won't load for anyone.",
+        "nodes": [
+            {"q": "\"The portal won't load for anyone. What's your FIRST move?\"",
+             "choices": ["resolve the hostname and confirm DNS",
+                         "restart the nginx service",
+                         "check CPU on the web VM",
+                         "look at yesterday's deploy"],
+             "ans": 0, "concept": "net-dns",
+             "result": "dig portal.medsol.io → NXDOMAIN — the name doesn't resolve at all",
+             "why": "Name first. If DNS is broken nothing else matters — restarting "
+                    "a service can't fix a name that won't resolve. And it's the "
+                    "fastest thing to rule out.",
+             "say": "name → route → port → protocol → permission."},
+            {"q": "\"NXDOMAIN. What does that establish?\"",
+             "choices": ["the name isn't in DNS — a record is missing or the "
+                         "wrong server is queried",
+                         "the server is down",
+                         "the certificate expired",
+                         "the port is blocked"],
+             "ans": 0, "concept": "net-dns",
+             "result": "the A record for 'portal' was deleted in last night's "
+                       "automation run",
+             "why": "NXDOMAIN means 'no such name', not 'server down' — it's a "
+                    "DNS-zone problem, not a host problem. You've isolated it "
+                    "to the name layer.",
+             "say": "NXDOMAIN = the name doesn't exist, period."},
+            {"q": "\"You restore the A record. DNS resolves, but the portal still "
+                  "times out. What next?\"",
+             "choices": ["confirm reachability — is there a path to the VM at all?",
+                         "reinstall nginx",
+                         "check disk space",
+                         "reboot the VM"],
+             "ans": 0, "concept": "azure-vnet",
+             "result": "traceroute dies at the edge — the Azure NSG lost its "
+                       "allow-443 rule in last night's change",
+             "why": "Name resolved, so move to route: is there a path? A missing "
+                    "NSG rule is a reachability problem — reinstalling nginx can't "
+                    "fix a packet that never arrives.",
+             "say": "name → route → port → protocol → permission."},
+            {"q": "\"NSG fixed — traffic reaches the VM now. Still 502. Next?\"",
+             "choices": ["is nginx listening on 443, and can it reach its backend?",
+                         "check DNS again",
+                         "look at a different server's firewall",
+                         "call the ISP"],
+             "ans": 0, "concept": "ports",
+             "result": "ss -tulpn shows nginx on 443, but its upstream Postgres "
+                       "connection is refused",
+             "why": "You have a path, so check the port: is the service listening, "
+                    "and can IT reach its dependencies? 502 means nginx is up but "
+                    "its upstream is not.",
+             "say": "port = listening, and can it reach its dependencies."},
+            {"q": "\"nginx is up, Postgres is reachable. Still 502. What haven't "
+                  "you checked?\"",
+             "choices": ["the TLS certificate — did it expire overnight?",
+                         "the CPU again",
+                         "the default route",
+                         "user passwords"],
+             "ans": 0, "concept": "net-tls",
+             "result": "openssl s_client shows the cert expired at midnight — the "
+                       "renewal never deployed",
+             "why": "Protocol layer: even with a path and a listener, a dead "
+                    "certificate kills the handshake. 502 with everything else "
+                    "healthy is often TLS.",
+             "say": "protocol = can the two sides finish the handshake."},
+            {"q": "\"Cert redeployed. The portal loads but returns 'access denied' "
+                  "for every user. What's left?\"",
+             "choices": ["the app's identity/permissions — token or role revoked?",
+                         "the browser cache",
+                         "the network MTU",
+                         "the server timezone"],
+             "ans": 0, "concept": "identity",
+             "result": "the app's managed identity lost its 'read patient records' "
+                       "role in last night's IAM change",
+             "why": "Permission — the last layer. Name, route, port and protocol "
+                    "all work; a blanket 403 is authorization, not connectivity.",
+             "say": "permission = is the authenticated identity authorized."},
+            {"q": "\"Everything traces to last night's automation run. How do you "
+                  "close this out?\"",
+             "choices": ["roll back the bad change, verify, and add a health "
+                         "check so a missing record or cert can't go unnoticed",
+                         "leave it and hope it self-heals",
+                         "rebuild the stack from scratch",
+                         "mute the alerts to reduce noise"],
+             "ans": 0, "concept": "fin-gitops",
+             "result": "the change is reverted from git, the portal is back, and "
+                       "a post-deploy check now catches DNS/TLS regressions",
+             "why": "Recovery = roll back the change AND prevent recurrence. The "
+                    "name→route→port→protocol→permission evidence tells you "
+                    "exactly what to revert.",
+             "say": "fix the cause, verify, and make it fail loudly next time."},
+        ],
+    },
+    {
+        "id": "ledgerline-login",
+        "company": "Ledgerline",
+        "industry": "financial services · SOX",
+        "stack": "AWS · EKS · Terraform · Vault · Okta SSO",
+        "priority": "security + auditability",
+        "persona": "security engineer",
+        "title": "A 3am login and a blocked deploy",
+        "intro": "A deploy is stuck with 'access denied', and there was a 3am "
+                 "login from an unfamiliar IP.",
+        "nodes": [
+            {"q": "\"A deploy is blocked AND there's a 3am login from a foreign "
+                  "IP. Which do you chase first?\"",
+             "choices": ["the 3am login — unauthorized access is more urgent",
+                         "the deploy — it's blocking work",
+                         "neither, go to lunch",
+                         "reboot the cluster"],
+             "ans": 0, "concept": "fin-security",
+             "result": "the login is a new API key used from an offshore IP — "
+                       "it's active and scoped to prod",
+             "why": "Triage by impact and urgency: a possibly compromised "
+                    "credential outweighs a blocked deploy. You secure first, "
+                    "then unblock.",
+             "say": "security incidents beat inconveniences."},
+            {"q": "\"The API key exists. What's the first thing you do?\"",
+             "choices": ["revoke it, then investigate how it was created",
+                         "delete the whole account",
+                         "rotate every key including unrelated teams'",
+                         "leave it to gather more evidence indefinitely"],
+             "ans": 0, "concept": "identity",
+             "result": "the key is revoked; CloudTrail shows it was created at "
+                       "2:59am by a service account via the deploy pipeline",
+             "why": "Contain first (revoke the credential), then investigate "
+                    "from the audit trail — you can't study what's still causing "
+                    "harm, but you also shouldn't nuke unrelated keys.",
+             "say": "contain, then understand — not the other way round."},
+            {"q": "\"The key came from the deploy pipeline's service account. "
+                  "What does that suggest?\"",
+             "choices": ["the pipeline's own credential is compromised or "
+                         "over-permissioned",
+                         "the pipeline is fine, ignore it",
+                         "someone typed the key into chat",
+                         "the key created itself"],
+             "ans": 0, "concept": "aws-iam",
+             "result": "the pipeline role can create IAM keys AND has prod write "
+                       "— far more than it needs",
+             "why": "A credential created by another credential means the parent "
+                    "is compromised or over-privileged. Least privilege is the "
+                    "structural fix.",
+             "say": "over-permissioned automation = a key factory for attackers."},
+            {"q": "\"Why is the deploy also 'access denied'?\"",
+             "choices": ["the same tightened IAM policy that was meant to secure "
+                         "prod broke the pipeline's own permissions",
+                         "the cluster is out of disk",
+                         "the laptop battery died",
+                         "DNS changed"],
+             "ans": 0, "concept": "aws-iam",
+             "result": "the new deny rule blocks the pipeline role from pushing "
+                       "images — the security change caused the outage",
+             "why": "Security changes are changes: a too-broad deny breaks "
+                    "legitimate paths. The deploy failure and the login are the "
+                    "same root cause — one over-broad policy.",
+             "say": "a deny that's too broad breaks your own automation."},
+            {"q": "\"What's the right fix?\"",
+             "choices": ["scope the policy: least privilege for the pipeline, "
+                         "explicit deny only for what must never happen",
+                         "grant the pipeline full admin to be safe",
+                         "delete IAM entirely",
+                         "turn off CloudTrail"],
+             "ans": 0, "concept": "identity",
+             "result": "the pipeline keeps exactly the permissions it needs, the "
+                       "key is gone, and the 3am access stops",
+             "why": "Least privilege fixes both symptoms: the pipeline can deploy "
+                    "again, and it can no longer mint keys an attacker can abuse.",
+             "say": "least privilege is one fix for both problems."},
+            {"q": "\"How do you prove this won't recur?\"",
+             "choices": ["a guardrail that blocks key creation by automation + "
+                         "an alert on off-hours prod logins",
+                         "trust everyone to be careful",
+                         "hope for the best",
+                         "write it in a doc nobody reads"],
+             "ans": 0, "concept": "fin-security",
+             "result": "the service account can no longer create keys, and any "
+                       "off-hours prod login pages the on-call",
+             "why": "Prevention is a control, not a promise: block the capability "
+                    "and alert on the behavior. That's the auditable proof.",
+             "say": "block the capability, alert on the behavior."},
+        ],
+    },
+    {
+        "id": "hostline-gpu",
+        "company": "Hostline",
+        "industry": "data center · GPU infrastructure",
+        "stack": "bare-metal · Kubernetes · NVIDIA A100 · Prometheus · DCGM",
+        "priority": "throughput + GPU utilization",
+        "persona": "platform engineer",
+        "title": "A training job is 4x slower while the host looks idle",
+        "intro": "The ML team reports a training job running 4x slow. The host "
+                 "dashboard shows CPU at 8%.",
+        "nodes": [
+            {"q": "\"Training is 4x slow but the host CPU shows 8%. What do you "
+                  "check first?\"",
+             "choices": ["GPU utilization, VRAM and thermals — the GPU is the "
+                         "bottleneck, not CPU",
+                         "CPU usage again",
+                         "free disk on the admin box",
+                         "the office Wi-Fi"],
+             "ans": 0, "concept": "gpu",
+             "result": "nvidia-smi shows the GPU at 99% but its memory clock is "
+                       "throttled — temperature is at the 92°C ceiling",
+             "why": "A training job is GPU-bound. CPU at 8% is a red herring — "
+                    "you measure the resource the workload actually uses.",
+             "say": "measure the bottleneck resource, not the idle one."},
+            {"q": "\"GPU is thermally throttled at 92°C. Why?\"",
+             "choices": ["a fan failed or airflow is blocked — the card is "
+                         "clocking down to protect itself",
+                         "the code is too slow",
+                         "the network is bad",
+                         "the GPU is under-utilized"],
+             "ans": 0, "concept": "gpu",
+             "result": "IPMI shows one chassis fan at 0 RPM — the card is "
+                       "throttling clocks to avoid a thermal shutdown",
+             "why": "Throttling at the thermal ceiling is almost always cooling, "
+                    "not code. The card deliberately downclocks to survive.",
+             "say": "thermal ceiling = the card is protecting itself."},
+            {"q": "\"Fan failed. But the job is STILL 2x slow after a fan swap. "
+                  "Now what?\"",
+             "choices": ["check PCIe link width/speed and whether the GPU fell "
+                         "back to a narrower link",
+                         "blame the code",
+                         "reinstall the OS",
+                         "check email"],
+             "ans": 0, "concept": "gpu",
+             "result": "nvidia-smi shows PCIe x1 instead of x16 — the card "
+                       "reseated at a lower link width after the fan swap",
+             "why": "One fix can reveal a second fault. After cooling, the next "
+                    "likely cause is the interconnect: a GPU on a narrow PCIe "
+                    "link starves on data transfer.",
+             "say": "fix one thing, then re-baseline — don't stop at the first win."},
+            {"q": "\"PCIe reseated to x16. Job is back to normal speed. How do "
+                  "you prove the fix?\"",
+             "choices": ["a repeatable benchmark before/after, plus DCGM "
+                         "telemetry showing the throttle cleared",
+                         "ask the ML team if it 'feels faster'",
+                         "trust the one run",
+                         "nothing, it's fixed"],
+             "ans": 0, "concept": "gpu",
+             "result": "a controlled re-run shows throughput restored and GPU "
+                       "temp stable at 70°C under load",
+             "why": "Proof is a controlled before/after with the same workload "
+                    "and telemetry — not a feeling. That's what a validation "
+                    "report captures.",
+             "say": "measure, don't guess — a benchmark is the evidence."},
+            {"q": "\"The team asks: should we add more GPUs?\"",
+             "choices": ["first show the bottleneck — utilization, memory, "
+                         "interconnect — before buying capacity",
+                         "buy more GPUs immediately",
+                         "add more CPU",
+                         "reject the request outright"],
+             "ans": 0, "concept": "gpu",
+             "result": "utilization is already at 90%+ with a stable queue, so "
+                       "the data supports scaling out — but only after the "
+                       "contention was fixed",
+             "why": "Capacity decisions need evidence: is it compute-bound, "
+                    "memory-bound, or I/O-bound? Buy the resource the telemetry "
+                    "says you're short on.",
+             "say": "decide capacity from measurements, not symptoms."},
+        ],
+    },
+]
+
+
+def _iv_pick_scenario():
+    """One scenario, chosen at random (the learner can cycle with `s`)."""
+    return random.choice(INTERVIEW_SCENARIOS)
+
+
+# =========================================================================== #
 # LINUX DRILLS — quick TTS-driven bash drills ("make this" / "what is this"),
 # verified by OUTCOME not command string. `check(fs, out)` inspects ShellFS
 # state or the command's stdout; a learner can pass with any wording that
@@ -20357,7 +20645,8 @@ class TutorApp(App):
         self._net_adv_timer = None    # brief feedback pause before the next q
         self._net_pause_action = None  # "next" or ("reask", step)
         self._iv_on = False           # INTERVIEW PREP overlay open
-        self._iv_mode = "mc"          # "mc" (multiple choice) | "card" (flashcard)
+        self._iv_mode = "mc"          # "mc" | "card" | "scenario" (company sim)
+        self._iv_scenario = None      # active INTERVIEW_SCENARIOS entry
         self._iv_pool: list = []      # questions for the current round
         self._iv_i = 0                # index into _iv_pool
         self._iv_pick = None          # mc: the option the learner has selected
@@ -29493,8 +29782,10 @@ class TutorApp(App):
     def _iv_begin(self, mode=None):
         """Open the INTERVIEW PREP overlay. `mode` = "mc" (multiple choice) or
         "card" (flashcards); None keeps the current mode."""
-        if mode in ("mc", "card"):
+        if mode in ("mc", "card", "scenario"):
             self._iv_mode = mode
+        if self._iv_mode == "scenario":
+            self._iv_scenario = _iv_pick_scenario()
         self._iv_on = True
         self._iv_pool = self._iv_build_pool()
         self._iv_i = 0
@@ -29517,7 +29808,10 @@ class TutorApp(App):
 
     def _iv_build_pool(self):
         """One randomly-picked variant per concept (the '2 wordings' mechanic),
-        shuffled. Weak concepts (missed in past sessions) are asked first."""
+        shuffled. Weak concepts (missed in past sessions) are asked first.
+        Scenario mode plays one company's diagnostic chain, in order."""
+        if self._iv_mode == "scenario":
+            return list((self._iv_scenario or {}).get("nodes", []))
         by_concept = {}
         for q in INTERVIEW_QUESTIONS:
             by_concept.setdefault(q["concept"], []).append(q)
@@ -29542,7 +29836,11 @@ class TutorApp(App):
         q = self._iv_cur()
         if q is None:
             return
-        if self._iv_mode == "mc":
+        if self._iv_mode == "scenario":
+            persona = (self._iv_scenario or {}).get("persona", "interviewer")
+            opts = "; ".join(f"{i+1}: {q['choices'][i]}" for i in range(4))
+            speak(f"{persona}: {q['q']} Is it {opts}?")
+        elif self._iv_mode == "mc":
             opts = "; ".join(f"{i+1}: {q['choices'][i]}" for i in range(4))
             speak(f"{q['q']} Is it {opts}?")
         else:
@@ -29600,11 +29898,13 @@ class TutorApp(App):
             self._iv_answer(int(k) - 1)
         elif self._iv_pick is None and k in ("a", "b", "c", "d"):
             self._iv_answer("abcd".index(k))
-        elif self._iv_pick is None and k == "f":
+        elif self._iv_pick is None and self._iv_mode == "mc" and k == "f":
             self._iv_mode = "card"
             self._iv_flipped = False
             self._iv_render()
             self._iv_speak_current()
+        elif self._iv_pick is None and k == "s":
+            self._iv_begin("scenario")
 
     def _iv_flip(self):
         q = self._iv_cur()
@@ -29634,7 +29934,8 @@ class TutorApp(App):
                       f"{q['say']}")
         else:
             self._iv_wrong.append(q["concept"])
-            self._iv_review.append(q)
+            if self._iv_mode != "scenario":
+                self._iv_review.append(q)
             self._iv_msg = (f"✗ the answer is {q['choices'][q['ans']]} — "
                             f"{q['why']}")
             self._iv_msg_kind = "retrain"
@@ -29708,9 +30009,15 @@ class TutorApp(App):
 
     def _iv_render_head(self):
         t = Text()
-        t.append(" INTERVIEW PREP ", style="bold #11111b on #7dd3fc")
-        mode = "multiple choice" if self._iv_mode == "mc" else "flashcards"
-        t.append(f"  {mode} ", style="bold #7dd3fc")
+        if self._iv_mode == "scenario":
+            sc = self._iv_scenario or {}
+            t.append(" INTERVIEW SIM ", style="bold #11111b on #7dd3fc")
+            t.append(f"  {sc.get('company', '')} ", style="bold #7dd3fc")
+            t.append(f"·  {sc.get('persona', '')} ", style="#d5d5d5")
+        else:
+            t.append(" INTERVIEW PREP ", style="bold #11111b on #7dd3fc")
+            mode = "multiple choice" if self._iv_mode == "mc" else "flashcards"
+            t.append(f"  {mode} ", style="bold #7dd3fc")
         t.append(f"·  {self._iv_right}/{self._iv_n} right ", style="#d5d5d5")
         if self._iv_done:
             pct = (100 * self._iv_right // self._iv_n) if self._iv_n else 0
@@ -29723,6 +30030,28 @@ class TutorApp(App):
         q = self._iv_cur()
         t = Text()
         if self._iv_done:
+            if self._iv_mode == "scenario":
+                sc = self._iv_scenario or {}
+                n = self._iv_n
+                pct = (100 * self._iv_right // n) if n else 0
+                t.append("Scenario complete. ", style="bold #22c55e")
+                t.append(f"{sc.get('title', '')}\n\n", style="#f0f0f5")
+                t.append(f"diagnostic moves correct: {self._iv_right}/{n} "
+                         f"({pct}%)\n\n", style="#f0f0f5")
+                if self._iv_wrong:
+                    uniq = sorted(set(self._iv_wrong))
+                    t.append("Revisit these:", style="bold #fbbf24")
+                    t.append("\n")
+                    for c in uniq:
+                        t.append(f"  · {c}\n", style="#d5d5d5")
+                    t.append("\nThey're saved as weak — next session asks them "
+                             "first.", style="dim")
+                else:
+                    t.append("Flawless run — every diagnostic move was right.",
+                             style="#d5d5d5")
+                t.append("\n\nEnter — new scenario   ·   Esc — menu", style="dim")
+                self.query_one("#iv-question", Static).update(t)
+                return
             n = self._iv_n
             pct = (100 * self._iv_right // n) if n else 0
             t.append("Session complete. ", style="bold #22c55e")
@@ -29744,6 +30073,19 @@ class TutorApp(App):
             self.query_one("#iv-question", Static).update("")
             return
         topic = q["concept"]
+        if self._iv_mode == "scenario":
+            sc = self._iv_scenario or {}
+            t.append(f"{sc.get('company', '')} · {sc.get('industry', '')}\n",
+                     style="bold #7dd3fc")
+            t.append(f"{sc.get('stack', '')}\n", style="#d5d5d5")
+            t.append(f"priority: {sc.get('priority', '')}\n\n",
+                     style="#d5d5d5")
+            t.append(f"INCIDENT — {sc.get('title', '')}\n", style="bold #ffa657")
+            t.append(f"{sc.get('intro', '')}\n\n", style="#f0f0f5")
+            t.append(f"the {sc.get('persona', '')} asks:\n\n", style="dim")
+            t.append(q["q"], style="bold #f0f0f5")
+            self.query_one("#iv-question", Static).update(t)
+            return
         t.append(f"[{topic}]  ", style="bold #7dd3fc")
         if self._iv_mode == "card" and not self._iv_flipped:
             t.append("FLASHCARD\n\n", style="bold #ffa657")
@@ -29810,6 +30152,10 @@ class TutorApp(App):
             return
         t.append("why: ", style="bold #fbbf24")
         t.append(q["why"], style="#f0f0f5")
+        if self._iv_mode == "scenario" and q.get("result"):
+            t.append("\n\n")
+            t.append("result: ", style="bold #22c55e")
+            t.append(q["result"], style="#d5d5d5")
         t.append("\n\n")
         t.append("remember: ", style="bold #fbbf24")
         t.append(q["say"], style="#d5d5d5")
@@ -29825,9 +30171,15 @@ class TutorApp(App):
                          style="bold #22c55e")
             else:
                 t.append("Space/Enter — flip   ·   Esc — menu", style="bold #7dd3fc")
+        elif self._iv_mode == "scenario":
+            if self._iv_pick is None:
+                t.append("1-4 — answer   ·   s — next scenario   ·   Esc — menu",
+                         style="bold #7dd3fc")
+            else:
+                t.append("next question in a moment — any key to skip", style="bold #22c55e")
         else:
             if self._iv_pick is None:
-                t.append("1-4 — answer   ·   f — flashcards   ·   Esc — menu",
+                t.append("1-4 — answer   ·   f — flashcards   ·   s — scenario   ·   Esc — menu",
                          style="bold #7dd3fc")
             else:
                 t.append("next question in a moment — any key to skip", style="bold #22c55e")
